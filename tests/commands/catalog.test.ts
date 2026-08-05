@@ -115,10 +115,6 @@ describe('CommandCatalog', () => {
     });
 
     const executor = catalog.complete({ text: '/executor ', cursor: 10, context });
-    expect(executor.suggestions.find(item => item.value === 'register')).toMatchObject({
-      label: 'register',
-      replacement: { start: 10, end: 10, text: 'register' },
-    });
     expect(executor.suggestions.find(item => item.value === 'show')).toMatchObject({
       label: 'show',
       replacement: { start: 10, end: 10, text: 'show' },
@@ -130,19 +126,13 @@ describe('CommandCatalog', () => {
       replacement: { start: 10, end: 10, text: 'patch' },
     });
 
-    const register = catalog.complete({ text: '/executor register ', cursor: 19, context });
-    expect(register.suggestions.find(item => item.value === 'wizard')).toMatchObject({
-      label: 'wizard',
-      replacement: { start: 19, end: 19, text: 'wizard' },
-    });
-
     const patch = catalog.complete({ text: '/learning patch ', cursor: 16, context });
     expect(patch.suggestions.find(item => item.value === 'approve')).toMatchObject({
       label: 'approve',
       replacement: { start: 16, end: 16, text: 'approve' },
     });
 
-    for (const completion of [root, configRoot, executor, learning, register, patch]) {
+    for (const completion of [root, configRoot, executor, learning, patch]) {
       for (const suggestion of completion.suggestions) {
         if (suggestion.value === suggestion.label.replace(/^\//, '')) {
           expect(suggestion.label).toBe(suggestion.replacement.text);
@@ -158,9 +148,9 @@ describe('CommandCatalog', () => {
       label: '/executor',
       replacement: { start: 0, end: 8, text: '/executor' },
     });
-    expect(catalog.complete({ text: '/executor regisetr', cursor: 18, context }).suggestions[0]).toMatchObject({
-      label: 'register',
-      replacement: { start: 10, end: 18, text: 'register' },
+    expect(catalog.complete({ text: '/executor shwo', cursor: 14, context }).suggestions[0]).toMatchObject({
+      label: 'show',
+      replacement: { start: 10, end: 14, text: 'show' },
     });
     expect((await catalog.execute('/register', context)).content).toContain('未知命令节点: register');
     expect((await catalog.execute('/patch', context)).content).toContain('未知命令节点: patch');
@@ -200,6 +190,30 @@ describe('CommandCatalog', () => {
     expect(candidates).toHaveBeenCalledTimes(1);
   });
 
+  it('shows task titles while replacing with the immutable task id', () => {
+    const taskEngine = {
+      getTaskRepo: () => ({
+        findAll: () => [
+          { id: 'task-1', title: 'Prepare release notes', status: 'running', updatedAt: '2026-08-04T10:00:00.000Z' },
+        ],
+        findById: (id: string) => id === 'task-1'
+          ? { id: 'task-1', title: 'Prepare release notes', status: 'running', updatedAt: '2026-08-04T10:00:00.000Z' }
+          : null,
+      }),
+    };
+    const completion = createDefaultCommandCatalog().complete({
+      text: '/task show ',
+      cursor: 11,
+      context: { taskEngine, currentTaskId: null } as unknown as CommandContext,
+    });
+    expect(completion.suggestions[0]).toMatchObject({
+      value: 'task-1',
+      label: 'Prepare release notes · #task-1',
+      description: '[RUNNING] updated 2026-08-04T10:00:00.000Z',
+      replacement: { start: 11, end: 11, text: 'task-1' },
+    });
+  });
+
   it('distinguishes directories, incomplete actions and executable actions', () => {
     const catalog = createCatalog();
     expect(catalog.complete({ text: '/task', cursor: 5, context }).state).toBe('incomplete');
@@ -220,7 +234,6 @@ describe('CommandCatalog', () => {
 /task block
 /task unblock
 /task cancel
-/task complete
 /task subtask-cancel
 /task accept-partial
 /task attach
@@ -232,12 +245,7 @@ describe('CommandCatalog', () => {
 /executor list
 /executor refresh
 /executor show
-/executor register <executorName>
-/executor register wizard
-/executor unregister
 /executor feedback
-/permission approve
-/permission deny
 /memory list
 /memory search
 /memory add
@@ -252,11 +260,9 @@ describe('CommandCatalog', () => {
 /learning candidates
 /learning approve
 /learning reject
-/learning promote
 /learning skill-feedback
 /learning patch candidates
 /learning patch approve
-/learning patch promote
 /learning cards
 /learning skills
 /learning weekly
@@ -270,9 +276,12 @@ describe('CommandCatalog', () => {
     for (const commandPath of actions) expect(help).toContain(commandPath);
     expect(actions).toContain('/task dashboard');
     expect(actions).toContain('/task index search');
-    expect(actions).toContain('/executor register <executorName>');
-    expect(actions).toContain('/executor register wizard');
-    expect(actions).toContain('/learning patch promote');
+    expect(actions).not.toContain('/task complete');
+    expect(actions).not.toContain('/executor register <executorName>');
+    expect(actions).not.toContain('/executor register wizard');
+    expect(actions).not.toContain('/executor unregister');
+    expect(actions).not.toContain('/learning promote');
+    expect(actions).not.toContain('/learning patch promote');
     expect(actions).toContain('/profile user');
     expect(actions).toContain('/config');
     expect(actions).toContain('/help');

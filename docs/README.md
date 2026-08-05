@@ -42,13 +42,16 @@ replacing those semantics.
 
 ## Completed Roadmap
 
+- [AnyFusion Pi Planner and native TUI migration](plans/2026-07-31-pi-planner-tui-migration.md): completed unified interactive/RPC Planner runtime, fixed AnyFusion-managed models, read-only Task dashboard, native command completion, and strict Planner/Kernel/Executor process separation.
 - [Planner、Kernel 与并发调度收敛路线图](plans/2026-07-16-planner-kernel-concurrency-convergence-roadmap.md): completed convergence from capability-aware work graphs and executor scope through the Kernel control plane, resource partitions, single-Task DAG concurrency, Git publication and reliable asynchronous cancellation/recovery.
 - [Phase 6 final reliability closure](archive/plans/2026-07-28-phase-6-single-task-reliability-closure.md): SQLite v27 cancellation/replan facts, durable Task/Subtask cleanup, explicit partial acceptance and the strict completion gate.
 - [Executor error recovery refresh](archive/plans/2026-07-30-executor-error-recovery-refresh.md): completed Kernel v5 / SQLite v28 event-driven `error -> healthy` recovery, same-thread Planner revision, and deferred availability proposal lifecycle.
 
 ## Active Delivery
 
-- [AnyFusion Pi Planner and native TUI migration](plans/2026-07-31-pi-planner-tui-migration.md): implementation in progress. The plan replaces the failed Codex-fork route with a full `AnyFusion-Pi` Planner fork, one unified interactive/RPC Planner runtime, fixed AnyFusion-managed models, a read-only Task dashboard, and strict Planner/Kernel/Executor process separation.
+- [Active permission review](plans/2026-08-04-active-permission-review.md): projects current-session durable permission requests to a transient Pi native Selector while preserving Kernel authorization and non-interactive natural-language resolution.
+- [Command surface and task selection cleanup](plans/2026-08-04-command-surface-and-task-selection-cleanup.md): first-batch removal of non-functional command surfaces, richer Executor/Profile facts, and title-first Task completion in AnyFusion-Pi.
+- [Pi Executor status and result projection fix](plans/2026-08-04-pi-executor-status-and-result-projection.md): adds a native animated Executor status block and passively persists each integrated Subtask publication into the Pi conversation without triggering a Planner turn or moving Kernel/Execution authority.
 
 ## Future Roadmap
 

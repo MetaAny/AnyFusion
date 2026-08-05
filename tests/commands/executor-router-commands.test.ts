@@ -19,7 +19,7 @@ function createContext(db: Database.Database) {
 }
 
 describe('agent class and planner route commands', () => {
-  it('lists, registers, and unregisters executor AgentClasses from the command surface', async () => {
+  it('lists executor AgentClasses from the command surface', async () => {
     const db = createDb();
     const context = createContext(db);
     const catalog = createDefaultCommandCatalog();
@@ -30,59 +30,33 @@ describe('agent class and planner route commands', () => {
     expect(initial.content).toContain('planner');
     expect(initial.content).toContain('WorkUnits:');
 
-    const register = await catalog.execute(
-      '/executor register research-bot --command research-bot --args "run --prompt {prompt}" '
-      + '--check "research-bot --version" --domains research,reporting '
-      + '--capabilities research,report_generation --inputs text,files '
-      + `--outputs markdown,report --risk low --image registry.example/research-bot:1.0.0 --image-id sha256:${'a'.repeat(64)} `
-      + '--permission-profile restricted-custom',
-      context,
-    );
-    expect(register.content).toBe('Registered Executor AgentClass: research-bot');
-
-    const afterRegister = await catalog.execute('/executor list', context);
-    expect(afterRegister.content).toContain('research-bot');
-    expect(afterRegister.content).toContain('capabilities=research,report_generation');
-    expect(afterRegister.content).toContain('runtime=research-bot run --prompt {prompt}');
-
-    const unregister = await catalog.execute('/executor unregister research-bot', context);
-    expect(unregister.content).toBe('Unregistered Executor AgentClass: research-bot');
-
-    const afterUnregister = await catalog.execute('/executor list', context);
-    expect(afterUnregister.content).not.toContain('research-bot');
+    expect(initial.content).toContain('health=unverified');
+    expect(initial.content).toContain('domains:');
+    expect(initial.content).toContain('capabilities:');
+    expect(initial.content).toContain('strengths:');
+    expect(initial.content).toContain('primary use cases:');
+    expect(initial.content).not.toContain('/executor register');
+    expect(initial.content).not.toContain('/executor unregister');
   });
 
-  it('registers AgentClasses without retaining the legacy no-argument feedback command', async () => {
+  it('does not expose the removed registration commands', async () => {
     const db = createDb();
     const context = createContext(db);
     const catalog = createDefaultCommandCatalog();
 
-    await catalog.execute(
-      '/executor register legal-contract --domains legal,contract '
-      + `--capabilities contract_review,risk_matrix --risk high --image registry.example/legal-contract:1.0.0 --image-id sha256:${'b'.repeat(64)} `
-      + '--permission-profile restricted-custom',
-      context,
-    );
-
-    const profiles = await catalog.execute('/executor list', context);
-    expect(profiles.content).toContain('legal-contract');
-    expect(profiles.content).toContain('legal');
-
-    const feedback = await catalog.execute('/executor feedback', context);
-    expect(feedback.content).toContain('taskId');
-    expect(db.prepare('SELECT COUNT(*) AS count FROM executor_route_events').get()).toEqual({ count: 0 });
+    for (const command of ['/executor register wizard', '/executor unregister codex-cli']) {
+      expect((await catalog.execute(command, context)).content).toContain('未知命令');
+    }
   });
 
-  it('rejects register, update, and unregister operations for canonical names', async () => {
+  it('rejects removed register and unregister operations for canonical names', async () => {
     const db = createDb();
     const context = createContext(db);
     const catalog = createDefaultCommandCatalog();
 
     expect((await catalog.execute('/executor register codex-cli --command custom', context)).content)
-      .toBe('Cannot register or update canonical Executor AgentClass: codex-cli');
-    expect((await catalog.execute('/executor register pi-agent --command custom', context)).content)
-      .toBe('Cannot register or update canonical Executor AgentClass: pi-agent');
+      .toContain('未知命令');
     expect((await catalog.execute('/executor unregister codex-cli', context)).content)
-      .toBe('Cannot unregister canonical Executor AgentClass: codex-cli');
+      .toContain('未知命令');
   });
 });

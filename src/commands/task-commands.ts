@@ -402,7 +402,7 @@ export async function completeTask(args: ResolvedCommandArgs, context: CommandCo
 
   return {
     type: 'text',
-    content: `任务 #${taskId} 不能手工绕过完成门；完整结果会在运行残留清零后自动完成，部分结果请使用 /task ${taskId} accept-partial`,
+    content: `任务 #${taskId} 不能手工绕过完成门；完整结果会在运行残留清零后自动完成，部分结果请使用 /task accept-partial ${taskId}`,
   };
 }
 
@@ -414,7 +414,7 @@ export async function cancelSubtasks(args: ResolvedCommandArgs, context: Command
 
   const subtaskIds = stringListArg(args, 'subtaskIds');
   if (subtaskIds.length === 0) {
-    return { type: 'text', content: `用法: /task ${taskId} subtask cancel <subtaskId...>` };
+    return { type: 'text', content: `用法: /task subtask-cancel ${taskId} <subtaskId...>` };
   }
 
   try {

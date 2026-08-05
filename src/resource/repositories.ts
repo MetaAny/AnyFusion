@@ -105,6 +105,7 @@ export interface PermissionRepositoryPort {
   findRequest(requestId: string): PermissionRequestRecord | null;
   findPendingForTask(taskId: string): PermissionRequestRecord | null;
   findOldestPending(): PermissionRequestRecord | null;
+  listEscalated(): PermissionRequestRecord[];
   countDistinctForAttempt(attemptId: string): number;
   listGrants(attemptId: string): CapabilityGrant[];
   listDeniedFingerprints(attemptId: string): string[];

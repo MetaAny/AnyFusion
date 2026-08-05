@@ -39,7 +39,11 @@ import { SqlitePermissionRepository } from '../storage/permission-repo.js';
 import { SqliteAttemptSandboxRepository } from '../storage/attempt-sandbox-repo.js';
 import { SqliteWorkspaceRepository } from '../storage/workspace-repo.js';
 import { resolveMetaclawDir } from '../utils/paths.js';
-import { PermissionWorkflowService } from '../execution/permission-workflow-service.js';
+import {
+  isPermissionRequestActive,
+  permissionRequestExpiresAt,
+  PermissionWorkflowService,
+} from '../execution/permission-workflow-service.js';
 import { RegisteredCapabilityResourceResolver } from '../execution/capability-resource-resolver.js';
 import { buildPermissionRules } from '../resource/index.js';
 import { AttemptSandboxReconciler } from '../execution/attempt-sandbox-reconciler.js';
@@ -187,6 +191,49 @@ export interface PlannerTuiSnapshot {
   executorStatuses: KernelExecutorStatusProjection[];
 }
 
+/** A durable, presentation-only result projected from an integrated workspace publication. */
+export interface PlannerTuiExecutorResult {
+  schemaVersion: 1;
+  publicationId: string;
+  taskId: string;
+  taskTitle: string;
+  subtaskId: string;
+  subtaskTitle: string;
+  attemptId: string;
+  executorName: string;
+  report: string;
+  artifacts: string[];
+  warnings: string[];
+  integrationCommit: string | null;
+  completedAt: string;
+  reportTruncated: boolean;
+}
+
+export interface PlannerTuiPermissionRequest {
+  schemaVersion: 1;
+  permissionRequestId: string;
+  taskId: string;
+  taskTitle: string;
+  generationId: string;
+  subtaskId: string;
+  subtaskTitle: string;
+  attemptId: string;
+  executorName: string;
+  permissionProfileId: string;
+  capability: string;
+  resource: string;
+  operation: string;
+  reason: string;
+  suggestedScope: 'once' | 'attempt';
+  escalationReason: string;
+  createdAt: string;
+  expiresAt: string;
+}
+
+export type PlannerTuiPermissionResolutionResult =
+  | { status: 'resolved' | 'replayed'; resolution: 'approve' | 'deny'; message: string }
+  | { status: 'conflict'; resolution: null; message: string };
+
 export interface PlannerTuiCommandSubmissionResult {
   exitRequested: boolean;
   output: string[];
@@ -270,6 +317,7 @@ export class MetaclawSession {
   private readonly kernelExecutorStatusRepo: KernelExecutorStatusRepo;
   private readonly executorRecoveryRefreshService: ExecutorRecoveryRefreshService;
   private readonly plannerProposalRepo: PlannerProposalRepo;
+  private readonly publicationRepo: WorkspacePublicationRepo;
   private unregisterPlannerHost: (() => void) | null = null;
 
   constructor(private deps: MetaclawSessionDeps) {
@@ -373,7 +421,7 @@ export class MetaclawSession {
         : process.cwd());
     const resourceLeaseService = new ResourceLeaseService(new SqliteResourceLeaseRepository(deps.db));
     const dispatchItemRepo = new KernelDispatchItemRepo(deps.db);
-    const publicationRepo = new WorkspacePublicationRepo(deps.db);
+    this.publicationRepo = new WorkspacePublicationRepo(deps.db);
     const generationReplanRepo = new GenerationReplanRequestRepo(deps.db);
     const cancellationCoordinator = new TaskCancellationCoordinator({
       db: deps.db,
@@ -382,7 +430,7 @@ export class MetaclawSession {
       taskEventRepo: this.taskEventRepo,
       workGraphRevisionRepo: this.workGraphRevisionRepo,
       dispatchItemRepo,
-      publicationRepo,
+      publicationRepo: this.publicationRepo,
       generationReplanRepo,
       resourceLeaseService,
       workUnitClaimService: this.workUnitClaimService,
@@ -438,7 +486,7 @@ export class MetaclawSession {
         dispatchItemRepo,
         taskRuntimeService: this.taskRuntimeService,
       }),
-      publicationRepo,
+      publicationRepo: this.publicationRepo,
       generationReplanRepo,
       cancellationCoordinator,
       executionProgressService: this.executionProgressService,
@@ -590,6 +638,106 @@ export class MetaclawSession {
     };
   }
 
+  getPlannerTuiExecutorResults(): PlannerTuiExecutorResult[] {
+    const taskIds = [...new Set(
+      this.kernelDecisionRepo.listBySession(this.deps.sessionId)
+        .map(decision => decision.taskId)
+        .filter((taskId): taskId is string => Boolean(taskId)),
+    )];
+    return this.publicationRepo.listIntegratedByTaskIds(taskIds).map(publication => {
+      const task = this.taskRuntimeService.findTask(publication.taskId);
+      const subtask = this.subtaskRepo.findById(publication.subtaskId);
+      return {
+        schemaVersion: 1,
+        publicationId: publication.id,
+        taskId: publication.taskId,
+        taskTitle: task?.title ?? publication.taskId,
+        subtaskId: publication.subtaskId,
+        subtaskTitle: subtask?.title ?? publication.subtaskId,
+        attemptId: publication.sourceAttemptId,
+        executorName: publication.agentClassName,
+        report: publication.originalCompletion.body,
+        artifacts: [...publication.originalCompletion.artifacts],
+        warnings: [...publication.originalCompletion.warnings],
+        integrationCommit: publication.integrationCommit,
+        completedAt: publication.updatedAt,
+        reportTruncated: false,
+      };
+    });
+  }
+
+  getPlannerTuiPermissionRequests(): PlannerTuiPermissionRequest[] {
+    const now = new Date().toISOString();
+    const decisions = this.kernelDecisionRepo.listBySession(this.deps.sessionId);
+    const appliedEscalations = new Map(decisions
+      .filter(record => record.action === 'escalate_capability'
+        && this.kernelWorkflowRepo.isDecisionApplied(record.id))
+      .map(record => [record.correlationId, record]));
+    return this.permissionRepository.listEscalated()
+      .filter(record => appliedEscalations.has(record.request.id))
+      .filter(record => !this.kernelDecisionRepo.listByCorrelation(record.request.id)
+        .some(decision => decision.event.type === 'permission_resolution_received'
+          && this.kernelWorkflowRepo.isDecisionApplied(decision.id)))
+      .filter(record => isPermissionRequestActive(record.createdAt, now))
+      .map(record => {
+        const escalation = appliedEscalations.get(record.request.id)!;
+        return {
+          schemaVersion: 1,
+          permissionRequestId: record.request.id,
+          taskId: record.request.taskId,
+          taskTitle: this.taskRuntimeService.findTask(record.request.taskId)?.title ?? record.request.taskId,
+          generationId: record.request.generationId,
+          subtaskId: record.request.subtaskId,
+          subtaskTitle: this.subtaskRepo.findById(record.request.subtaskId)?.title ?? record.request.subtaskId,
+          attemptId: record.request.attemptId,
+          executorName: record.request.agentClassName,
+          permissionProfileId: record.request.permissionProfileId,
+          capability: record.request.capability,
+          resource: record.request.resource,
+          operation: record.request.operation,
+          reason: record.request.reason,
+          suggestedScope: record.request.suggestedScope,
+          escalationReason: escalation.reason,
+          createdAt: record.createdAt,
+          expiresAt: permissionRequestExpiresAt(record.createdAt)!,
+        };
+      });
+  }
+
+  async resolvePlannerTuiPermission(
+    permissionRequestId: string,
+    resolution: 'approve' | 'deny',
+  ): Promise<PlannerTuiPermissionResolutionResult> {
+    await this.initialization;
+    const decisions = this.kernelDecisionRepo.listByCorrelation(permissionRequestId);
+    const escalation = decisions.find(record => record.sessionId === this.deps.sessionId
+      && record.action === 'escalate_capability'
+      && this.kernelWorkflowRepo.isDecisionApplied(record.id));
+    if (!escalation) {
+      return { status: 'conflict', resolution: null, message: 'Permission request does not belong to this session.' };
+    }
+    const appliedResolution = decisions.find(record => record.event.type === 'permission_resolution_received'
+      && this.kernelWorkflowRepo.isDecisionApplied(record.id));
+    if (appliedResolution?.event.type === 'permission_resolution_received') {
+      if (appliedResolution.sessionId === this.deps.sessionId
+        && appliedResolution.event.resolution === resolution
+        && appliedResolution.event.source === 'button') {
+        return { status: 'replayed', resolution, message: 'Permission resolution was already recorded.' };
+      }
+      return { status: 'conflict', resolution: null, message: 'Permission request was already resolved.' };
+    }
+    const record = this.permissionRepository.findRequest(permissionRequestId);
+    if (!record || record.status !== 'escalated') {
+      return { status: 'conflict', resolution: null, message: 'Permission request is no longer escalated.' };
+    }
+    if (!isPermissionRequestActive(record.createdAt, new Date().toISOString())) {
+      return { status: 'conflict', resolution: null, message: 'Permission request has expired.' };
+    }
+    await this.resolvePermission({ requestId: permissionRequestId, resolution, source: 'button' });
+    this.notify();
+    return { status: 'resolved', resolution, message: 'Permission resolution recorded.' };
+  }
+
   /**
    * Executes an explicit slash command from the native Planner TUI through the
    * existing Application-Shell command path. The Pi process only transports the
@@ -657,6 +805,21 @@ export class MetaclawSession {
       };
     }
 
+    const normalizedPlan = normalizePlanningAgentPlanInput(submission.plan);
+    if (submission.runtimeMode === 'interactive'
+      && typeof normalizedPlan === 'object' && normalizedPlan !== null
+      && 'action' in normalizedPlan && normalizedPlan.action === 'authorization_resolution') {
+      return {
+        status: 'rejected',
+        turnId: normalizedTurnId,
+        submissionId: submission.submissionId,
+        planId: 'id' in normalizedPlan && typeof normalizedPlan.id === 'string' ? normalizedPlan.id : null,
+        rejectionType: 'validation',
+        issues: ['Interactive permission decisions must use the host permission selector.'],
+        kernel: null,
+      };
+    }
+
     const turn = this.plannerProposalRepo.ensureTurn(normalizedSessionId, normalizedTurnId, normalizedInput);
     if (turn.conflict) {
       return {
@@ -672,7 +835,6 @@ export class MetaclawSession {
       this.appendUserInput(normalizedInput);
     }
 
-    const normalizedPlan = normalizePlanningAgentPlanInput(submission.plan);
     const context = this.buildPlanningContext(normalizedInput);
     const validation = validatePlanningAgentPlan(
       normalizedPlan,
@@ -1603,10 +1765,6 @@ export class MetaclawSession {
       await this.resolveTaskRecovery(result.directive);
     }
 
-    if (result.type === 'directive' && result.directive.kind === 'resolve-permission') {
-      await this.resolvePermission(result.directive);
-    }
-
     return false;
   }
 
@@ -1625,7 +1783,7 @@ export class MetaclawSession {
   private async resolvePermission(input: {
     requestId: string;
     resolution: 'approve' | 'deny';
-    source?: 'command' | 'button' | 'planner';
+    source: 'button' | 'planner';
     plannerPlanId?: string | null;
   }): Promise<void> {
     const record = this.permissionRepository.findRequest(input.requestId);
@@ -1677,7 +1835,7 @@ export class MetaclawSession {
     await workflow.resolve({
       requestId: input.requestId,
       resolution: input.resolution,
-      source: input.source ?? 'command',
+      source: input.source,
       plannerPlanId: input.plannerPlanId ?? null,
     });
   }

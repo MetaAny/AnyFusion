@@ -1,5 +1,6 @@
 import type { CommandCompletion } from '../commands/catalog.js';
 import type { PlannerProposalPurpose, PlannerProposalResult } from '../planning/planner-proposal.js';
+import type { PlannerTuiPermissionResolutionResult } from '../session/metaclaw-session.js';
 
 export const ANYFUSION_PLANNER_HOST_PROTOCOL_VERSION = 2 as const;
 export const ANYFUSION_PLANNER_HOST_MAX_LINE_BYTES = 1_048_576;
@@ -13,6 +14,7 @@ export type PlannerHostRequest =
   | { protocolVersion: 2; type: 'snapshot_subscribe'; requestId: string }
   | { protocolVersion: 2; type: 'command_complete'; requestId: string; text: string; cursor: number }
   | { protocolVersion: 2; type: 'command_submit'; requestId: string; command: string }
+  | { protocolVersion: 2; type: 'permission_resolve'; requestId: string; permissionRequestId: string; resolution: 'approve' | 'deny' }
   | {
       protocolVersion: 2;
       type: 'proposal_submit';
@@ -26,7 +28,7 @@ export type PlannerHostRequest =
     }
   | { protocolVersion: 2; type: 'shutdown'; requestId: string };
 
-export type PlannerHostMessage<TSnapshot = unknown> =
+export type PlannerHostMessage<TSnapshot = unknown, TExecutorResult = unknown, TPermissionRequest = unknown> =
   | {
       protocolVersion: 2;
       type: 'hello';
@@ -36,6 +38,10 @@ export type PlannerHostMessage<TSnapshot = unknown> =
     }
   | { protocolVersion: 2; type: 'pong'; requestId: string }
   | { protocolVersion: 2; type: 'snapshot'; requestId: string | null; snapshot: TSnapshot }
+  | { protocolVersion: 2; type: 'executor_result'; requestId: null; result: TExecutorResult }
+  | { protocolVersion: 2; type: 'permission_request'; requestId: null; permission: TPermissionRequest }
+  | { protocolVersion: 2; type: 'permission_request_closed'; requestId: null; permissionRequestId: string; reason: 'resolved' | 'expired' | 'stale' }
+  | { protocolVersion: 2; type: 'permission_result'; requestId: string; result: PlannerTuiPermissionResolutionResult }
   | { protocolVersion: 2; type: 'subscribed'; requestId: string }
   | { protocolVersion: 2; type: 'command_completion'; requestId: string; completion: CommandCompletion }
   | {
@@ -84,6 +90,11 @@ export function isPlannerHostRequest(value: unknown): value is PlannerHostReques
     const command = (value as { command?: unknown }).command;
     return typeof command === 'string' && /^\/\S/u.test(command.trim());
   }
+  if (candidate.type === 'permission_resolve') {
+    const request = value as { permissionRequestId?: unknown; resolution?: unknown };
+    return typeof request.permissionRequestId === 'string' && request.permissionRequestId.length > 0
+      && (request.resolution === 'approve' || request.resolution === 'deny');
+  }
   if (candidate.type === 'proposal_submit') {
     const request = value as {
       turnId?: unknown; sessionId?: unknown; userInput?: unknown;
@@ -100,6 +111,7 @@ export function isPlannerHostRequest(value: unknown): value is PlannerHostReques
     || candidate.type === 'ping'
     || candidate.type === 'snapshot_get'
     || candidate.type === 'snapshot_subscribe'
+    || candidate.type === 'permission_resolve'
     || candidate.type === 'proposal_submit'
     || candidate.type === 'shutdown';
 }

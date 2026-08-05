@@ -357,17 +357,15 @@ describe('App input availability', () => {
     await flushUpdates();
     expect(app.lastFrame()).toContain('> /executor ');
 
-    await typeText('reg');
-    expect(app.lastFrame()).toContain('register —');
-    expect(app.lastFrame()).not.toContain('/register —');
+    await typeText('sho');
+    expect(app.lastFrame()).toContain('show —');
+    expect(app.lastFrame()).not.toContain('/show —');
 
     await inputCapture.handler?.('', { tab: true });
     await flushUpdates();
-    expect(app.lastFrame()).toContain('> /executor register ');
-    expect(app.lastFrame()).toContain('wizard —');
-    expect(app.lastFrame()).not.toContain('/wizard —');
+    expect(app.lastFrame()).toContain('> /executor show ');
 
-    for (let index = 0; index < '/executor register '.length; index += 1) {
+    for (let index = 0; index < '/executor show '.length; index += 1) {
       await inputCapture.handler?.('', { backspace: true });
       await flushUpdates();
     }

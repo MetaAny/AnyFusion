@@ -69,14 +69,14 @@ describe('canonical task control commands', () => {
     expect(harness.abortTask).not.toHaveBeenCalled();
   });
 
-  it('does not let the manual complete command bypass the completion gate', async () => {
+  it('removes the manual complete command from the command surface', async () => {
     const harness = createHarness();
     const task = createRunningTask(harness.taskEngine, 'complete');
 
     const result = await harness.catalog.execute(`/task complete ${task.id}`, harness.context);
 
     expect(harness.taskRepo.findById(task.id)?.status).toBe('running');
-    expect(result.content).toContain('完成门');
+    expect(result.content).toContain('未知命令');
   });
 
   it('clears matching tasks and aborts only tasks that were running', async () => {
@@ -95,12 +95,12 @@ describe('canonical task control commands', () => {
     expect(harness.abortTask).not.toHaveBeenCalled();
   });
 
-  it('accepts the target-first Subtask cancellation and partial acceptance commands', async () => {
+  it('accepts operation-first Subtask cancellation and partial acceptance commands', async () => {
     const harness = createHarness();
     const task = createRunningTask(harness.taskEngine, 'subtask-control');
 
     await harness.catalog.execute(
-      `/task ${task.id} subtask cancel subtask-a subtask-b`,
+      `/task subtask-cancel ${task.id} subtask-a subtask-b`,
       harness.context,
     );
     expect(harness.cancelSubtasks).toHaveBeenCalledWith(
@@ -114,8 +114,15 @@ describe('canonical task control commands', () => {
       description: 'partial cancellation',
       status: 'waiting',
     });
-    await harness.catalog.execute(`/task ${task.id} accept-partial`, harness.context);
+    await harness.catalog.execute(`/task accept-partial ${task.id}`, harness.context);
     expect(harness.acceptPartialResult).toHaveBeenCalledWith(task.id);
+  });
+
+  it('does not normalize target-first task control syntax', async () => {
+    const harness = createHarness();
+    const task = createRunningTask(harness.taskEngine, 'target-first');
+    const result = await harness.catalog.execute(`/task ${task.id} accept-partial`, harness.context);
+    expect(result.content).toContain('未知命令');
   });
 
 });

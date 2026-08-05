@@ -173,6 +173,13 @@ export class KernelWorkflowRepo implements KernelWorkflowStore {
     complete();
   }
 
+  isDecisionApplied(decisionId: string): boolean {
+    const row = this.db.prepare(`
+      SELECT status FROM kernel_decision_applications WHERE decision_id = ?
+    `).get(decisionId) as { status: KernelApplicationStatus } | undefined;
+    return row?.status === 'applied';
+  }
+
   markApplicationFailed(
     decisionId: string,
     status: Extract<KernelApplicationStatus, 'uncertain' | 'failed'>,
@@ -337,6 +344,7 @@ function parseCurrentEvent(raw: string, storedSchemaVersion?: number): KernelEve
   if (storedSchemaVersion !== undefined && storedSchemaVersion !== 5) {
     throw new Error(`unsupported Kernel event schema version ${storedSchemaVersion}`);
   }
+
   return parseCurrentKernelValue<KernelEvent>(raw, 'event');
 }
 

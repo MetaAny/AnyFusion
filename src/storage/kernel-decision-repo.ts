@@ -58,6 +58,12 @@ export class KernelDecisionRepo {
     `).all(sessionId) as KernelDecisionRow[]).map(rowToRecord);
   }
 
+  listByCorrelation(correlationId: string): KernelDecisionLedgerRecord[] {
+    return (this.db.prepare(`
+      SELECT * FROM kernel_decisions WHERE correlation_id = ? ORDER BY created_at ASC, id ASC
+    `).all(correlationId) as KernelDecisionRow[]).map(rowToRecord);
+  }
+
   listByTask(taskId: string): KernelDecisionLedgerRecord[] {
     return (this.db.prepare(`
       SELECT * FROM kernel_decisions WHERE task_id = ? ORDER BY created_at ASC, id ASC

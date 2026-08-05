@@ -55,6 +55,9 @@ export type CompletionEnvelopeV3 = z.infer<typeof CompletionEnvelopeSchema>;
 export type CompletedEnvelopeV3 = z.infer<typeof CompletedEnvelopeSchema>;
 export type CompletionHandoffV3 = CompletedEnvelopeV3['handoffs'][number];
 type CompletionReport = z.infer<typeof CompletionReportSchema>;
+type CompletedReport = z.infer<typeof CompletedReportSchema>;
+type FailedReport = z.infer<typeof FailedReportSchema>;
+type FailedEnvelopeV3 = z.infer<typeof FailedEnvelopeSchema>;
 
 export type CompletionContractErrorCode =
   | 'completion_acceptance_mismatch'
@@ -150,6 +153,9 @@ export function validateCompletionProtocol(input: {
   if (envelope.subtaskId !== input.subtask.id) {
     violations.push(contractViolation('completion_subtask_mismatch', 'subtaskId', `expected ${input.subtask.id}, received ${envelope.subtaskId}`));
   }
+  if (envelope.status !== 'completed') {
+    return { ok: true, body, envelope, normalizedArtifacts, warnings: [] };
+  }
   validateAcceptance(input.subtask, envelope, violations);
   validateHandoffs(input.outgoingHandoffs, envelope, violations);
   validateBudgets(envelope, violations, input.incomingUsageByTarget);
@@ -200,6 +206,18 @@ function parseCompletion(rawResponse: string): ParsedCompletionReportResult {
   return { ok: true, body, report: report.data };
 }
 
+function materializeCompletionEnvelope(
+  report: CompletedReport,
+  subtask: Subtask,
+  outgoingHandoffs: OutgoingHandoffContract[],
+  artifacts: string[],
+): CompletedEnvelopeV3;
+function materializeCompletionEnvelope(
+  report: FailedReport,
+  subtask: Subtask,
+  outgoingHandoffs: OutgoingHandoffContract[],
+  artifacts: string[],
+): FailedEnvelopeV3;
 function materializeCompletionEnvelope(
   report: CompletionReport,
   subtask: Subtask,

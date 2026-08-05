@@ -124,3 +124,36 @@ Codex Stop hook, model text output schema, JSON extraction/trailer repair,
 fixed validation repair count, outer repair prompt/loop, generic read-only shell,
 catalog environment injection, and unused `get_session_interaction` exposure are
 not compatibility paths.
+
+## Amendment: passive integrated Executor result context (2026-08-04)
+
+AnyFusion Planner Host Protocol v2 may advertise the backward-compatible
+`executor_result` capability without changing the snapshot schema. MetaClaw uses
+the current session's Kernel decision ledger to identify associated Tasks and
+projects only their successfully integrated publications. Each schema-v1 result
+contains publication, Task, Subtask, attempt and Executor identity; the original
+Executor report; the complete artifact path list; warnings; integration commit;
+and completion time. The bridge may truncate only the report body to keep one
+JSONL frame within 1 MiB. It replays unseen publications in stable completion
+order and deduplicates them per socket; this is a read-only Application-Shell
+projection, not a publication or execution authority.
+
+The Pi interactive surface persists one visible `anyfusion-executor-result`
+custom message per publication with `triggerTurn: false`. Messages received while
+the Agent is streaming or compacting wait until the session is idle, and
+publication IDs already present in the Pi branch are not written again. These
+messages are read-only facts in subsequent Planner context, but arrival is not a
+semantic turn: it must not trigger, steer, continue, or elicit a Planner response
+or proposal. The Planner may cite them only when the current user explicitly asks
+about a result, output, artifact, or status. This exception does not grant Pi any
+Task, storage, Kernel, scheduler, Execution, Executor, or Git mutation authority.
+
+## Amendment: interactive permission review is not Planner semantics (2026-08-04)
+
+The local interactive Pi surface does not expose `/permission` and must reject
+Planner-authored `authorization_resolution` before proposal-turn persistence.
+Host Protocol v2 may project an exact current-session escalated request into a
+transient native Selector. Arrival, dismissal, closure, and resolution are not
+conversation messages or semantic turns and never enter the Pi branch or LLM
+context. RPC, Feishu, and Session Planner surfaces retain exact natural-language
+authorization under the existing request-ID and Task validation contract.

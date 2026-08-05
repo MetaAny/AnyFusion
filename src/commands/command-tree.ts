@@ -16,7 +16,6 @@ import {
   cancelSubtasks,
   cancelTask,
   clearTasks,
-  completeTask,
   listTasks,
   pauseTask,
   rebuildTaskIndex,
@@ -38,9 +37,6 @@ import {
 import {
   listExecutors,
   refreshExecutors,
-  registerExecutor,
-  startExecutorRegisterWizard,
-  unregisterExecutor,
 } from './executor-commands.js';
 import {
   approveLearningCandidate,
@@ -51,7 +47,6 @@ import {
   listPatchCandidates,
   listSkillEffects,
   listTaskMemoryCards,
-  promoteLearningCandidate,
   rejectLearningCandidate,
   showLearningSummary,
 } from './learning-commands.js';
@@ -103,8 +98,8 @@ function taskReference(
         });
       return tasks.map(task => ({
         value: task.id,
-        label: `#${task.id} ${task.title}`,
-        description: `[${task.status.toUpperCase()}] ${task.title}`,
+        label: `${task.title} · #${task.id}`,
+        description: `[${task.status.toUpperCase()}] updated ${task.updatedAt}`,
       }));
     },
     validate: (value, context) => {
@@ -215,12 +210,11 @@ function taskNodes(): CommandNode[] {
     operation('block', '阻塞任务', ['running'], blockTask, [rest('reason', '阻塞原因')]),
     operation('unblock', '解除阻塞任务', ['blocked'], unblockTask, [variadic('resources', '新增资源', true)]),
     operation('cancel', '取消任务', ['created', 'ready', 'running', 'parked', 'blocked'], cancelTask),
-    operation('complete', '完成任务', ['running'], completeTask),
     action({
       name: 'subtask-cancel',
       summary: '原子取消 Subtask 及其传递下游',
       effect: '提交 Kernel durable event；独立 sibling 继续运行。',
-      usage: '/task <taskId> subtask cancel <subtaskId...>',
+      usage: '/task subtask-cancel <taskId> <subtaskId...>',
       arguments: [
         taskReference('所属任务', ['running', 'blocked']),
         variadic('subtaskIds', '要取消的 Subtask ID'),
@@ -231,7 +225,7 @@ function taskNodes(): CommandNode[] {
       name: 'accept-partial',
       summary: '显式接受部分取消后的剩余成果',
       effect: '仅在所有节点 done/cancelled 且运行残留清零时完成 Task。',
-      usage: '/task <taskId> accept-partial',
+      usage: '/task accept-partial <taskId>',
       arguments: [taskReference('要接受部分结果的任务', ['blocked'])],
       run: acceptPartialResult,
     }),
@@ -296,25 +290,6 @@ function executorNodes(): CommandNode[] {
     id: item.name, label: item.name, description: `${item.kind} · ${item.domains.join(',') || 'no domains'}`,
   }));
   const executorRef = (optional = false) => dynamicReference('executorName', 'Executor', executorValues, optional);
-  const registerOptions = [
-    option('--image', 'Executor image reference', text('image', 'Docker image reference')),
-    option('--image-id', 'Immutable image ID', text('imageId', 'sha256 image ID')),
-    option('--permission-profile', 'Permission profile', enumArg('permissionProfile', 'Permission profile', ['workspace-engineering', 'public-web-research', 'restricted-custom'])),
-    option('--command', '运行命令', text('command', '运行命令')),
-    option('--args', '运行参数模板', text('args', '运行参数模板')),
-    option('--check', '可用性检查命令', text('check', '检查命令')),
-    option('--project-url', '项目地址', text('projectUrl', '项目地址')),
-    ...['domains', 'capabilities', 'inputs', 'outputs', 'strengths', 'weaknesses', 'primary-use-cases', 'avoid-use-cases']
-      .map(name => option(`--${name}` as `--${string}`, `${name} 逗号分隔列表`, text(name, `${name} 列表`))),
-    option('--risk', '风险等级', enumArg('risk', '风险等级', ['low', 'medium', 'high'])),
-  ];
-  const registerAction = action({
-    name: '<executorName>', summary: '注册或更新 Executor', effect: '持久化 AgentClass 路由画像与运行绑定。',
-    usage: '/executor register <executorName> [options]',
-    arguments: [text('executorName', 'Executor 名称')], options: registerOptions,
-    run: registerExecutor,
-  });
-
   return [
     action({ name: 'list', summary: '列出 Executor', effect: '读取 AgentClass 与 WorkUnit 注册信息。', usage: '/executor list', run: listExecutors }),
     action({
@@ -333,12 +308,6 @@ function executorNodes(): CommandNode[] {
         content: context.readServices.executorDetails(stringArg(args, 'executorName')),
       }),
     }),
-    {
-      kind: 'group', name: 'register', summary: '注册 Executor', fallbackAction: registerAction, children: [
-        action({ name: 'wizard', summary: '启动注册向导', effect: '启动交互式 Executor 注册向导。', usage: '/executor register wizard', run: startExecutorRegisterWizard }),
-      ],
-    },
-    action({ name: 'unregister', summary: '反注册 Executor', effect: '删除未被 WorkUnit 使用的 AgentClass。', usage: '/executor unregister <executorName>', arguments: [executorRef()], run: unregisterExecutor }),
     action({
       name: 'feedback', summary: '查看任务的 Executor 路由反馈', effect: '按任务展示 Planner 提议、Kernel 决策、WorkUnit 过程和 Executor 结果。',
       usage: '/executor feedback <taskId>', arguments: [taskReference('要查看反馈的任务')],
@@ -388,13 +357,11 @@ function learningNodes(): CommandNode[] {
     simple('candidates', '列出学习候选', listLearningCandidates),
     candidateAction('approve', 'note'),
     candidateAction('reject', 'reason'),
-    action({ name: 'promote', summary: '推广学习候选', effect: '通过治理门禁后沉淀记忆卡或下发 Skill。', usage: '/learning promote <candidateId>', arguments: [candidateRef()], run: promoteLearningCandidate }),
     simple('skill-feedback', '生成 Skill 运行反馈候选', generateSkillFeedback),
     {
       kind: 'group', name: 'patch', summary: 'Skill Patch 治理', children: [
         action({ name: 'candidates', summary: '列出 Patch 候选', effect: '列出待审核 Skill Patch 候选。', usage: '/learning patch candidates', run: listPatchCandidates }),
         action({ name: 'approve', summary: '批准 Patch 候选', effect: '批准指定 Skill Patch 候选。', usage: '/learning patch approve <candidateId> [note...]', arguments: [candidateRef(), rest('note', '备注', true)], run: approvePatchCandidate }),
-        action({ name: 'promote', summary: '推广 Patch 候选', effect: '复用学习候选推广流程下发 Patch。', usage: '/learning patch promote <candidateId>', arguments: [candidateRef()], run: promoteLearningCandidate }),
       ],
     },
     simple('cards', '查看任务记忆卡', listTaskMemoryCards),
@@ -404,48 +371,19 @@ function learningNodes(): CommandNode[] {
   ];
 }
 
-function permissionNodes(): CommandNode[] {
-  const requestReference = dynamicReference(
-    'requestId',
-    'Pending permission request',
-    context => (context.db.prepare(`
-      SELECT id, capability, operation, reason FROM permission_requests
-      WHERE status IN ('pending', 'escalated') ORDER BY created_at, id
-    `).all() as Array<{ id: string; capability: string; operation: string; reason: string }>).map(row => ({
-      id: row.id,
-      label: row.id,
-      description: `${row.capability}/${row.operation}: ${row.reason}`,
-    })),
-  );
-  const resolvePermission = (resolution: 'approve' | 'deny') => action({
-    name: resolution,
-    summary: resolution === 'approve' ? 'Approve exact permission request' : 'Deny exact permission request',
-    effect: 'Submit permission_resolution_received; this does not write a grant directly.',
-    usage: `/permission ${resolution} <requestId>`,
-    arguments: [requestReference],
-    run: async args => ({
-      type: 'directive',
-      content: `Permission ${resolution} submitted for ${stringArg(args, 'requestId')}.`,
-      directive: { kind: 'resolve-permission', requestId: stringArg(args, 'requestId'), resolution },
-    }),
-  });
-  return [resolvePermission('approve'), resolvePermission('deny')];
-}
-
 function profileNodes(): CommandNode[] {
   const executorValues = (context: CommandContext) => new AgentClassRepo(context.db).findAll().map(item => ({ id: item.name, label: item.name, description: item.domains.join(',') || item.kind }));
   return [
     action({ name: 'user', summary: '查看用户画像', effect: '汇总长期记忆和自动化事件。', usage: '/profile user', run: showUserProfile }),
     action({ name: 'project', summary: '查看项目画像', effect: '按项目主题汇总项目记忆。', usage: '/profile project <name>', arguments: [text('name', '项目名称')], run: showProjectProfile }),
-    action({ name: 'executor', summary: '查看 Executor 画像', effect: '汇总 Executor 的 Skill 使用效果。', usage: '/profile executor [<executorName>]', arguments: [dynamicReference('executorName', 'Executor', executorValues, true)], run: showExecutorProfile }),
+    action({ name: 'executor', summary: '查看 Executor 画像', effect: '展示 AgentClass 静态画像与 Skill 使用效果。', usage: '/profile executor <executorName>', arguments: [dynamicReference('executorName', 'Executor', executorValues)], run: showExecutorProfile }),
   ];
 }
 
 export function createDefaultCommandCatalog(): CommandCatalog {
   return new CommandCatalog([
-    { kind: 'group', name: 'permission', summary: 'Runtime permission decisions', category: 'common', children: permissionNodes() },
     { kind: 'group', name: 'task', summary: '任务查看与控制', category: 'common', children: taskNodes() },
-    { kind: 'group', name: 'executor', summary: 'Executor 注册、查看与反馈', category: 'common', children: executorNodes() },
+    { kind: 'group', name: 'executor', summary: 'Executor 查看与反馈', category: 'common', children: executorNodes() },
     { kind: 'group', name: 'memory', summary: '记忆与审查策略', category: 'common', children: memoryNodes() },
     { kind: 'group', name: 'profile', summary: '用户、项目和 Executor 画像', category: 'advanced', children: profileNodes() },
     { kind: 'group', name: 'learning', summary: '学习候选与 Skill 治理', category: 'advanced', children: learningNodes() },

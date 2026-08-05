@@ -1,6 +1,7 @@
 import type { AgentClass, AgentClassRiskLevel } from '../core/types.js';
 import { PERMISSION_PROFILE_IDS, type PermissionProfileId } from '../resource/index.js';
 import { AgentClassRepo } from '../storage/agent-class-repo.js';
+import { KernelExecutorStatusRepo } from '../storage/kernel-executor-status-repo.js';
 import { WorkUnitRepo } from '../storage/work-unit-repo.js';
 import { isBuiltinExecutorName } from '../executor/builtin-executor-catalog.js';
 import {
@@ -66,14 +67,15 @@ function buildAgentClassFromOptions(
   };
 }
 
-function formatAgentClass(agentClass: AgentClass): string {
-  const intents = Object.entries(agentClass.intentAffinity ?? {})
-    .map(([intent, score]) => `${intent}:${score}`)
-    .join(',');
-  const runtime = agentClass.runtimeCommand
-    ? `runtime=${agentClass.runtimeCommand} ${(agentClass.runtimeArgs ?? []).join(' ')}`.trim()
-    : 'runtime=-';
-  return `  ${agentClass.name} kind=${agentClass.kind} domains=${agentClass.domains.join(',') || '-'} capabilities=${agentClass.capabilities.join(',') || '-'} intents=${intents || '-'} risk=${agentClass.riskLevel} ${runtime}`;
+function formatAgentClass(agentClass: AgentClass, health: string): string {
+  const list = (values: string[]) => values.join(', ') || '-';
+  return [
+    `  ${agentClass.name} kind=${agentClass.kind} health=${health}`,
+    `    domains: ${list(agentClass.domains)}`,
+    `    capabilities: ${list(agentClass.capabilities)}`,
+    `    strengths: ${list(agentClass.strengths)}`,
+    `    primary use cases: ${list(agentClass.primaryUseCases)}`,
+  ].join('\n');
 }
 
 export async function listExecutors(
@@ -85,17 +87,14 @@ export async function listExecutors(
     return { type: 'text', content: 'No AgentClass records are registered.' };
   }
   const workUnits = new WorkUnitRepo(context.db).findAll();
+  const statuses = new KernelExecutorStatusRepo(context.db);
   return {
     type: 'text',
     content: [
       'Registered AgentClasses:',
-      ...agentClasses.map(formatAgentClass),
+      ...agentClasses.map(agentClass => formatAgentClass(agentClass, statuses.findByAgentClassName(agentClass.name)?.classHealth ?? 'unverified')),
       '',
       `WorkUnits: ${workUnits.map(unit => `${unit.id}:${unit.agentClassName}:${unit.state}`).join(', ') || '-'}`,
-      '',
-      'Commands: /executor register wizard',
-      'Commands: /executor register <name> --command <cmd> --args "exec --prompt {prompt}" --check "<cmd> --version" [--domains a,b] [--capabilities a,b]',
-      'Commands: /executor unregister <name>',
     ].join('\n'),
   };
 }

@@ -226,6 +226,35 @@ describe('natural-language planning/kernel path', () => {
     expect(harness.kernelDecisionRepo.listBySession('sess_native_tui_invalid')).toHaveLength(0);
   });
 
+  it('rejects interactive authorization proposals before persisting a proposal turn', async () => {
+    const harness = createSession('sess_native_permission_rejected', plan());
+    const authorizationPlan = plan({
+      id: 'plan_native_permission',
+      action: 'authorization_resolution',
+      authorizationResolution: { requestId: 'permission-request-1', resolution: 'approve' },
+      workGraph: null,
+      task: {
+        ...plan().task,
+        binding: 'none', taskId: null, title: null, goal: null, priority: null,
+      },
+    });
+    const turnId = 'turn_native_permission';
+
+    const result = await harness.session.submitPlannerProposal({
+      sessionId: harness.sessionId,
+      turnId,
+      userInput: 'approve it',
+      submissionId: createPlannerProposalSubmissionId(harness.sessionId, turnId, authorizationPlan),
+      plan: authorizationPlan,
+      runtimeMode: 'interactive',
+    });
+
+    expect(result).toMatchObject({ status: 'rejected', rejectionType: 'validation' });
+    expect(result.status === 'rejected' ? result.issues.join('\n') : '').toContain('host permission selector');
+    expect(new PlannerProposalRepo(harness.db).findTurn(harness.sessionId, turnId)).toBeNull();
+    expect(harness.kernelDecisionRepo.listBySession(harness.sessionId)).toHaveLength(0);
+  });
+
   it('normalizes a whitespace taskId before validation and creates one canonical Task identity', async () => {
     const harness = createSession('sess_native_blank_task_id', plan());
     const rawPlan = plan({

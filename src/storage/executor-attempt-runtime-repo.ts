@@ -75,7 +75,7 @@ export class ExecutorAttemptRuntimeRepo {
     `).run(JSON.stringify(progress), now, attemptId);
   }
 
-  recordWorkspaceDelta(attemptId: string, delta: Record<string, unknown>, now: string): void {
+  recordWorkspaceDelta(attemptId: string, delta: object, now: string): void {
     this.db.prepare(`
       UPDATE executor_attempt_runtime SET workspace_delta_json = ?, updated_at = ? WHERE attempt_id = ?
     `).run(JSON.stringify(delta), now, attemptId);

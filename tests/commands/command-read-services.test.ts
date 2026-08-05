@@ -115,6 +115,29 @@ describe('command fact queries', () => {
     expect(runtimeInspector.inspectExecutorRegistration).toHaveBeenCalledWith('codex-cli');
   });
 
+  it('shows AgentClass facts and skill usage in the executor profile', async () => {
+    const { db, context } = createHarness();
+    db.prepare(`
+      INSERT INTO skill_effect_summaries (
+        id, executor_name, skill_name, skill_version, used_count, success_count, failure_count,
+        patch_candidate_count, last_used_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run('summary-1', 'codex-cli', 'review', '1.0.0', 4, 3, 1, 0,
+      '2026-08-04T10:00:00.000Z', '2026-08-04T10:00:00.000Z', '2026-08-04T10:00:00.000Z');
+
+    const result = await createDefaultCommandCatalog().execute('/profile executor codex-cli', context);
+    expect(result.content).toContain('domains:');
+    expect(result.content).toContain('capabilities:');
+    expect(result.content).toContain('strengths:');
+    expect(result.content).toContain('primary use cases:');
+    expect(result.content).toContain('execution image:');
+    expect(result.content).toContain('permission profile:');
+    expect(result.content).toContain('review@1.0.0 used=4 success=3 failure=1 patch=0');
+
+    const missing = await createDefaultCommandCatalog().execute('/profile executor missing', context);
+    expect(missing.content).toContain('Executor不存在: missing');
+  });
+
   it('groups persisted planner, kernel, WorkUnit, and executor facts by task', async () => {
     const { db, taskEngine, context } = createHarness();
     const task = taskEngine.create({ title: '反馈测试', goal: '验证路由反馈' });

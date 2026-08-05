@@ -145,6 +145,13 @@ export class SqlitePermissionRepository implements PermissionRepositoryPort {
     return row ? requestFromRow(row) : null;
   }
 
+  listEscalated(): PermissionRequestRecord[] {
+    return (this.db.prepare(`
+      SELECT * FROM permission_requests WHERE status = 'escalated'
+      ORDER BY created_at ASC, id ASC
+    `).all() as PermissionRequestRow[]).map(requestFromRow);
+  }
+
   countDistinctForAttempt(attemptId: string): number {
     return (this.db.prepare('SELECT COUNT(*) AS count FROM permission_requests WHERE attempt_id = ?')
       .get(attemptId) as { count: number }).count;

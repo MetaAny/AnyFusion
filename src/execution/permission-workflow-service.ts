@@ -38,6 +38,22 @@ export interface PermissionWorkflowHooks {
   onRecoveryAuthorized(input: { request: NormalizedCapabilityRequest | null; workspaceId: string; checkpointId: string | null }): Promise<void>;
 }
 
+export const PERMISSION_REQUEST_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+export function permissionRequestExpiresAt(createdAt: string): string | null {
+  const createdAtMs = Date.parse(createdAt);
+  if (!Number.isFinite(createdAtMs)) return null;
+  return new Date(createdAtMs + PERMISSION_REQUEST_MAX_AGE_MS).toISOString();
+}
+
+export function isPermissionRequestActive(createdAt: string, now: string): boolean {
+  const createdAtMs = Date.parse(createdAt);
+  const nowMs = Date.parse(now);
+  if (!Number.isFinite(createdAtMs) || !Number.isFinite(nowMs)) return false;
+  const ageMs = nowMs - createdAtMs;
+  return ageMs >= 0 && ageMs <= PERMISSION_REQUEST_MAX_AGE_MS;
+}
+
 export class PermissionWorkflowService {
   constructor(private readonly deps: {
     context: PermissionAttemptContext;
@@ -143,8 +159,7 @@ export class PermissionWorkflowService {
     if (!record || record.request.taskId !== this.deps.context.taskId || !['pending', 'escalated'].includes(record.status)) {
       throw new Error('permission request is missing, stale, or belongs to another Task');
     }
-    const ageMs = Date.parse(this.now()) - Date.parse(record.createdAt);
-    if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs > 24 * 60 * 60 * 1000) {
+    if (!isPermissionRequestActive(record.createdAt, this.now())) {
       throw new Error('permission request has expired and must be reissued precisely');
     }
     await this.workflow().submit({

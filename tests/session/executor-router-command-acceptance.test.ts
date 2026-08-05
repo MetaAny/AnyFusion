@@ -50,7 +50,7 @@ function createSession(input: {
 }
 
 describe('planner-first executor command acceptance', () => {
-  it('guides users through executor AgentClass registration and persists runtime binding', async () => {
+  it('does not expose the executor registration wizard in the conversation command surface', async () => {
     const db = createDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-executor-wizard');
@@ -60,49 +60,12 @@ describe('planner-first executor command acceptance', () => {
 
     session.initialize();
     await session.submit('/executor register wizard');
-    await session.submit('research-bot');
-    await session.submit('registry.example/research-bot:1.0.0');
-    await session.submit(`sha256:${'a'.repeat(64)}`);
-    await session.submit('restricted-custom');
-    await session.submit('manual');
-    await session.submit('research-bot');
-    await session.submit('run --prompt {prompt}');
-    await session.submit('research-bot --version');
-    await session.submit('research,reporting');
-    await session.submit('research,report_generation');
-    await session.submit('y');
-
-    const row = db.prepare(`
-      SELECT name, kind, domains_json, capabilities_json, runtime_command, runtime_args_json,
-             runtime_check_command
-      FROM agent_classes WHERE name = ?
-    `).get('research-bot') as {
-      name: string;
-      kind: string;
-      domains_json: string;
-      capabilities_json: string;
-      runtime_command: string;
-      runtime_args_json: string;
-      runtime_check_command: string;
-    };
-
-    expect(row).toEqual(expect.objectContaining({
-      name: 'research-bot',
-      kind: 'executor',
-      runtime_command: 'research-bot',
-      runtime_check_command: 'research-bot --version',
-    }));
-    expect(JSON.parse(row.runtime_args_json)).toEqual(['run', '--prompt', '{prompt}']);
-    expect(JSON.parse(row.domains_json)).toEqual(['research', 'reporting']);
-    expect(JSON.parse(row.capabilities_json)).toEqual(['research', 'report_generation']);
-
     const output = session.getSnapshot().output.join('\n');
-    expect(output).toContain('Executor AgentClass registration wizard started');
-    expect(output).toContain('Registered Executor AgentClass: research-bot');
-    expect(output).toContain('This executor class can now back executor work units');
+    expect(output).toContain('未知命令节点: register');
+    expect(db.prepare('SELECT name FROM agent_classes WHERE name = ?').get('research-bot')).toBeUndefined();
   });
 
-  it('supports one-line AgentClass registration with quoted runtime args', async () => {
+  it('does not expose one-line AgentClass registration in the conversation command surface', async () => {
     const db = createDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-executor-oneline');
@@ -113,13 +76,9 @@ describe('planner-first executor command acceptance', () => {
     session.initialize();
     await session.submit(`/executor register research-bot --image registry.example/research-bot:1.0.0 --image-id sha256:${'a'.repeat(64)} --permission-profile restricted-custom --command research-bot --args "run --prompt {prompt}" --check "research-bot --version" --domains research --capabilities report_generation`);
 
-    const row = db.prepare('SELECT runtime_args_json, runtime_check_command FROM agent_classes WHERE name = ?').get('research-bot') as {
-      runtime_args_json: string;
-      runtime_check_command: string;
-    };
-
-    expect(JSON.parse(row.runtime_args_json)).toEqual(['run', '--prompt', '{prompt}']);
-    expect(row.runtime_check_command).toBe('research-bot --version');
+    const output = session.getSnapshot().output.join('\n');
+    expect(output).toContain('未知命令节点: register');
+    expect(db.prepare('SELECT name FROM agent_classes WHERE name = ?').get('research-bot')).toBeUndefined();
   });
 
   it('persists planner subtasks and work unit claims before execution', async () => {
