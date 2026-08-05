@@ -1,7 +1,7 @@
 ---
 status: accepted
 amended_by: ADR-0017, ADR-0018, ADR-0020, ADR-0021, ADR-0022, ADR-0023
-last_updated: 2026-08-02
+last_updated: 2026-08-05
 ---
 
 # Planner-Owned Semantics And Tool-Mediated Context
@@ -30,7 +30,7 @@ Each non-interactive turn sends only the current user input into the bound persi
 
 After authorization, Runtime follows the Kernel-approved v3 `preferredAgentClassList` for claim/probe mechanics: it may claim an idle WorkUnit or create/probe a `starting` instance, and a failed probe becomes a Runtime fact. Runtime does not switch AgentClass after execution failure or decide the terminal Task action. (2026-07-27: Phase 3–4 completed this move — capacity exhaustion, retry, fallback, replan and terminal policy are now decided only by `ControlKernel`.)
 
-The runtime image contains the compiled MetaClaw application, generated current schema, versioned Planner host bridge, isolated Planner/Executor templates and entrypoint. It copies a pinned self-contained AnyFusion-Pi Planner artifact carrying Node 22 into the Node 20 MetaClaw control image. Planner and MetaClaw exchange only JSON/JSONL and environment configuration; Planner source and dependencies are not linked into MetaClaw. Executor Codex and Executor Pi remain separate canonical attempt images.
+The runtime image contains the compiled MetaClaw application, generated current schema, versioned Planner host bridge, isolated Planner/Executor templates and entrypoint. It builds the pinned AnyFusion-Pi Planner source through a required BuildKit named context into the same Node 22.19+ image. Planner and MetaClaw use one Node executable but retain separate dependency trees and exchange only JSON/JSONL and environment configuration; Planner source and dependencies are not linked into MetaClaw. Executor Codex and Executor Pi remain separate canonical attempt images.
 
 ## Supersedes
 
@@ -93,8 +93,8 @@ The Planner submits an internal v7 plan through the Pi-native
 `submit_planning_proposal({ plan })` tool. MetaClaw remains the only
 schema/semantic validator and the only component allowed to emit
 `plan_proposed` into `DurableKernelWorkflow`. Bridge or RPC failure is reported
-as unavailable and never implies that a Task was created. MetaClaw Node 20 and
-Planner Node 22 remain isolated processes; they share no source modules or
+as unavailable and never implies that a Task was created. MetaClaw and Planner
+remain isolated Node 22.19+ processes; they share no source modules or
 in-process objects.
 
 ## Amendment: Pi Planner behavior parity (2026-08-03)
@@ -110,13 +110,30 @@ four Pi-native repository readers (`read`, `grep`, `find`, and `ls`) rooted at
 prompt templates, model controls, package installation, and updates remain
 unavailable.
 
-MetaClaw injects its absolute Node 20 executable and compiled Planner MCP entry
-path. Pi's Node 22 runtime never substitutes `process.execPath`. Missing fixed
+MetaClaw injects the shared image's absolute Node executable and compiled
+Planner MCP entry path. The Planner artifact carries no private Node runtime and
+never substitutes an uncontrolled executable. Missing fixed
 tools fail before the first turn. A mid-turn MCP transport loss locks proposal
 submission, aborts the current agent loop, and is retried only by reconnecting
 before the next user turn. Ordinary MCP domain errors remain ordinary tool
 results. Proposal-host uncertainty retains its independent idempotent replay
 contract.
+
+## Amendment: one Node runtime image, isolated processes (2026-08-05)
+
+MetaClaw and the sibling AnyFusion-Pi Planner now have one deployment runtime
+baseline: Node.js 22.19+ in one final image. The image build consumes Pi source
+through the required `anyfusion-pi` BuildKit context, builds both repositories,
+and retains independent `/app/node_modules` and
+`/opt/anyfusion-planner/app/node_modules` trees. The Planner launcher and
+Planner MCP use the final image's `/usr/local/bin/node`; no embedded Planner
+Node tree or prebuilt Planner-image input exists.
+
+This deployment convergence does not weaken the process seam. Planner and
+MetaClaw remain separate processes with the same JSONL/Unix-socket contracts,
+failure isolation, ownership rules, and prohibition on shared in-process
+objects. Executor attempt images remain separate because sandbox and credential
+isolation are security contracts, not Node-version compatibility paths.
 
 PlanningAgentPlan v7 is exposed only through the proposal tool schema. Rejected
 plans remain natural tool feedback inside the same Pi ReAct loop. The retired

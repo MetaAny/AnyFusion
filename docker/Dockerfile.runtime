@@ -1,9 +1,27 @@
-ARG ANYFUSION_PI_IMAGE=anyfusion-pi-planner:dev
-FROM ${ANYFUSION_PI_IMAGE} AS anyfusion-pi
+# syntax=docker/dockerfile:1.7
+
+FROM node:22.19.0-bookworm-slim AS planner-builder
+
+WORKDIR /planner
+ENV CI=true
+
+COPY --from=anyfusion-pi package.json package-lock.json ./
+COPY --from=anyfusion-pi packages/tui/package.json packages/tui/package.json
+COPY --from=anyfusion-pi packages/ai/package.json packages/ai/package.json
+COPY --from=anyfusion-pi packages/agent/package.json packages/agent/package.json
+COPY --from=anyfusion-pi packages/coding-agent/package.json packages/coding-agent/package.json
+RUN npm ci --ignore-scripts
+
+COPY --from=anyfusion-pi . .
+RUN npm run build:offline \
+  && mkdir -p /opt/anyfusion-planner/app /opt/anyfusion-planner/bin \
+  && cp -a package.json package-lock.json node_modules packages /opt/anyfusion-planner/app/ \
+  && printf '%s\n' '#!/bin/sh' 'exec /usr/local/bin/node /opt/anyfusion-planner/app/packages/coding-agent/dist/cli.js "$@"' > /opt/anyfusion-planner/bin/anyfusion-planner \
+  && chmod +x /opt/anyfusion-planner/bin/anyfusion-planner
 
 FROM docker:27-cli AS docker-cli
 
-FROM node:20-bookworm-slim AS builder
+FROM node:22.19.0-bookworm-slim AS builder
 
 WORKDIR /app
 COPY package.json package-lock.json ./
@@ -11,7 +29,7 @@ RUN npm ci
 COPY . .
 RUN npm run build
 
-FROM node:20-bookworm-slim AS runtime
+FROM node:22.19.0-bookworm-slim AS runtime
 
 WORKDIR /app
 ENV NODE_ENV=production \
@@ -33,16 +51,20 @@ ENV NODE_ENV=production \
     METACLAW_PI_EXECUTOR_ENV_FILE=/run/metaclaw/env/executor-pi.env
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends bash ca-certificates fd-find git openssh-client python3 ripgrep \
+  && apt-get install -y --no-install-recommends bash ca-certificates fd-find git openssh-client openssh-server python3 ripgrep \
   && ln -sf /usr/bin/fdfind /usr/local/bin/fd \
   && rm -rf /var/lib/apt/lists/* \
+  && mkdir -p /run/sshd \
+  && echo 'root:metaclaw' | chpasswd \
+  && sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config \
+  && sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config \
   && npm install -g --ignore-scripts @openai/codex@0.144.1
 
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./package.json
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
-COPY --from=anyfusion-pi /opt/anyfusion-planner /opt/anyfusion-planner
+COPY --from=planner-builder /opt/anyfusion-planner /opt/anyfusion-planner
 COPY docker/entrypoint.sh /opt/metaclaw/entrypoint.sh
 COPY docker/persist-ssh-environment.sh /opt/metaclaw/persist-ssh-environment.sh
 COPY docker/codex-config/executor /opt/metaclaw/codex-config/executor
@@ -53,11 +75,16 @@ COPY scripts/smoke-planner-mcp.mjs /app/scripts/smoke-planner-mcp.mjs
 COPY scripts/smoke-metaclaw-real-task.mjs /app/scripts/smoke-metaclaw-real-task.mjs
 COPY --from=builder /app/dist/planning-agent-plan-v7.schema.json /opt/metaclaw/schema/planning-agent-plan-v7.schema.json
 
-RUN sed -i 's/\r$//' /opt/metaclaw/entrypoint.sh /opt/metaclaw/persist-ssh-environment.sh \
+RUN test "$(node --version)" = 'v22.19.0' \
+  && test ! -e /opt/anyfusion-planner/node \
+  && test -d /app/node_modules \
+  && test -d /opt/anyfusion-planner/app/node_modules \
+  && sed -i 's/\r$//' /opt/metaclaw/entrypoint.sh /opt/metaclaw/persist-ssh-environment.sh \
   && chmod +x /opt/metaclaw/entrypoint.sh \
   && mkdir -p /data/metaclaw /workspace /var/empty/metaclaw-planner /var/lib/metaclaw/anyfusion-planner/agent /var/lib/metaclaw/anyfusion-planner/sessions
 
 VOLUME ["/data", "/workspace"]
+EXPOSE 22
 WORKDIR /workspace
 ENTRYPOINT ["/opt/metaclaw/entrypoint.sh"]
 CMD ["node", "/app/dist/index.js"]

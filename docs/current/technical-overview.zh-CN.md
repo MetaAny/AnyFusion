@@ -184,7 +184,7 @@ conversation / task 的边界很重要：
 
 必须具备：
 
-- Node.js `>=20.0.0`。
+- Node.js `>=22.19.0`。
 - npm。
 - Git。
 - Unix-like shell 环境，优先支持 macOS 和 Linux；Windows 用户推荐使用 WSL2，这是当前支持的可靠安装路径。
@@ -347,7 +347,7 @@ Windows 安装核验清单：
 - 默认 executor 在 WSL 内可用，例如 `codex --help`。
 - `npm run smoke:anyfusion` 成功完成
 
-Windows 原生 PowerShell 不是当前推荐的主要运行环境。高级用户可以手动尝试 Node.js 20、Git、Visual Studio Build Tools、`npm install`、`npm run build` 和 `node dist/index.js`，但 `setup.sh`、`anyfusion.sh`、Unix socket Gateway 行为以及下游 executor CLI 可能和 Linux/macOS 不一致。需要稳定安装和推广给用户时，请使用 WSL2。
+Windows 原生 PowerShell 不是当前推荐的主要运行环境。高级用户可以使用 Node.js 22.19+、Git、Visual Studio Build Tools、`npm install`、`npm run build` 和 `node dist/index.js` 直接开发，但 `setup.sh`、`anyfusion.sh`、Unix socket Gateway 行为以及下游 executor CLI 可能和 Linux/macOS 不一致。Windows 的受支持路径是统一 Docker runtime；直接 Linux 开发可使用 WSL2。
 
 ## 安装执行器
 
@@ -587,9 +587,9 @@ anyfusion --connect
 
 ### 在 Docker 中运行（Windows / 容器化）
 
-在 Windows 上，`docker/` 工作流将 Linux 容器作为 SSH 服务运行，为原生 TUI 提供真实 PTY，并允许通过 shell 或 VS Code Remote-SSH 浏览 `/workspace`。首期部署只保证 Linux 容器/服务器；Windows 只是 Docker 验证宿主，不是原生 Planner 目标。runtime 从固定版本的 `anyfusion-pi-planner` 镜像复制 Planner：MetaClaw control process 保持 Node 20，Planner artifact 自带 Node 22。Executor attempt 继续使用各自 canonical Codex/Pi 镜像。Docker 分别只读挂载 `planner-pi.env`、`executor-codex.env` 和 `executor-pi.env`，entrypoint 根据各自 base URL 渲染隔离配置。
+在 Windows 上，`docker/` 工作流将 Linux 容器作为 SSH 服务运行，为原生 TUI 提供真实 PTY，并允许通过 shell 或 VS Code Remote-SSH 浏览 `/workspace`。首期部署只保证 Linux 容器/服务器；Windows 使用统一 Docker runtime，不是原生 Planner 目标。一次 BuildKit 构建以 MetaClaw 为默认 context，并以兄弟 AnyFusion-Pi 仓库为必需的 `anyfusion-pi` context。最终镜像只包含一份 Node 22.19+，MetaClaw control process 位于 `/app`，隔离的 Planner process 位于 `/opt/anyfusion-planner/app`，两者保留独立依赖树。Executor attempt 继续使用各自 canonical Codex/Pi 镜像。Docker 分别只读挂载 `planner-pi.env`、`executor-codex.env` 和 `executor-pi.env`，entrypoint 根据各自 base URL 渲染隔离配置。
 
-完整 runtime image 内置 MetaClaw CLI、v7 schema、编译后的 Planner MCP server、版本化 host bridge 与隔离的 Planner/Executor template。`docker/Dockerfile.runtime` 从预构建 Planner image 复制 `/opt/anyfusion-planner`；MetaClaw 不会在 Node 20 下安装或运行 Planner package。MetaClaw 向 Pi 注入绝对 Node 20 可执行文件和 `/app/dist/planner-mcp.js` 参数，Planner 自身仍使用 Node 22。Pi executor 继续位于独立 Node 22 attempt image。源码变化后使用 `docker/shell.ps1 -Rebuild`；只保留 workspace/data volume。Executor attempt 由可信 Engine endpoint 创建为兄弟容器：source、inputs、handoffs 和 `.git` 只读，私有 `/workspace` 可写，`/tmp` 为 tmpfs；attempt 不获得 Docker socket 或真实 provider credential，而是通过随机短期 token 的 attempt-scoped model gateway 调用模型。完整要求见 [Phase 5 Runtime Security](phase-5-runtime-security.md)。
+完整 runtime image 内置 MetaClaw CLI、v7 schema、编译后的 Planner MCP server、构建后的 AnyFusion-Pi 应用、版本化 host bridge 与隔离的 Planner/Executor template。`docker/Dockerfile.runtime` 构建两个仓库 context，并把两个独立应用树复制进最终镜像。Planner launcher 与 MetaClaw 注入的 `/app/dist/planner-mcp.js` 命令都使用 `/usr/local/bin/node`，禁止存在 `/opt/anyfusion-planner/node`。Pi executor 继续位于独立 Node 22 attempt image。任一仓库源码变化后都使用 `docker/shell.ps1 -Rebuild`；只保留 workspace/data volume。Executor attempt 由可信 Engine endpoint 创建为兄弟容器：source、inputs、handoffs 和 `.git` 只读，私有 `/workspace` 可写，`/tmp` 为 tmpfs；attempt 不获得 Docker socket 或真实 provider credential，而是通过随机短期 token 的 attempt-scoped model gateway 调用模型。完整要求见 [Phase 5 Runtime Security](phase-5-runtime-security.md)。
 
 ## 配置
 

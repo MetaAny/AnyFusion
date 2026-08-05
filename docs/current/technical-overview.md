@@ -24,7 +24,7 @@ It is built for teams who need agents to do more than answer the current turn. A
 - Captures generated files as task artifacts.
 - Sends Feishu chat replies, file artifacts, and Markdown preview links through the backend delivery layer.
 - Provides a local Gateway so multiple terminals can connect to one AnyFusion runtime.
-- Uses the sibling AnyFusion-Pi fork as the default local Planner conversation surface, with a self-contained Node 22 runtime and AnyFusion-managed provider/model configuration.
+- Uses the sibling AnyFusion-Pi fork as the default local Planner conversation surface in the unified Node 22.19+ runtime image, with an isolated Planner process/dependency tree and AnyFusion-managed provider/model configuration.
 - Adds a responsive read-only AnyFusion Task dashboard over the versioned host bridge without moving Task, Kernel, or Executor authority into the TUI. Live disconnect/reconnect and server PTY visual acceptance remain migration work; the original Ink UI remains source-preserved as a standby module.
 - Ships with `npm run smoke:anyfusion`, whose default gate verifies two-turn memory in one persisted AnyFusion-Pi Planner session; artifact scenarios remain available explicitly.
 
@@ -180,7 +180,7 @@ AnyFusion ships two canonical sandboxed Executor AgentClasses:
 
 Required:
 
-- Node.js `>=20.0.0`.
+- Node.js `>=22.19.0`.
 - npm.
 - Git.
 - A Unix-like shell environment. macOS and Linux are primary targets; Windows users should use WSL2 for the supported install path.
@@ -342,7 +342,7 @@ Windows install checklist:
 - Confirm the default executor works in WSL, for example `codex --help`.
 - Confirm `npm run smoke:anyfusion` completes successfully
 
-Native Windows PowerShell is not the primary supported runtime today. Advanced users can try the manual fallback with Node.js 20, Git, Visual Studio Build Tools, `npm install`, `npm run build`, and `node dist/index.js`, but `setup.sh`, `anyfusion.sh`, Unix socket Gateway behavior, and downstream executor CLIs may not behave the same way. Use WSL2 when you need a reliable installation.
+Native Windows PowerShell is not the primary supported runtime today. Advanced users can try direct development with Node.js 22.19+, Git, Visual Studio Build Tools, `npm install`, `npm run build`, and `node dist/index.js`, but `setup.sh`, `anyfusion.sh`, Unix socket Gateway behavior, and downstream executor CLIs may not behave the same way. Use the unified Docker runtime for the supported Windows path, or WSL2 for direct Linux development.
 
 ## Install Executors
 
@@ -537,11 +537,11 @@ anyfusion --connect
 
 ### Running in Docker (Windows / containerized)
 
-On Windows, the `docker/` workflow runs the Linux container as an SSH server so the native TUI receives a genuine PTY and `/workspace` remains available through shell or VS Code Remote-SSH. Deployment support is Linux-container/server only; Windows is a host for Docker validation, not a native Planner target. The runtime consumes a separately built, pinned `anyfusion-pi-planner` image for the Planner TUI and non-interactive PlanningAgent. The MetaClaw control process stays on Node 20 while the copied Planner artifact carries its own Node 22 runtime. Executor attempts remain on their canonical Codex/Pi images. Docker mounts `planner-pi.env`, `executor-codex.env`, and `executor-pi.env` read-only, and `docker/entrypoint.sh` renders isolated Planner/Executor configs from the assigned base URL.
+On Windows, the `docker/` workflow runs the Linux container as an SSH server so the native TUI receives a genuine PTY and `/workspace` remains available through shell or VS Code Remote-SSH. Deployment support is Linux-container/server only; Windows is a host for the unified Docker runtime, not a native Planner target. One BuildKit build consumes MetaClaw as the default context and the sibling AnyFusion-Pi repository as the required `anyfusion-pi` context. The final image contains one Node 22.19+ installation, a MetaClaw control process under `/app`, and an isolated Planner process under `/opt/anyfusion-planner/app`; their dependency trees remain separate. Executor attempts remain on their canonical Codex/Pi images. Docker mounts `planner-pi.env`, `executor-codex.env`, and `executor-pi.env` read-only, and `docker/entrypoint.sh` renders isolated Planner/Executor configs from the assigned base URL.
 
-The hermetic runtime image contains the MetaClaw CLI, generated v7 schema, versioned host bridge, compiled Planner MCP server and isolated Planner/Executor templates. `docker/Dockerfile.runtime` copies `/opt/anyfusion-planner` from the prebuilt Planner image; MetaClaw does not install or run the Planner package under Node 20. MetaClaw injects its absolute Node 20 executable and `/app/dist/planner-mcp.js` arguments into Pi, while the Planner itself remains on Node 22. The Pi executor remains in the separate Node 22 attempt image. Source changes require `docker/shell.ps1 -Rebuild`; only workspace and data volumes persist. Executor attempts are sibling containers created through the trusted Engine endpoint, with source, inputs, handoffs and `.git` read-only, a private writable `/workspace`, tmpfs `/tmp`, no Docker socket, and no real provider credential. The trusted Runtime exposes an attempt-scoped model gateway with a random scoped token. Use `docker/shell.ps1` for Docker + SSH validation, and see [Phase 5 Runtime Security](phase-5-runtime-security.md) for network, image and Engine requirements.
+The hermetic runtime image contains the MetaClaw CLI, generated v7 schema, versioned host bridge, compiled Planner MCP server, built AnyFusion-Pi application, and isolated Planner/Executor templates. `docker/Dockerfile.runtime` builds both repository contexts and copies two independent application trees into the final image. The Planner launcher and MetaClaw-injected `/app/dist/planner-mcp.js` command both use `/usr/local/bin/node`; `/opt/anyfusion-planner/node` is forbidden. The Pi executor remains in its separate Node 22 attempt image. Source changes in either repository require `docker/shell.ps1 -Rebuild`; only workspace and data volumes persist. Executor attempts are sibling containers created through the trusted Engine endpoint, with source, inputs, handoffs and `.git` read-only, a private writable `/workspace`, tmpfs `/tmp`, no Docker socket, and no real provider credential. The trusted Runtime exposes an attempt-scoped model gateway with a random scoped token. Use `docker/shell.ps1` for Docker + SSH validation, and see [Phase 5 Runtime Security](phase-5-runtime-security.md) for network, image and Engine requirements.
 
-Local validation covers TypeScript lint/build, focused Planner RPC and host-protocol tests, the Docker Vitest suite, Unix-socket bridge behavior, Session validation, and unchanged Kernel/Execution/Executor regressions. Linux container smoke additionally verifies Node 20/Node 22 isolation, Planner RPC JSONL, entrypoint config separation, and the final pinned artifact.
+Local validation covers TypeScript lint/build, focused Planner RPC and host-protocol tests, the Docker Vitest suite, Unix-socket bridge behavior, Session validation, and unchanged Kernel/Execution/Executor regressions. Linux container smoke additionally verifies the single Node 22.19+ executable, isolated application dependency trees and processes, absence of an embedded Planner Node, Planner RPC JSONL, entrypoint config separation, and the final unified image.
 
 ## Configuration
 

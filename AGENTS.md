@@ -33,7 +33,7 @@ Architecture shortcuts:
 
 ## Repository Map
 
-MetaClaw is a Node 20 TypeScript ESM CLI/TUI. `src/index.ts` is the composition
+MetaClaw is a Node 22.19+ TypeScript ESM CLI/TUI. `src/index.ts` is the composition
 root. Detailed ownership and dependency rules live in
 [ADR-0020](docs/adr/0020-core-module-ownership-and-dependency-direction.md).
 
@@ -108,7 +108,7 @@ Do not repeatedly retry the full suite on Windows; `npm run lint` is the reliabl
 host check. Core policy, execution, or storage changes require focused tests at
 the owning seam.
 
-For the AnyFusion-Pi migration, local Docker validation covers this TypeScript repository, the Node 20/Node 22 process boundary, Unix socket bridge, stdin/stdout Planner RPC, Session-to-Kernel handoff, and unchanged core regressions. The Pi fork uses `npm run build:offline` and a self-contained Linux image; do not replace it with a host-global Pi install or run Planner code inside the MetaClaw Node 20 process.
+For the AnyFusion-Pi integration, local Docker validation covers both repositories in one Node 22.19+ runtime image, their isolated dependency trees and processes, the Unix socket bridge, stdin/stdout Planner RPC, Session-to-Kernel handoff, and unchanged core regressions. The Pi fork uses `npm run build:offline` through the required `anyfusion-pi` BuildKit context; do not add a prebuilt Planner-image fallback, embed a second Node runtime, use a host-global Pi install, or run Planner code inside the MetaClaw process.
 
 ## Code, Plans, And Commits
 

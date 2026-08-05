@@ -5,7 +5,7 @@ export interface PlannerMcpLaunchEnv {
   ANYFUSION_PLANNER_MCP_ARGS_JSON: string;
 }
 
-/** Pins Planner MCP to the MetaClaw Node runtime instead of the Pi Node 22 process. */
+/** Pins Planner MCP to the shared image Node executable selected by MetaClaw. */
 export function buildPlannerMcpLaunchEnv(): PlannerMcpLaunchEnv {
   return {
     ANYFUSION_PLANNER_MCP_COMMAND: process.execPath,

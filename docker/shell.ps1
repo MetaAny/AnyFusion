@@ -52,12 +52,9 @@ param(
 $ErrorActionPreference = 'Continue'
 
 $repoRoot    = Split-Path -Parent $PSScriptRoot
-# The SSH layer sits on the hermetic runtime image. Build-BaseImage compiles the
-# runtime from source; Build-Image only adds the SSH server.
-$baseImage   = 'metaclaw-runtime'
-$anyFusionPiImage = 'anyfusion-pi-planner:local'
+# One runtime image contains MetaClaw, Planner, Node, and the optional SSH entry.
+$runtimeImage = 'metaclaw-runtime'
 $anyFusionPiRoot = Join-Path (Split-Path -Parent $repoRoot) 'AnyFusion-Pi'
-$imageTag    = 'metaclaw-tui-ssh'
 $container   = 'metaclaw-shell'
 $sshHost     = 'localhost'
 $sshBindHost = '127.0.0.1'
@@ -108,7 +105,7 @@ function Test-ContainerUsesCurrentImage {
     if (-not (Test-ContainerExists)) { return $false }
     $containerImage = docker inspect --format '{{.Image}}' $container 2>$null
     if ($LASTEXITCODE -ne 0) { return $false }
-    $tagImage = docker image inspect --format '{{.Id}}' $imageTag 2>$null
+    $tagImage = docker image inspect --format '{{.Id}}' $runtimeImage 2>$null
     if ($LASTEXITCODE -ne 0) { return $false }
     return (([string]$containerImage).Trim() -eq ([string]$tagImage).Trim())
 }
@@ -284,6 +281,11 @@ function Invoke-SetupSsh {
 }
 
 function Test-Prereqs {
+    $plannerPackage = Join-Path $anyFusionPiRoot 'package.json'
+    if (-not (Test-Path $plannerPackage)) {
+        Write-Error "Missing sibling AnyFusion-Pi repository at $anyFusionPiRoot."
+        exit 1
+    }
     $requiredEnvFiles = @($plannerEnvFile, $codexExecutorEnvFile, $piExecutorEnvFile)
     foreach ($requiredEnvFile in $requiredEnvFiles) {
         if (-not (Test-Path $requiredEnvFile)) {
@@ -293,36 +295,12 @@ function Test-Prereqs {
     }
 }
 
-# Build the pinned AnyFusion-Pi Planner fork used only by the Planner surface.
-function Build-AnyFusionPiImage {
+# Build the unified runtime image when it is missing.
+function Build-RuntimeImage {
     param([switch]$Force)
-    if (-not $Force -and (Test-ImageExists $anyFusionPiImage)) { return }
-    $dockerfile = Join-Path $anyFusionPiRoot 'Dockerfile.anyfusion-planner'
-    if (-not (Test-Path $dockerfile)) {
-        Write-Error "Missing AnyFusion-Pi sibling repository or Dockerfile.anyfusion-planner at $anyFusionPiRoot."
-        exit 1
-    }
-    Write-Host ("Building AnyFusion Planner image " + $anyFusionPiImage + " ...") -ForegroundColor Yellow
-    docker build -f $dockerfile -t $anyFusionPiImage $anyFusionPiRoot
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-}
-
-# Build the hermetic runtime image when it is missing.
-function Build-BaseImage {
-    param([switch]$Force)
-    if (-not $Force -and (Test-ImageExists $baseImage)) { return }
-    Build-AnyFusionPiImage -Force:$Force
-    Write-Host ("Base image " + $baseImage + " not found, building hermetic runtime image ...") -ForegroundColor Yellow
-    docker build --build-arg ANYFUSION_PI_IMAGE=$anyFusionPiImage -f (Join-Path $repoRoot 'docker\Dockerfile.runtime') -t $baseImage $repoRoot
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-}
-
-# Build the SSH layer on top of the base image.
-function Build-Image {
-    param([switch]$Force)
-    Build-BaseImage -Force:$Force
-    Write-Host ("Building image " + $imageTag + " (SSH layer) ...") -ForegroundColor Yellow
-    docker build -f (Join-Path $repoRoot 'docker\Dockerfile.ssh') -t $imageTag $repoRoot
+    if (-not $Force -and (Test-ImageExists $runtimeImage)) { return }
+    Write-Host ("Building unified runtime image " + $runtimeImage + " ...") -ForegroundColor Yellow
+    docker build --build-context "anyfusion-pi=$anyFusionPiRoot" -f (Join-Path $repoRoot 'docker\Dockerfile.runtime') -t $runtimeImage $repoRoot
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
@@ -382,7 +360,7 @@ function Ensure-ControlEnvironmentInContainer {
 
 # Canonical attempt images are required for Executor sandboxes. Build them when
 # missing so the daily shell path matches smoke's preflight. Force rebuild only
-# through -Rebuild (which rebuilds the runtime/SSH images and attempt images).
+# through -Rebuild (which rebuilds the unified runtime and attempt images).
 function Ensure-AttemptImages {
     param([switch]$Force)
     if ($Force -or -not (Test-ImageExists $codexAttemptImage)) {
@@ -467,7 +445,7 @@ function Start-ShellContainer {
       -e "METACLAW_DOCKER_HOST_PATH_MAP=$hostPathMap" `
       -e PI_SKIP_VERSION_CHECK=1 `
       -e PI_TELEMETRY=0 `
-      $imageTag `
+      $runtimeImage `
       -c "exec /opt/metaclaw/entrypoint.sh /usr/sbin/sshd -D"
 
     if ($LASTEXITCODE -ne 0) {
@@ -503,7 +481,7 @@ function Ensure-ContainerRunning {
     Ensure-AttemptImages
     if (Test-ContainerExists) {
         if (-not (Test-ContainerUsesCurrentImage)) {
-            Write-Host "Container uses an older image; recreating it from $imageTag..." -ForegroundColor Yellow
+            Write-Host "Container uses an older image; recreating it from $runtimeImage..." -ForegroundColor Yellow
             Start-ShellContainer
             return
         }
@@ -535,7 +513,7 @@ function Ensure-ContainerRunning {
         return
     }
     Write-Host "Container not found, starting it first..." -ForegroundColor Yellow
-    if (-not (Test-ImageExists $imageTag)) { Build-Image }
+    if (-not (Test-ImageExists $runtimeImage)) { Build-RuntimeImage }
     Start-ShellContainer
 }
 
@@ -609,7 +587,7 @@ function Enter-Bash {
 Test-Prereqs
 
 if ($Rebuild) {
-    Build-Image -Force
+    Build-RuntimeImage -Force
     Ensure-AttemptImages -Force
     Start-ShellContainer
     return
@@ -627,7 +605,7 @@ if ($Stop) {
 }
 
 if ($Start) {
-    if (-not (Test-ImageExists $imageTag)) { Build-Image }
+    if (-not (Test-ImageExists $runtimeImage)) { Build-RuntimeImage }
     Start-ShellContainer
     return
 }

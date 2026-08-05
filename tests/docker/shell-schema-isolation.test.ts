@@ -3,6 +3,41 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 describe('Docker shell SQLite schema isolation', () => {
+  it('builds one Node 22 runtime from both repository contexts', () => {
+    const runtimeDockerfile = readFileSync(resolve('docker/Dockerfile.runtime'), 'utf-8');
+    const shell = readFileSync(resolve('docker/shell.ps1'), 'utf-8');
+    const smoke = readFileSync(resolve('scripts/smoke-metaclaw-real-task.mjs'), 'utf-8');
+
+    expect(runtimeDockerfile).toContain('FROM node:22.19.0-bookworm-slim AS runtime');
+    expect(runtimeDockerfile).toContain('COPY --from=anyfusion-pi . .');
+    expect(runtimeDockerfile).toContain('exec /usr/local/bin/node /opt/anyfusion-planner/app/');
+    expect(runtimeDockerfile).toContain('test ! -e /opt/anyfusion-planner/node');
+    expect(runtimeDockerfile).not.toContain('ANYFUSION_PI_IMAGE');
+    expect(runtimeDockerfile).not.toContain('FROM ${ANYFUSION_PI_IMAGE}');
+    expect(shell).toContain('docker build --build-context "anyfusion-pi=$anyFusionPiRoot"');
+    expect(shell).not.toContain('Build-AnyFusionPiImage');
+    expect(shell).not.toContain('Build-Image');
+    expect(shell).not.toContain('Build-BaseImage');
+    expect(shell).not.toContain('Dockerfile.ssh');
+    expect(shell).not.toContain('metaclaw-tui-ssh');
+    expect(shell).not.toContain('anyfusion-pi-planner:local');
+    expect(smoke).toContain("'--build-context', `anyfusion-pi=${anyFusionPiRoot}`");
+    expect(smoke).not.toContain('ANYFUSION_PI_IMAGE');
+  });
+
+  it('keeps the package, setup, CI, and image Node baselines aligned', () => {
+    const packageJson = JSON.parse(readFileSync(resolve('package.json'), 'utf-8')) as {
+      engines: { node: string };
+    };
+    const setup = readFileSync(resolve('setup.sh'), 'utf-8');
+    const ci = readFileSync(resolve('.github/workflows/ci.yml'), 'utf-8');
+
+    expect(packageJson.engines.node).toBe('>=22.19.0');
+    expect(setup).toContain('const minimum = [22, 19, 0]');
+    expect(setup).toContain('Node.js >= 22.19.0');
+    expect(ci).toContain('node-version: 22.19.0');
+  });
+
   it('uses the Responses API for the fixed Planner model', () => {
     const models = JSON.parse(
       readFileSync(resolve('docker/planner-pi-config/models.json'), 'utf-8'),

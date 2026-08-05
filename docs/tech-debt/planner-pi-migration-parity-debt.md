@@ -59,8 +59,8 @@ Executor。
 | Kernel/Task/Executor 状态 | MetaClaw 独占授权、持久化、调度和修改。 |
 
 MCP 固定 allowlist 缺少任一工具时首轮前失败；额外工具不注册。MetaClaw 注入
-绝对 Node 20 命令和编译后的 `planner-mcp.js`，Pi Node 22 不使用自己的
-`process.execPath`。回合中 MCP transport 断开会锁住 proposal 并中止当前
+共享镜像的绝对 Node 22.19+ 命令和编译后的 `planner-mcp.js`；Planner artifact
+不携带私有 Node，也不替换受控可执行文件。回合中 MCP transport 断开会锁住 proposal 并中止当前
 agent loop，下一回合前重新连接；普通领域错误不会被误判为 transport 故障。
 
 ## Completion v3
@@ -119,7 +119,7 @@ docker run --rm anyfusion-pi-test:v7-skill-shape ./test.sh
 
 - `npm run check` 通过；全量测试无失败，其中 agent 168 tests、TUI 690 tests；
 - test/release image 内的 `npm run build:offline` 通过；
-- 固定 Skill 仅注入一次、精确 MCP/仓库工具集合、外部资源禁用、Node 20
+- 固定 Skill 仅注入一次、精确 MCP/仓库工具集合、外部资源禁用、共享 Node 22.19+
   MCP 子进程、首轮和回合中 fail-closed、重连、domain error、TUI/RPC
   bootstrap 等价以及 v7 proposal schema 均通过。
 

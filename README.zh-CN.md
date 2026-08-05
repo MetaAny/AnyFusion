@@ -81,7 +81,7 @@ flowchart LR
 
 ## 快速开始
 
-AnyFusion 需要 Node.js 20+ 和类 Unix shell。Windows 推荐使用 WSL2 + Ubuntu 作为运行环境。
+AnyFusion 需要 Node.js 22.19+ 和类 Unix shell。Windows 的受支持运行路径是统一 Docker runtime；直接开发仍可使用 WSL2 + Ubuntu。
 
 ```bash
 git clone https://github.com/MetaAny/AnyFusion.git

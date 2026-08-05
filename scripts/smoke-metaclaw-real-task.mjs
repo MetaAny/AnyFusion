@@ -565,6 +565,10 @@ function runDockerSmoke(rawArgs, env) {
     return;
   }
   const repoRoot = resolve(process.cwd());
+  const anyFusionPiRoot = resolve(repoRoot, '..', 'AnyFusion-Pi');
+  if (!existsSync(join(anyFusionPiRoot, 'package.json'))) {
+    throw new Error(`Smoke requires the sibling AnyFusion-Pi repository at ${anyFusionPiRoot}`);
+  }
   const scenario = parseScenario(
     readOption(rawArgs, '--scenario') ?? env.METACLAW_SMOKE_SCENARIO ?? 'planner-session',
   );
@@ -595,9 +599,7 @@ function runDockerSmoke(rawArgs, env) {
   try {
     run('docker', [
       'build',
-      '--build-arg', env.ANYFUSION_PI_IMAGE
-        ? `ANYFUSION_PI_IMAGE=${env.ANYFUSION_PI_IMAGE}`
-        : 'ANYFUSION_PI_IMAGE=anyfusion-pi-planner:local',
+      '--build-context', `anyfusion-pi=${anyFusionPiRoot}`,
       '-f', 'docker/Dockerfile.runtime',
       '-t', runtimeImage,
       '.',

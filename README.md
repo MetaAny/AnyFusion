@@ -81,7 +81,7 @@ Work graphs model independent branches, specialist assignments, and typed depend
 
 ## Quick Start
 
-AnyFusion targets Node.js 20+ and a Unix-like shell. On Windows, WSL2 with Ubuntu is the recommended runtime.
+AnyFusion targets Node.js 22.19+ and a Unix-like shell. On Windows, the unified Docker runtime is the supported path; WSL2 with Ubuntu remains suitable for direct development.
 
 ```bash
 git clone https://github.com/MetaAny/AnyFusion.git

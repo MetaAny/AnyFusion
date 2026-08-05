@@ -37,8 +37,15 @@ require_command() {
   fi
 }
 
-node_major_version() {
-  node -p "Number(process.versions.node.split('.')[0])" 2>/dev/null || echo 0
+node_meets_minimum_version() {
+  node -e '
+    const actual = process.versions.node.split(".").map(Number);
+    const minimum = [22, 19, 0];
+    for (let index = 0; index < minimum.length; index += 1) {
+      if (actual[index] > minimum[index]) process.exit(0);
+      if (actual[index] < minimum[index]) process.exit(1);
+    }
+  ' >/dev/null 2>&1
 }
 
 is_interactive() {
@@ -482,10 +489,8 @@ main() {
   require_command npm
   require_command git
 
-  local node_major
-  node_major="$(node_major_version)"
-  if [ "$node_major" -lt 20 ]; then
-    log_error "Node.js 版本过低：$(node --version)。AnyFusion 需要 Node.js >= 20。"
+  if ! node_meets_minimum_version; then
+    log_error "Node.js 版本过低：$(node --version)。AnyFusion 需要 Node.js >= 22.19.0。"
     exit 1
   fi
 
