@@ -11,7 +11,7 @@ import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
-import { taskControlPlan } from '../support/planning-agent-plans.js';
+import { planningAgentFromPlanMock, taskControlPlan } from '../support/planning-agent-plans.js';
 import { seedPersistedWorkGraph } from '../support/persisted-work-graph.js';
 import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
 
@@ -61,11 +61,11 @@ function flushUpdates() {
 }
 
 async function waitForExecutorCall(create: ReturnType<typeof vi.fn>) {
-  for (let index = 0; index < 20; index += 1) {
+  for (let index = 0; index < 100; index += 1) {
     if (create.mock.calls.length > 0) {
       return;
     }
-    await flushUpdates();
+    await new Promise(resolve => setTimeout(resolve, 10));
   }
 }
 
@@ -107,12 +107,12 @@ describe('App parked task intent resolution', () => {
         config: createConfig(),
         sessionId: 'sess_resume_parked_intent',
         contextRecaller,
-        planningAgent: {
-          plan: vi.fn().mockImplementation(async () => taskControlPlan({
+        planningAgent: planningAgentFromPlanMock(
+          vi.fn().mockImplementation(async () => taskControlPlan({
             control: 'resume_task',
             taskId: parkedTaskId,
           })),
-        },
+        ),
       }),
     );
 

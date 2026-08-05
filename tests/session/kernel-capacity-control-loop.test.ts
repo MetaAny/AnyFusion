@@ -26,7 +26,7 @@ describe('Kernel capacity control loop', () => {
       if (!available.value) throw new Error('image unavailable');
       return `sha256:${'a'.repeat(64)}`;
     });
-    const plan = workGraphPlan({ goal: 'run after capacity recovers', expectedOutput: 'summary' });
+    const plan = workGraphPlan({ goal: 'run after capacity recovers', deliveryKind: 'report' });
     const config: Config = {
       version: 1,
       executor: { command: 'codex', timeout: 60_000 },

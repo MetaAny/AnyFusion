@@ -17,7 +17,7 @@ The project follows [Semantic Versioning](https://semver.org/) for public previe
 ### Changed
 
 - Advanced the current pre-release baseline to Kernel wire/ledger v5 and
-  fresh-install SQLite schema v28.
+  fresh-install SQLite schema v29 with durable Planner proposal turn/submission identity and accepted-turn locking.
 - Completed deterministic asynchronous dispatch of up to four isolated attempts
   inside the one active top-level Task, with Git-backed publication and durable
   cancellation/replan recovery.

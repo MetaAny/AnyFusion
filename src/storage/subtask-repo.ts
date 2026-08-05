@@ -14,7 +14,7 @@ interface SubtaskRow {
   context_refs_json: string;
   required_capabilities_json: string;
   preferred_agent_class_list_json: string;
-  expected_output: Subtask['expectedOutput'];
+  delivery_kind: Subtask['deliveryKind'];
   acceptance_json: string;
   artifacts_json: string;
   verification_json: string;
@@ -46,7 +46,7 @@ function rowToSubtask(row: SubtaskRow): Subtask {
     contextRefs: parseJson<ContextRef[]>(row.context_refs_json, []),
     requiredCapabilities: parseList(row.required_capabilities_json),
     preferredAgentClassList: parseList(row.preferred_agent_class_list_json),
-    expectedOutput: row.expected_output,
+    deliveryKind: row.delivery_kind,
     acceptance: parseJson<WorkGraphAcceptanceCriterion[]>(row.acceptance_json, []),
     riskLevel: row.risk_level,
     result: row.result,
@@ -66,7 +66,7 @@ export class SubtaskRepo {
     this.db.prepare(`
       INSERT INTO subtasks (
         id, task_id, graph_revision, generation_id, title, goal, status, dependencies_json, context_refs_json, required_capabilities_json,
-        preferred_agent_class_list_json, expected_output, acceptance_json,
+        preferred_agent_class_list_json, delivery_kind, acceptance_json,
         risk_level, result, artifacts_json, verification_json, error, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
@@ -77,7 +77,7 @@ export class SubtaskRepo {
         context_refs_json = excluded.context_refs_json,
         required_capabilities_json = excluded.required_capabilities_json,
         preferred_agent_class_list_json = excluded.preferred_agent_class_list_json,
-        expected_output = excluded.expected_output,
+        delivery_kind = excluded.delivery_kind,
         acceptance_json = excluded.acceptance_json,
         risk_level = excluded.risk_level,
         result = excluded.result,
@@ -97,7 +97,7 @@ export class SubtaskRepo {
       JSON.stringify(subtask.contextRefs),
       JSON.stringify(subtask.requiredCapabilities),
       JSON.stringify(subtask.preferredAgentClassList),
-      subtask.expectedOutput,
+      subtask.deliveryKind,
       JSON.stringify(subtask.acceptance),
       subtask.riskLevel,
       subtask.result,

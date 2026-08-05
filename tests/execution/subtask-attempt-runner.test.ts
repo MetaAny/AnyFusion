@@ -8,7 +8,7 @@ import { SubtaskRepo } from '../../src/storage/subtask-repo.js';
 import { WorkUnitRepo } from '../../src/storage/work-unit-repo.js';
 import { WorkUnitClaimService } from '../../src/execution/work-unit-claim-service.js';
 import { SubtaskAttemptRunner } from '../../src/execution/subtask-attempt-runner.js';
-import { COMPLETION_MARKER_V2 } from '../../src/execution/completion-protocol.js';
+import { COMPLETION_MARKER_V3 } from '../../src/execution/completion-protocol.js';
 import { getBuiltinExecutorAgentClasses } from '../../src/executor/builtin-executor-catalog.js';
 import { AgentClassRepo } from '../../src/storage/agent-class-repo.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
@@ -31,7 +31,7 @@ function node(id: string, dependencies: Subtask['dependencies'] = []): Subtask {
     id, taskId: 'task_phase2', graphRevision: 1, generationId: 'generation_phase2',
     title: id, goal: `complete ${id}`, status: 'ready',
     dependencies, contextRefs: [], requiredCapabilities: ['workspace-engineering'],
-    preferredAgentClassList: ['codex-cli'], expectedOutput: 'summary',
+    preferredAgentClassList: ['codex-cli'], deliveryKind: 'report',
     acceptance: [{ key: 'done', description: 'done', requiredEvidence: [] }], riskLevel: 'low',
     result: '', artifacts: [], verification: { warnings: [], completionSchemaVersion: null }, error: null,
     createdAt: '2026-07-17T00:00:00.000Z', updatedAt: '2026-07-17T00:00:00.000Z',
@@ -212,13 +212,9 @@ function authorizeRunningAttempt(
 }
 
 function validResponse(): string {
-  return `A completed.\n\n${COMPLETION_MARKER_V2}\n${JSON.stringify({
-    schemaVersion: 2,
-    status: 'completed',
-    subtaskId: 'task_phase2_a',
-    acceptanceEvidence: [{ key: 'done', evidence: ['verified A'] }],
-    artifacts: [],
-    handoffs: [{ toSubtaskId: 'task_phase2_b', items: [{ key: 'summary', type: 'text', value: 'A completed' }] }],
+  return `A completed.\n\n${COMPLETION_MARKER_V3}\n${JSON.stringify({
+    evidence: ['verified A'],
+    noChangeReason: null,
   })}`;
 }
 
@@ -368,16 +364,14 @@ describe('SubtaskAttemptRunner', () => {
   });
 
   it('blocks a handoff that would exceed the downstream aggregate budget', async () => {
-    const rawResponse = `A completed.\n\n${COMPLETION_MARKER_V2}\n${JSON.stringify({
-      schemaVersion: 2,
-      status: 'completed',
-      subtaskId: 'task_phase2_a',
-      acceptanceEvidence: [{ key: 'done', evidence: ['verified A'] }],
-      artifacts: [],
-      handoffs: [{
-        toSubtaskId: 'task_phase2_b',
-        items: [{ key: 'summary', type: 'text', value: 'x'.repeat(4_000) }],
-      }],
+    const rawResponse = `A completed.\n\n${COMPLETION_MARKER_V3}\n${JSON.stringify({
+      evidence: [
+        'x'.repeat(1_000),
+        'x'.repeat(1_000),
+        'x'.repeat(1_000),
+        'x'.repeat(997),
+      ],
+      noChangeReason: null,
     })}`;
     const setupResult = setup(rawResponse);
     setupResult.subtaskRepo.upsert(node('task_phase2_c'));
@@ -548,7 +542,12 @@ describe('SubtaskAttemptRunner', () => {
 
     expect(corrected).toMatchObject({ outcome: 'completed', output: 'A completed.' });
     expect(setupResult.executionRuntime.runResponseOnly).toHaveBeenCalledTimes(1);
-    expect(setupResult.executionRuntime.runResponseOnly.mock.calls[0][1]).toContain('first malformed response');
+    const correctionPrompt = setupResult.executionRuntime.runResponseOnly.mock.calls[0][1];
+    expect(correctionPrompt).toContain('first malformed response');
+    expect(correctionPrompt).toContain('{"evidence":["<concise evidence>"],"noChangeReason":null}');
+    expect(correctionPrompt).not.toContain('Completion contract:');
+    expect(correctionPrompt).not.toContain('task_phase2_a');
+    expect(correctionPrompt).not.toContain('acceptanceEvidence');
     expect(setupResult.db.prepare(`
       SELECT attempt_id, terminal_state, raw_response FROM executor_attempt_receipts ORDER BY completed_at, attempt_id
     `).all()).toEqual(expect.arrayContaining([

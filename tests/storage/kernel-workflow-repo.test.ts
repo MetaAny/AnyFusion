@@ -103,10 +103,10 @@ function directReplyEvent(): KernelEvent {
     requestText: 'done',
     generationId: 'generation_event_1', proposalSource: 'initial', targetGraphRevision: 1,
     proposal: {
-      id: 'plan_1', schemaVersion: 6, action: 'direct_reply', confidence: 1, reason: 'answer',
+      id: 'plan_1', schemaVersion: 7, action: 'direct_reply', confidence: 1, reason: 'answer',
       clarificationQuestion: null, response: { directReply: 'done' },
       task: { binding: 'none', taskId: null, control: 'none', scope: null, title: null, goal: null, includeRecentConversationContext: false, priority: null },
-      risk: { level: 'low', requiresConfirmation: false, reasons: [] }, authorizationResolution: null, workGraph: null, source: 'codex-planner',
+      risk: { level: 'low', requiresConfirmation: false, reasons: [] }, authorizationResolution: null, workGraph: null, source: 'anyfusion-planner',
     },
   };
 }

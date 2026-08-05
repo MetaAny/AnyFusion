@@ -86,7 +86,7 @@ docker build -f Dockerfile.test -t metaclaw-test .
 docker run --rm metaclaw-test
 # Run the Docker integration test from a control container with the Engine
 # socket and an explicit host-path map.
-# The default live smoke verifies two turns in one native Codex Planner session.
+# The default live smoke verifies two turns in one persisted AnyFusion-Pi Planner session.
 npm run smoke:metaclaw
 # The explicit artifact gate exercises Planner -> Kernel -> attempt -> publication.
 npm run smoke:metaclaw -- --scenario artifact

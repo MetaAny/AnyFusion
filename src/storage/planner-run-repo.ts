@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import type { PlannerToolCallTrace } from '../planning/planner-codex-runner.js';
+import type { PlannerToolCallTrace } from '../planning/planner-process-runner.js';
 import { generateInteractionId } from '../utils/id.js';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 

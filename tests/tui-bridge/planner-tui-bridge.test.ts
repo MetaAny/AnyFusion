@@ -2,184 +2,182 @@ import { once } from 'node:events';
 import { createConnection, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
-import type {
-  PlannerTuiPlanSubmissionResult,
-  PlannerTuiSnapshot,
-  SessionSnapshot,
-} from '../../src/session/metaclaw-session.js';
-import {
-  PlannerTuiBridge,
-  type PlannerTuiBridgeSession,
-} from '../../src/tui-bridge/planner-tui-bridge.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { PlannerProposalResult, PlannerProposalSubmission } from '../../src/planning/planner-proposal.js';
+import type { PlannerTuiSnapshot, SessionSnapshot } from '../../src/session/metaclaw-session.js';
+import { PlannerTuiBridge, type PlannerTuiBridgeSession } from '../../src/tui-bridge/planner-tui-bridge.js';
 
-function snapshot(output: string[] = []): PlannerTuiSnapshot {
-  return {
-    schemaVersion: 1,
-    session: {
-      id: 'sess_bridge',
-      focusedTask: { id: 'task_current', title: 'Current task', status: 'running' },
+class FakeSession implements PlannerTuiBridgeSession {
+  readonly submitPlannerProposal = vi.fn(async (submission: PlannerProposalSubmission): Promise<PlannerProposalResult> => ({
+    status: 'accepted',
+    turnId: submission.turnId,
+    submissionId: submission.submissionId,
+    planId: 'plan-1',
+    outcome: 'direct_reply_delivered',
+    displayText: 'authoritative reply',
+    taskId: null,
+    kernel: { decisionId: 'decision-1', action: 'deliver_direct_reply', reason: 'reply' },
+  }));
+
+  subscribe(listener: (snapshot: SessionSnapshot) => void): () => void {
+    listener({
+      output: [], currentTaskId: null, currentTask: null,
       runtimeState: {
-        runningTaskId: 'task_current',
-        runningExecutorName: 'codex-cli',
-        readyTaskIds: ['task_ready'],
-        blockedTaskIds: [],
-        parkedTaskIds: [],
-        lastEvent: 'running',
+        runningTaskId: null, runningExecutorName: null, readyTaskIds: [], blockedTaskIds: [],
+        parkedTaskIds: [], lastEvent: 'idle',
       },
-      plannerState: { status: 'idle' },
-      recentOutput: output,
-    },
-    taskPool: [
-      { id: 'task_current', title: 'Current task', goal: 'Current goal', status: 'running' },
-      { id: 'task_ready', title: 'Ready task', goal: 'Ready goal', status: 'ready' },
-    ],
-    executorStatuses: [],
-  };
-}
-
-class FakePlannerTuiSession implements PlannerTuiBridgeSession {
-  current = snapshot();
-  readonly listeners = new Set<(value: SessionSnapshot) => void>();
-  readonly submissions: Array<{ userInput: string; plan: unknown }> = [];
-  result: PlannerTuiPlanSubmissionResult = { accepted: true, errors: [], planId: 'plan_from_tui' };
-
-  subscribe(listener: (value: SessionSnapshot) => void): () => void {
-    this.listeners.add(listener);
-    listener(this.toSessionSnapshot());
-    return () => this.listeners.delete(listener);
+      plannerState: { status: 'idle' }, latestGuidance: null,
+    });
+    return () => undefined;
   }
 
   getPlannerTuiSnapshot(): PlannerTuiSnapshot {
-    return this.current;
-  }
-
-  async submitPlannerTuiPlan(userInput: string, plan: unknown): Promise<PlannerTuiPlanSubmissionResult> {
-    this.submissions.push({ userInput, plan });
-    return this.result;
-  }
-
-  emit(next: PlannerTuiSnapshot): void {
-    this.current = next;
-    for (const listener of this.listeners) listener(this.toSessionSnapshot());
-  }
-
-  private toSessionSnapshot(): SessionSnapshot {
     return {
-      output: this.current.session.recentOutput,
-      currentTaskId: this.current.session.focusedTask?.id ?? null,
-      currentTask: this.current.session.focusedTask,
-      runtimeState: this.current.session.runtimeState,
-      plannerState: this.current.session.plannerState,
-      latestGuidance: null,
+      schemaVersion: 1,
+      session: {
+        id: 'session-1', focusedTask: null,
+        runtimeState: {
+          runningTaskId: null, runningExecutorName: null, readyTaskIds: [], blockedTaskIds: [],
+          parkedTaskIds: [], lastEvent: 'idle',
+        },
+        plannerState: { status: 'idle' }, recentOutput: [],
+      },
+      taskPool: [], executorStatuses: [],
     };
   }
+
+  completeCommand(text: string, cursor = text.length) {
+    return {
+      state: 'incomplete' as const,
+      suggestions: [{
+        value: 'list', label: 'list', description: 'List tasks',
+        replacement: { start: 6, end: cursor, text: 'list' },
+      }],
+      hint: '/task <list|show>', error: null,
+    };
+  }
+
+  async submitPlannerTuiCommand(command: string) {
+    return { exitRequested: false, output: [`> ${command}`] };
+  }
 }
+
+const bridges: PlannerTuiBridge[] = [];
+
+afterEach(async () => {
+  await Promise.all(bridges.splice(0).map(bridge => bridge.stop()));
+});
+
+describe('PlannerTuiBridge shared Proposal Host', () => {
+  it('binds hello to a registered session and returns the structured authoritative result', async () => {
+    const socketPath = join(tmpdir(), `planner-host-${process.pid}-${Date.now()}.sock`);
+    const session = new FakeSession();
+    const bridge = new PlannerTuiBridge({ socketPath });
+    bridges.push(bridge);
+    bridge.registerSession('session-1', session);
+    await bridge.start();
+    const socket = await connect(socketPath);
+
+    write(socket, { protocolVersion: 2, type: 'hello', requestId: 'hello-1', runtimeVersion: 'test', sessionId: 'session-1', mode: 'rpc' });
+    expect(await read(socket)).toMatchObject({ type: 'hello', accepted: true });
+    write(socket, {
+      protocolVersion: 2, type: 'proposal_submit', requestId: 'proposal-1',
+      turnId: 'turn-1', sessionId: 'session-1', userInput: 'hello',
+      submissionId: 'submission-1', purpose: 'kernel', plan: { schemaVersion: 7 },
+    });
+
+    expect(await read(socket)).toMatchObject({
+      type: 'proposal_result',
+      result: { status: 'accepted', submissionId: 'submission-1', displayText: 'authoritative reply' },
+    });
+    expect(session.submitPlannerProposal).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 'session-1', turnId: 'turn-1', runtimeMode: 'rpc',
+    }), 'kernel');
+    socket.destroy();
+  });
+
+  it('requires hello and rejects proposal session drift', async () => {
+    const socketPath = join(tmpdir(), `planner-host-${process.pid}-${Date.now()}-drift.sock`);
+    const bridge = new PlannerTuiBridge({ socketPath });
+    bridges.push(bridge);
+    bridge.registerSession('session-1', new FakeSession());
+    await bridge.start();
+    const socket = await connect(socketPath);
+    write(socket, { protocolVersion: 2, type: 'ping', requestId: 'ping-1' });
+    expect(await read(socket)).toMatchObject({ type: 'error', error: { code: 'hello_required' } });
+    write(socket, { protocolVersion: 2, type: 'hello', requestId: 'hello-1', runtimeVersion: 'test', sessionId: 'session-1', mode: 'interactive' });
+    await read(socket);
+    write(socket, {
+      protocolVersion: 2, type: 'proposal_submit', requestId: 'proposal-1',
+      turnId: 'turn-1', sessionId: 'session-2', userInput: 'hello',
+      submissionId: 'submission-1', purpose: 'kernel', plan: {},
+    });
+    expect(await read(socket)).toMatchObject({ type: 'error', error: { code: 'session_mismatch' } });
+    socket.destroy();
+  });
+
+  it('fails closed when hello names an unregistered session', async () => {
+    const socketPath = join(tmpdir(), `planner-host-${process.pid}-${Date.now()}-unknown.sock`);
+    const registered = new FakeSession();
+    const bridge = new PlannerTuiBridge({ socketPath });
+    bridges.push(bridge);
+    bridge.registerSession('session-1', registered);
+    await bridge.start();
+    const socket = await connect(socketPath);
+
+    write(socket, {
+      protocolVersion: 2, type: 'hello', requestId: 'hello-unknown', runtimeVersion: 'test',
+      sessionId: 'session-2', mode: 'rpc',
+    });
+
+    expect(await read(socket)).toMatchObject({
+      type: 'error', requestId: 'hello-unknown', error: { code: 'unknown_session' },
+    });
+    expect(registered.submitPlannerProposal).not.toHaveBeenCalled();
+    socket.destroy();
+  });
+
+  it('returns transport_uncertain when the authoritative session submission throws', async () => {
+    const socketPath = join(tmpdir(), `planner-host-${process.pid}-${Date.now()}-uncertain.sock`);
+    const session = new FakeSession();
+    session.submitPlannerProposal.mockRejectedValueOnce(new Error('kernel connection lost'));
+    const bridge = new PlannerTuiBridge({ socketPath });
+    bridges.push(bridge);
+    bridge.registerSession('session-1', session);
+    await bridge.start();
+    const socket = await connect(socketPath);
+
+    write(socket, { protocolVersion: 2, type: 'hello', requestId: 'hello-1', runtimeVersion: 'test', sessionId: 'session-1', mode: 'rpc' });
+    await read(socket);
+    write(socket, {
+      protocolVersion: 2, type: 'proposal_submit', requestId: 'proposal-1',
+      turnId: 'turn-1', sessionId: 'session-1', userInput: 'hello',
+      submissionId: 'submission-1', purpose: 'kernel', plan: { schemaVersion: 7 },
+    });
+
+    expect(await read(socket)).toMatchObject({
+      type: 'proposal_result',
+      result: {
+        status: 'transport_uncertain', turnId: 'turn-1', submissionId: 'submission-1',
+        retryableByReplay: true, message: 'kernel connection lost',
+      },
+    });
+    socket.destroy();
+  });
+});
 
 async function connect(socketPath: string): Promise<Socket> {
   const socket = createConnection(socketPath);
-  await once(socket, 'connect');
   socket.setEncoding('utf8');
+  await once(socket, 'connect');
   return socket;
 }
 
-function collectJsonLines(socket: Socket): { lines: unknown[]; waitFor: (count: number) => Promise<unknown[]> } {
-  const lines: unknown[] = [];
-  let buffer = '';
-  const waiters: Array<{ count: number; resolve: (value: unknown[]) => void }> = [];
-  socket.on('data', chunk => {
-    buffer += chunk;
-    let newline = buffer.indexOf('\n');
-    while (newline >= 0) {
-      lines.push(JSON.parse(buffer.slice(0, newline)));
-      buffer = buffer.slice(newline + 1);
-      newline = buffer.indexOf('\n');
-    }
-    for (const waiter of waiters.splice(0)) {
-      if (lines.length >= waiter.count) waiter.resolve([...lines]);
-      else waiters.push(waiter);
-    }
-  });
-  return {
-    lines,
-    waitFor: count => lines.length >= count
-      ? Promise.resolve([...lines])
-      : new Promise(resolve => waiters.push({ count, resolve })),
-  };
+function write(socket: Socket, value: unknown): void {
+  socket.write(`${JSON.stringify(value)}\n`);
 }
 
-const itIfUnix = process.platform === 'win32' ? it.skip : it;
-
-describe('PlannerTuiBridge', () => {
-  const bridges: PlannerTuiBridge[] = [];
-  const sockets: Socket[] = [];
-
-  afterEach(async () => {
-    for (const socket of sockets.splice(0)) socket.destroy();
-    await Promise.all(bridges.splice(0).map(bridge => bridge.stop()));
-  });
-
-  itIfUnix('streams a read-only session/task projection and forwards Stop-hook proposals only through the session port', async () => {
-    const session = new FakePlannerTuiSession();
-    const socketPath = join(tmpdir(), `metaclaw-planner-tui-${process.pid}-${Date.now()}.sock`);
-    const bridge = new PlannerTuiBridge({ socketPath, session });
-    bridges.push(bridge);
-    await bridge.start();
-
-    const socket = await connect(socketPath);
-    sockets.push(socket);
-    const received = collectJsonLines(socket);
-    socket.write(`${JSON.stringify({ type: 'subscribe', requestId: 'sub-1' })}
-`);
-    const initial = await received.waitFor(2);
-    expect(initial).toEqual(expect.arrayContaining([
-      expect.objectContaining({ type: 'response', requestId: 'sub-1', ok: true }),
-      expect.objectContaining({ type: 'snapshot', snapshot: expect.objectContaining({ taskPool: expect.any(Array) }) }),
-    ]));
-
-    session.emit(snapshot(['Kernel delivered a reply']));
-    const changed = await received.waitFor(3);
-    expect(changed.at(-1)).toEqual(expect.objectContaining({
-      type: 'snapshot',
-      snapshot: expect.objectContaining({ session: expect.objectContaining({ recentOutput: ['Kernel delivered a reply'] }) }),
-    }));
-
-    socket.write(`${JSON.stringify({
-      type: 'planner_stop',
-      requestId: 'stop-1',
-      userInput: 'Create a task',
-      plan: { schemaVersion: 6 },
-    })}
-`);
-    const complete = await received.waitFor(4);
-    expect(complete.at(-1)).toEqual(expect.objectContaining({
-      type: 'response', requestId: 'stop-1', ok: true,
-      result: { accepted: true, planId: 'plan_from_tui' },
-    }));
-    expect(session.submissions).toEqual([{ userInput: 'Create a task', plan: { schemaVersion: 6 } }]);
-  });
-
-  itIfUnix('returns validation failures from the Session without retrying or granting a write surface', async () => {
-    const session = new FakePlannerTuiSession();
-    session.result = { accepted: false, errors: ['schemaVersion: expected 6'], planId: null };
-    const socketPath = join(tmpdir(), `metaclaw-planner-tui-${process.pid}-${Date.now()}-invalid.sock`);
-    const bridge = new PlannerTuiBridge({ socketPath, session });
-    bridges.push(bridge);
-    await bridge.start();
-
-    const socket = await connect(socketPath);
-    sockets.push(socket);
-    const received = collectJsonLines(socket);
-    socket.write(`${JSON.stringify({
-      type: 'planner_stop', requestId: 'stop-invalid', userInput: 'Bad plan', plan: {},
-    })}
-`);
-
-    const messages = await received.waitFor(1);
-    expect(messages[0]).toEqual(expect.objectContaining({
-      type: 'response', requestId: 'stop-invalid', ok: false,
-      error: expect.objectContaining({ code: 'plan_rejected', details: ['schemaVersion: expected 6'] }),
-    }));
-    expect(session.submissions).toEqual([{ userInput: 'Bad plan', plan: {} }]);
-  });
-});
+async function read(socket: Socket): Promise<Record<string, unknown>> {
+  const [chunk] = await once(socket, 'data');
+  return JSON.parse(String(chunk).trim()) as Record<string, unknown>;
+}

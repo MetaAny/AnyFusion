@@ -15,7 +15,7 @@ function readEnvironmentFile(path: string): Map<string, string> {
   );
 }
 
-describe('SSH login environment', () => {
+describe.skipIf(process.platform === 'win32')('SSH login environment', () => {
   it('persists MetaClaw runtime paths for sessions started by sshd', () => {
     const directory = mkdtempSync(join(tmpdir(), 'metaclaw-ssh-environment-'));
     const environmentPath = join(directory, 'environment');
@@ -31,13 +31,14 @@ describe('SSH login environment', () => {
             ...process.env,
             OPENAI_API_KEY: 'must-not-be-persisted',
             OPENAI_BASE_URL: 'https://example.invalid/v1',
-            METACLAW_PLANNER_ENV_FILE: '/run/metaclaw/env/planner-codex.env',
+            METACLAW_PLANNER_ENV_FILE: '/run/metaclaw/env/planner-pi.env',
             METACLAW_CODEX_EXECUTOR_ENV_FILE: '/run/metaclaw/env/executor-codex.env',
             METACLAW_PI_EXECUTOR_ENV_FILE: '/run/metaclaw/env/executor-pi.env',
             METACLAW_HOME: '/test/data/metaclaw',
-            METACLAW_PLANNER_CODEX_HOME: '/test/codex/planner',
+            ANYFUSION_PLANNER_HOME: '/test/anyfusion/planner',
+        METACLAW_PLANNER_HOME: '/test/anyfusion/planner',
             METACLAW_EXECUTOR_CODEX_HOME: '/test/codex/executor',
-            METACLAW_PLANNER_SCHEMA_PATH: '/test/schema/planning-agent-plan-v6.schema.json',
+            METACLAW_PLANNER_SCHEMA_PATH: '/test/schema/planning-agent-plan-v7.schema.json',
             METACLAW_PLANNER_WORKDIR: '/test/workdir/planner',
           },
         },
@@ -45,13 +46,14 @@ describe('SSH login environment', () => {
 
       expect(Object.fromEntries(readEnvironmentFile(environmentPath))).toMatchObject({
         LANG: 'C.UTF-8',
-        METACLAW_PLANNER_ENV_FILE: '/run/metaclaw/env/planner-codex.env',
+        METACLAW_PLANNER_ENV_FILE: '/run/metaclaw/env/planner-pi.env',
         METACLAW_CODEX_EXECUTOR_ENV_FILE: '/run/metaclaw/env/executor-codex.env',
         METACLAW_PI_EXECUTOR_ENV_FILE: '/run/metaclaw/env/executor-pi.env',
         METACLAW_HOME: '/test/data/metaclaw',
-        METACLAW_PLANNER_CODEX_HOME: '/test/codex/planner',
+        ANYFUSION_PLANNER_HOME: '/test/anyfusion/planner',
+            METACLAW_PLANNER_HOME: '/test/anyfusion/planner',
         METACLAW_EXECUTOR_CODEX_HOME: '/test/codex/executor',
-        METACLAW_PLANNER_SCHEMA_PATH: '/test/schema/planning-agent-plan-v6.schema.json',
+        METACLAW_PLANNER_SCHEMA_PATH: '/test/schema/planning-agent-plan-v7.schema.json',
         METACLAW_PLANNER_WORKDIR: '/test/workdir/planner',
       });
       const persisted = Object.fromEntries(readEnvironmentFile(environmentPath));

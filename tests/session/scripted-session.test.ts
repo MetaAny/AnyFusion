@@ -218,7 +218,7 @@ describe('scripted session', () => {
       sessionId: 'sess_scripted_artifact',
       contextRecaller,
       planningAgent: stubPlanningAgent(
-        workGraphPlan({ goal: '写一段测试内容，保存成 markdown 文件' }),
+        workGraphPlan({ goal: '写一段测试内容，保存成 markdown 文件', capabilityClass: 'code_edit' }),
       ),
     });
 
@@ -259,7 +259,7 @@ describe('scripted session', () => {
       sessionId: 'sess_scripted_html_artifact',
       contextRecaller,
       planningAgent: stubPlanningAgent(
-        workGraphPlan({ goal: '生成一个报名落地页 html 文件' }),
+        workGraphPlan({ goal: '生成一个报名落地页 html 文件', capabilityClass: 'code_edit' }),
       ),
     });
 

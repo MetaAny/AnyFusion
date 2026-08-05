@@ -215,7 +215,7 @@ function subtaskToProposal(subtask: Subtask): SubtaskProposal {
     contextRefs: subtask.contextRefs,
     requiredCapabilities: subtask.requiredCapabilities as SubtaskProposal['requiredCapabilities'],
     preferredAgentClassList: subtask.preferredAgentClassList as SubtaskProposal['preferredAgentClassList'],
-    expectedOutput: subtask.expectedOutput,
+    deliveryKind: subtask.deliveryKind,
     acceptance: subtask.acceptance,
     riskLevel: subtask.riskLevel,
   };

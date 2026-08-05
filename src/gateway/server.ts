@@ -8,7 +8,7 @@ import type { MemoryEngine } from '../memory/memory-engine.js';
 import type { OrchestrationEngine } from '../guidance/orchestration.js';
 import type { ContextRecaller } from '../memory/context-recaller.js';
 import type { NotificationService } from '../notifications/types.js';
-import { MetaclawSession } from '../session/metaclaw-session.js';
+import { MetaclawSession, type PlannerHostRegistrar } from '../session/metaclaw-session.js';
 import { createJsonLineParser, encodeJsonLine } from './jsonl.js';
 import type { GatewayClientMessage, GatewayServerMessage } from './protocol.js';
 
@@ -22,6 +22,7 @@ interface GatewayServerDeps {
   contextRecaller: ContextRecaller;
   notifier: NotificationService;
   workspaceRoot: string;
+  plannerHost?: PlannerHostRegistrar;
 }
 
 export class MetaclawGatewayServer {
@@ -84,6 +85,7 @@ export class MetaclawGatewayServer {
       sessionId,
       contextRecaller: this.deps.contextRecaller,
       notifier: this.deps.notifier,
+      plannerHost: this.deps.plannerHost,
     });
 
     let observedOutputLength = 0;
@@ -103,9 +105,11 @@ export class MetaclawGatewayServer {
 
     socket.on('close', () => {
       unsubscribe();
+      session.dispose();
     });
     socket.on('error', () => {
       unsubscribe();
+      session.dispose();
     });
 
     send({ type: 'hello', sessionId });

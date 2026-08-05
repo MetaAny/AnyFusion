@@ -107,8 +107,10 @@ describe('App permission recovery natural-language control', () => {
       await flushUpdates();
     }
     await (inputCapture.handler?.('', { return: true }) ?? Promise.resolve());
-    await flushUpdates();
-    await flushUpdates();
+    for (let attempt = 0; attempt < 100 && attemptSandbox.create.mock.calls.length === 0; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+      await flushUpdates();
+    }
 
     expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
     expect(attemptSandbox.create.mock.calls[0][0].taskId).toBe(blockedTask.id);

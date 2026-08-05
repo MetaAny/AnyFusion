@@ -22,7 +22,7 @@ RUN npm ci
 
 RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.80.2
 
-# Codex CLI is the default planner + executor (pi stays installed as an executor candidate).
+# Stock Codex and Pi CLIs are installed only for Executor integration tests; Planner uses the AnyFusion-Pi process boundary.
 RUN npm install -g --ignore-scripts @openai/codex@0.144.1
 
 COPY . .

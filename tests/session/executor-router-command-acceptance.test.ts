@@ -145,11 +145,11 @@ describe('planner-first executor command acceptance', () => {
     const agentClasses = db.prepare('SELECT name FROM agent_classes ORDER BY name ASC').all() as Array<{ name: string }>;
     expect(agentClasses.map(row => row.name)).toEqual(expect.arrayContaining(['codex-cli', 'planner']));
 
-    const subtasks = db.prepare('SELECT status, expected_output FROM subtasks ORDER BY created_at ASC').all() as Array<{
+    const subtasks = db.prepare('SELECT status, delivery_kind FROM subtasks ORDER BY created_at ASC').all() as Array<{
       status: string;
-      expected_output: string;
+      delivery_kind: string;
     }>;
-    expect(subtasks).toEqual([expect.objectContaining({ status: 'done', expected_output: 'patch' })]);
+    expect(subtasks).toEqual([expect.objectContaining({ status: 'done', delivery_kind: 'edit' })]);
 
     const workUnitEvents = db.prepare('SELECT event_type FROM work_unit_events ORDER BY created_at ASC').all() as Array<{ event_type: string }>;
     expect(workUnitEvents.map(row => row.event_type)).toEqual(expect.arrayContaining(['claimed', 'running', 'released']));

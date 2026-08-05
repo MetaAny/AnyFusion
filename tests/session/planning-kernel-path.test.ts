@@ -12,8 +12,13 @@ import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { ControlKernel } from '../../src/kernel/control-kernel.js';
 import type { Config } from '../../src/core/types.js';
 import type { PlanningAgentPlan, PlanningContext } from '../../src/planning/planning-types.js';
-import { COMPLETION_MARKER_V2 } from '../../src/execution/completion-protocol.js';
+import { COMPLETION_MARKER_V3 } from '../../src/execution/completion-protocol.js';
 import { PlanningContextBuilder } from '../../src/planning/planning-context-builder.js';
+import {
+  createPlannerProposalSubmissionId,
+  plannerProposalFingerprint,
+} from '../../src/planning/planner-proposal.js';
+import { PlannerProposalRepo } from '../../src/storage/planner-proposal-repo.js';
 import { SubtaskRepo } from '../../src/storage/subtask-repo.js';
 import { TaskExecutionEvidenceRepo } from '../../src/execution/execution-evidence-port.js';
 import type {
@@ -24,6 +29,7 @@ import {
   completionResponseFromSandboxInput,
   FakeAttemptSandbox,
 } from '../support/fake-attempt-sandbox.js';
+import { planningAgentFromPlanMock } from '../support/planning-agent-plans.js';
 
 function createConfig(): Config {
   return {
@@ -37,7 +43,7 @@ function createConfig(): Config {
 function plan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgentPlan {
   return {
     id: 'plan_test',
-    schemaVersion: 6,
+    schemaVersion: 7,
     action: 'plan_work_graph',
     confidence: 0.9,
     reason: 'planner 直接产出工作图',
@@ -65,12 +71,12 @@ function plan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgentPlan {
         contextRefs: [{ kind: 'current_user_input' }],
         requiredCapabilities: ['workspace-engineering'],
         preferredAgentClassList: ['codex-cli'],
-        expectedOutput: 'patch',
+        deliveryKind: 'edit',
         acceptance: [{ key: 'tests', description: 'List changed files and test evidence.', requiredEvidence: ['test result'] }],
         riskLevel: 'low',
       }],
     },
-    source: 'codex-planner',
+    source: 'anyfusion-planner',
     ...overrides,
   };
 }
@@ -100,11 +106,11 @@ function createSession(
     config: createConfig(),
     sessionId,
     contextRecaller: new ContextRecaller(db),
-    planningAgent: {
-      plan: typeof planningPlan === 'function'
+    planningAgent: planningAgentFromPlanMock(
+      typeof planningPlan === 'function'
         ? vi.fn().mockImplementation(planningPlan)
         : vi.fn().mockResolvedValue(planningPlan),
-    },
+    ),
   });
   session.initialize({ resumeStartupTasks: false });
   return {
@@ -132,12 +138,12 @@ function seedPriorGenerationEvidence(db: Database.Database, taskId: string): voi
     contextRefs: [],
     requiredCapabilities: ['workspace-engineering'],
     preferredAgentClassList: ['codex-cli'],
-    expectedOutput: 'historical result',
+    deliveryKind: 'report',
     acceptance: [],
     riskLevel: 'low',
     result: 'must not leak into the current generation',
     artifacts: [],
-    verification: { warnings: [], completionSchemaVersion: 2 },
+    verification: { warnings: [], completionSchemaVersion: 3 },
     error: null,
     createdAt: now,
     updatedAt: now,
@@ -155,10 +161,10 @@ function seedPriorGenerationEvidence(db: Database.Database, taskId: string): voi
 
 // Behavior-first coverage of the PlanningAgent -> ControlKernel -> Runtime seam.
 // Rather than grepping the session source for symbol names, these assert the
-// observable side effects the seam is responsible for: a persisted
-// planning_decisions audit row for every turn, plus the task/executor outcome.
+// observable side effects the seam is responsible for: a durable proposal
+// result, plus the Kernel audit and task/executor outcome for accepted plans.
 describe('natural-language planning/kernel path', () => {
-  it('submits a native TUI Stop-hook plan through existing Kernel workflow without invoking the runner', async () => {
+  it('submits a native TUI proposal through existing Kernel workflow without invoking the runner', async () => {
     let plannerCalls = 0;
     const harness = createSession('sess_native_tui_handoff', () => {
       plannerCalls += 1;
@@ -181,9 +187,19 @@ describe('natural-language planning/kernel path', () => {
       workGraph: null,
     });
 
-    const result = await harness.session.submitPlannerTuiPlan('请简短回答', nativePlan);
+    const turnId = 'turn_native_tui';
+    const result = await harness.session.submitPlannerProposal({
+      sessionId: harness.sessionId,
+      turnId,
+      userInput: '请简短回答',
+      submissionId: createPlannerProposalSubmissionId(harness.sessionId, turnId, nativePlan),
+      plan: nativePlan,
+      runtimeMode: 'interactive',
+    });
 
-    expect(result).toEqual({ accepted: true, errors: [], planId: 'plan_native_tui' });
+    expect(result).toMatchObject({
+      status: 'accepted', planId: 'plan_native_tui', outcome: 'direct_reply_delivered',
+    });
     expect(plannerCalls).toBe(0);
     expect(harness.session.getSnapshot().output.join('\n')).toContain('已由 native Planner 提交。');
     expect(harness.kernelDecisionRepo.listBySession('sess_native_tui_handoff')).toEqual([
@@ -195,11 +211,223 @@ describe('natural-language planning/kernel path', () => {
     const harness = createSession('sess_native_tui_invalid', plan());
     const invalid = { ...plan(), schemaVersion: 5 };
 
-    const result = await harness.session.submitPlannerTuiPlan('创建任务', invalid);
+    const turnId = 'turn_native_tui_invalid';
+    const result = await harness.session.submitPlannerProposal({
+      sessionId: harness.sessionId,
+      turnId,
+      userInput: '创建任务',
+      submissionId: createPlannerProposalSubmissionId(harness.sessionId, turnId, invalid),
+      plan: invalid,
+      runtimeMode: 'interactive',
+    });
 
-    expect(result.accepted).toBe(false);
-    expect(result.errors.join('\n')).toContain('schemaVersion');
+    expect(result.status).toBe('rejected');
+    expect(result.status === 'rejected' ? result.issues.join('\n') : '').toContain('schemaVersion');
     expect(harness.kernelDecisionRepo.listBySession('sess_native_tui_invalid')).toHaveLength(0);
+  });
+
+  it('normalizes a whitespace taskId before validation and creates one canonical Task identity', async () => {
+    const harness = createSession('sess_native_blank_task_id', plan());
+    const rawPlan = plan({
+      id: 'plan_blank_task_id',
+      task: { ...plan().task, taskId: '   ' },
+    });
+    const turnId = 'turn_blank_task_id';
+
+    const result = await harness.session.submitPlannerProposal({
+      sessionId: harness.sessionId,
+      turnId,
+      userInput: '创建一个工作区文件',
+      submissionId: createPlannerProposalSubmissionId(harness.sessionId, turnId, rawPlan),
+      plan: rawPlan,
+      runtimeMode: 'interactive',
+    });
+
+    expect(result).toMatchObject({
+      status: 'accepted',
+      outcome: 'task_authorized',
+      taskId: expect.stringMatching(/^task_/),
+    });
+    expect(harness.taskRepo.findAll()).toHaveLength(1);
+    expect(harness.taskRepo.findAll()[0]?.id).toMatch(/^task_/);
+    expect(harness.taskRepo.findById('')).toBeNull();
+    expect(harness.taskRepo.findById('   ')).toBeNull();
+  });
+
+  it('returns an accepted proposal after Task and Work Graph persistence without waiting for Executor completion', async () => {
+    let notifyExecutorStarted!: () => void;
+    const executorStarted = new Promise<void>(resolveStarted => {
+      notifyExecutorStarted = resolveStarted;
+    });
+    let finishExecutor: (() => void) | null = null;
+    const harness = createSession('sess_native_background_executor', plan(), () => {
+      const wait = new Promise<number>(resolve => {
+        finishExecutor = () => resolve(0);
+      });
+      notifyExecutorStarted();
+      return { body: 'background executor done', wait };
+    });
+    const rawPlan = plan({ id: 'plan_background_executor' });
+    const turnId = 'turn_background_executor';
+
+    const resultPromise = harness.session.submitPlannerProposal({
+      sessionId: harness.sessionId,
+      turnId,
+      userInput: '创建一个后台执行的任务',
+      submissionId: createPlannerProposalSubmissionId(harness.sessionId, turnId, rawPlan),
+      plan: rawPlan,
+      runtimeMode: 'interactive',
+    });
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    const timeout = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(() => {
+        finishExecutor?.();
+        reject(new Error('proposal submission waited for Executor completion'));
+      }, 250);
+    });
+
+    try {
+      const result = await Promise.race([resultPromise, timeout]);
+      expect(result).toMatchObject({
+        status: 'accepted', outcome: 'task_authorized', taskId: expect.stringMatching(/^task_/),
+      });
+      expect(harness.taskRepo.findAll()).toHaveLength(1);
+      expect(harness.db.prepare('SELECT COUNT(*) AS count FROM work_graph_revisions').get())
+        .toEqual({ count: 1 });
+      expect(harness.attemptSandbox.create).not.toHaveBeenCalled();
+      await executorStarted;
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
+      finishExecutor?.();
+      await harness.session.waitForAsyncWork();
+    }
+  });
+
+  it('replays the same accepted submission without duplicating Kernel or interaction facts', async () => {
+    const harness = createSession('sess_native_idempotent', plan());
+    const direct = plan({
+      id: 'plan_idempotent',
+      action: 'direct_reply',
+      response: { directReply: 'idempotent reply' },
+      task: {
+        binding: 'none', taskId: null, control: 'none', scope: null,
+        title: null, goal: null, includeRecentConversationContext: false, priority: null,
+      },
+      workGraph: null,
+    });
+    const turnId = 'turn_idempotent';
+    const submissionId = createPlannerProposalSubmissionId(harness.sessionId, turnId, direct);
+    const submission = {
+      sessionId: harness.sessionId, turnId, userInput: 'hello', submissionId, plan: direct,
+      runtimeMode: 'interactive' as const,
+    };
+
+    const first = await harness.session.submitPlannerProposal(submission);
+    const replay = await harness.session.submitPlannerProposal(submission);
+
+    expect(first).toEqual(replay);
+    expect(first).toMatchObject({ status: 'accepted', outcome: 'direct_reply_delivered' });
+    expect(harness.kernelDecisionRepo.listBySession(harness.sessionId)).toHaveLength(1);
+    expect(harness.db.prepare('SELECT COUNT(*) AS count FROM interactions').get()).toEqual({ count: 1 });
+    expect(harness.session.getSnapshot().output.filter(line => line.includes('> hello'))).toHaveLength(1);
+  });
+
+  it('reports an in-flight identical submission without submitting a duplicate Kernel event', async () => {
+    const harness = createSession('sess_native_in_flight', plan());
+    const rawPlan = plan({ id: 'plan_in_flight' });
+    const turnId = 'turn_in_flight';
+    const submissionId = createPlannerProposalSubmissionId(harness.sessionId, turnId, rawPlan);
+    const proposals = new PlannerProposalRepo(harness.db);
+    proposals.ensureTurn(harness.sessionId, turnId, 'create work');
+    proposals.reserveSubmission({
+      sessionId: harness.sessionId,
+      turnId,
+      submissionId,
+      planFingerprint: plannerProposalFingerprint(rawPlan),
+      planId: rawPlan.id,
+      eventId: `plan_event_${submissionId}`,
+    });
+
+    const result = await harness.session.submitPlannerProposal({
+      sessionId: harness.sessionId,
+      turnId,
+      userInput: 'create work',
+      submissionId,
+      plan: rawPlan,
+      runtimeMode: 'interactive',
+    });
+
+    expect(result).toMatchObject({ status: 'transport_uncertain', retryableByReplay: true });
+    expect(harness.kernelDecisionRepo.listBySession(harness.sessionId)).toHaveLength(0);
+  });
+
+  it('locks an accepted turn against a different submission', async () => {
+    const harness = createSession('sess_native_conflict', plan());
+    const firstPlan = plan({
+      id: 'plan_first', action: 'no_action', response: { directReply: null },
+      task: {
+        binding: 'none', taskId: null, control: 'none', scope: null,
+        title: null, goal: null, includeRecentConversationContext: false, priority: null,
+      },
+      workGraph: null,
+    });
+    const revisedPlan = { ...firstPlan, id: 'plan_revised', reason: 'different submission' };
+    const turnId = 'turn_conflict';
+    const firstSubmissionId = createPlannerProposalSubmissionId(harness.sessionId, turnId, firstPlan);
+    const revisedSubmissionId = createPlannerProposalSubmissionId(harness.sessionId, turnId, revisedPlan);
+
+    await expect(harness.session.submitPlannerProposal({
+      sessionId: harness.sessionId, turnId, userInput: 'nothing to do',
+      submissionId: firstSubmissionId, plan: firstPlan,
+    })).resolves.toMatchObject({ status: 'accepted' });
+    await expect(harness.session.submitPlannerProposal({
+      sessionId: harness.sessionId, turnId, userInput: 'nothing to do',
+      submissionId: revisedSubmissionId, plan: revisedPlan,
+    })).resolves.toMatchObject({
+      status: 'conflict', acceptedSubmissionId: firstSubmissionId,
+    });
+    expect(harness.kernelDecisionRepo.listBySession(harness.sessionId)).toHaveLength(1);
+  });
+
+  it('keeps the turn open after Kernel rejection so a revised proposal can be accepted', async () => {
+    const harness = createSession('sess_native_kernel_revision', plan());
+    const rejectedPlan = plan({
+      id: 'plan_missing_task_status',
+      action: 'task_control',
+      response: { directReply: null },
+      task: {
+        binding: 'reference', taskId: 'task_missing', control: 'status_query', scope: 'dashboard',
+        title: null, goal: null, includeRecentConversationContext: false, priority: null,
+      },
+      workGraph: null,
+    });
+    const acceptedPlan = plan({
+      id: 'plan_revision_reply',
+      action: 'direct_reply',
+      response: { directReply: '目标任务不存在，请先确认任务 ID。' },
+      task: {
+        binding: 'none', taskId: null, control: 'none', scope: null,
+        title: null, goal: null, includeRecentConversationContext: false, priority: null,
+      },
+      workGraph: null,
+    });
+    const turnId = 'turn_kernel_revision';
+
+    const rejected = await harness.session.submitPlannerProposal({
+      sessionId: harness.sessionId, turnId, userInput: 'resume missing task',
+      submissionId: createPlannerProposalSubmissionId(harness.sessionId, turnId, rejectedPlan),
+      plan: rejectedPlan,
+    });
+    const revised = await harness.session.submitPlannerProposal({
+      sessionId: harness.sessionId, turnId, userInput: 'resume missing task',
+      submissionId: createPlannerProposalSubmissionId(harness.sessionId, turnId, acceptedPlan),
+      plan: acceptedPlan,
+    });
+
+    expect(rejected).toMatchObject({ status: 'rejected', rejectionType: 'kernel' });
+    expect(revised).toMatchObject({ status: 'accepted', outcome: 'direct_reply_delivered' });
+    expect(harness.kernelDecisionRepo.listBySession(harness.sessionId).map(item => item.action))
+      .toEqual(['reject_request', 'deliver_direct_reply']);
   });
 
   it('does not inject confirmed global memory into the Planner model input', async () => {
@@ -346,7 +574,7 @@ describe('natural-language planning/kernel path', () => {
             contextRefs: [{ kind: 'current_user_input' }],
             requiredCapabilities: ['workspace-engineering'],
             preferredAgentClassList: ['codex-cli'],
-            expectedOutput: 'summary',
+            deliveryKind: 'report',
             acceptance: [{
               key: 'a_done',
               description: 'A is complete.',
@@ -362,7 +590,7 @@ describe('natural-language planning/kernel path', () => {
             contextRefs: [{ kind: 'current_user_input' }],
             requiredCapabilities: ['workspace-engineering'],
             preferredAgentClassList: ['codex-cli'],
-            expectedOutput: 'summary',
+            deliveryKind: 'report',
             acceptance: [{
               key: 'b_done',
               description: 'B is complete.',
@@ -485,10 +713,7 @@ describe('natural-language planning/kernel path', () => {
       if (attemptIndex === 0) {
         seedPriorGenerationEvidence(db, input.taskId);
         return {
-          rawOutput: `failed\n\n${COMPLETION_MARKER_V2}\n${JSON.stringify({
-            schemaVersion: 2,
-            status: 'failed',
-            subtaskId: input.subtaskId,
+          rawOutput: `failed\n\n${COMPLETION_MARKER_V3}\n${JSON.stringify({
             failure: { kind: 'task_failed', code: 'implementation_failed', summary: 'approach exhausted' },
           })}`,
         };
@@ -503,7 +728,7 @@ describe('natural-language planning/kernel path', () => {
     expect(plannerCalls).toBe(2);
     expect(replanRequest).not.toContain('evidence_prior_generation');
     expect(replanRequest).not.toContain('must not leak into the current generation');
-    expect(contextBuildCalls).toBe(2);
+    expect(contextBuildCalls).toBe(3);
     expect(harness.attemptSandbox.create).toHaveBeenCalledTimes(2);
     expect(harness.taskRepo.findAll()[0]).toMatchObject({ status: 'done' });
     expect(harness.db.prepare(`
@@ -599,7 +824,7 @@ describe('natural-language planning/kernel path', () => {
     expect(audits[0]!.action).toBe('request_clarification');
   });
 
-  it('maps executor rejection to a user-safe action while preserving the audit reason', async () => {
+  it('maps proposal validation rejection to a user-safe action while preserving the durable reason', async () => {
     const rejectedPlan = plan();
     rejectedPlan.workGraph!.subtasks[0]!.preferredAgentClassList = ['ghost-executor'] as never;
     const harness = createSession('sess_reject_executor', rejectedPlan);
@@ -610,7 +835,12 @@ describe('natural-language planning/kernel path', () => {
     expect(output).toContain('当前请求未通过执行校验，请调整请求后重试。');
     expect(output).not.toContain('ControlKernel rejected request');
     expect(output).not.toContain('no available executor agent class');
-    const [audit] = harness.kernelDecisionRepo.listBySession('sess_reject_executor');
-    expect(audit?.reason).toContain('preferredAgentClassList');
+    expect(harness.kernelDecisionRepo.listBySession('sess_reject_executor')).toHaveLength(0);
+    const proposal = harness.db.prepare(`
+      SELECT result_json FROM planner_proposal_submissions
+      WHERE session_id = ? AND status = 'rejected'
+    `).get('sess_reject_executor') as { result_json: string };
+    const result = JSON.parse(proposal.result_json) as { issues: string[] };
+    expect(result.issues.join('; ')).toContain('preferredAgentClassList');
   });
 });

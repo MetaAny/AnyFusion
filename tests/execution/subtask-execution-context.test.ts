@@ -10,7 +10,7 @@ function node(id: string, title: string, dependencies: Subtask['dependencies'] =
   return {
     id, taskId: 'task_context', title, goal: `private goal for ${title}`, status: 'ready',
     dependencies, contextRefs: [], requiredCapabilities: ['workspace-engineering'],
-    preferredAgentClassList: ['codex-cli'], expectedOutput: 'summary',
+    preferredAgentClassList: ['codex-cli'], deliveryKind: 'report',
     acceptance: [{ key: 'done', description: 'done', requiredEvidence: [] }], riskLevel: 'low',
     result: '', artifacts: [], verification: { warnings: [], completionSchemaVersion: null }, error: null,
     createdAt: '2026-07-17T00:00:00.000Z', updatedAt: '2026-07-17T00:00:00.000Z',

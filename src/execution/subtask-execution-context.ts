@@ -13,7 +13,7 @@ import {
   TaskExecutionEvidenceRepo,
 } from './execution-evidence-port.js';
 import { TaskEventRepo } from '../storage/task-event-repo.js';
-import { COMPLETION_MARKER_V2 } from './completion-protocol.js';
+import { COMPLETION_MARKER_V3 } from './completion-protocol.js';
 import type { ExecutionEvidenceToolBinding } from './execution-evidence-tool-server.js';
 
 export interface SelectedExecutionEvidence {
@@ -26,7 +26,7 @@ export interface SelectedExecutionEvidence {
 
 export interface SubtaskExecutionContext {
   taskBackground: { id: string; title: string; goal: string; instruction: 'background_only' };
-  currentSubtask: Pick<Subtask, 'id' | 'title' | 'goal' | 'expectedOutput' | 'acceptance'>;
+  currentSubtask: Pick<Subtask, 'id' | 'title' | 'goal' | 'deliveryKind' | 'acceptance'>;
   incomingHandoffs: PersistedSubtaskHandoff[];
   outgoingHandoffRequirements: Array<{ toSubtaskId: string; requiredItems: WorkGraphRequiredItem[] }>;
   selectedEvidence: SelectedExecutionEvidence[];
@@ -34,7 +34,7 @@ export interface SubtaskExecutionContext {
   workspaceContext: WorkspaceContext;
   identity: { executionId: string; taskId: string; subtaskId: string; attemptId: string; workUnitId: string };
   completionContract:
-    | { marker: typeof COMPLETION_MARKER_V2; schemaVersion: 2 }
+    | { marker: typeof COMPLETION_MARKER_V3; schemaVersion: 3 }
     | {
         marker: '---METACLAW-MERGE-REPAIR---';
         protocol: 'metaclaw:merge-repair:v1';
@@ -113,7 +113,7 @@ export class SubtaskExecutionContextBuilder {
           id: input.subtask.id,
           title: input.subtask.title,
           goal: input.subtask.goal,
-          expectedOutput: input.subtask.expectedOutput,
+          deliveryKind: input.subtask.deliveryKind,
           acceptance: input.subtask.acceptance,
           ...input.currentSubtaskOverride,
         },
@@ -132,7 +132,7 @@ export class SubtaskExecutionContextBuilder {
           workUnitId: input.workUnitId,
         },
         completionContract: input.completionContractOverride
-          ?? { marker: COMPLETION_MARKER_V2, schemaVersion: 2 },
+          ?? { marker: COMPLETION_MARKER_V3, schemaVersion: 3 },
         recovery: input.recovery,
         evidenceTools: input.evidenceToolsAvailable
           ? {

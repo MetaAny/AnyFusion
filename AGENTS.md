@@ -39,7 +39,7 @@ root. Detailed ownership and dependency rules live in
 
 | Area | Start here |
 | --- | --- |
-| Planning and native Codex thread | [`src/planning/`](src/planning/) |
+| Planning and AnyFusion-Pi session | [`src/planning/`](src/planning/) |
 | Pure policy and graph rules | [`src/kernel/`](src/kernel/), [`src/work-graph/`](src/work-graph/) |
 | Application Shell | [`src/session/`](src/session/) |
 | Attempts, recovery, sandbox, Git publication | [`src/execution/`](src/execution/), [`src/executor/`](src/executor/), [`src/resource/`](src/resource/) |
@@ -53,8 +53,8 @@ Main entry points:
 
 - [`src/index.ts`](src/index.ts) — composition and mode selection.
 - [`src/session/metaclaw-session.ts`](src/session/metaclaw-session.ts) — Application Shell.
-- [`src/planning/codex-planning-agent.ts`](src/planning/codex-planning-agent.ts) and
-  [`src/planning/planner-codex-runner.ts`](src/planning/planner-codex-runner.ts) — Planner boundary.
+- [`src/planning/anyfusion-planning-agent.ts`](src/planning/anyfusion-planning-agent.ts) and
+  [`src/planning/planner-process-runner.ts`](src/planning/planner-process-runner.ts) — Planner boundary.
 - [`src/kernel/control-kernel.ts`](src/kernel/control-kernel.ts) and
   [`src/kernel/kernel-workflow.ts`](src/kernel/kernel-workflow.ts) — policy and
   durable control seam.
@@ -74,7 +74,7 @@ Tests mirror source domains under [`tests/`](tests/). Scenarios and fixtures are
 
 - Preserve ADR-0020's ownership and dependency direction. Detailed runtime rules
   belong in `CONTEXT.md`, not this file.
-- The downstream AnyFusion-Codex native TUI is the default local surface. Its Task panel and
+- The sibling AnyFusion-Pi fork is the default local Planner surface. Its Task panel and
   bridge are presentation/Application-Shell adapters only: they may project state and hand a
   Planner proposal to the existing validation path, but may not mutate storage, schedule work,
   authorize execution, or control an Executor.
@@ -108,11 +108,7 @@ Do not repeatedly retry the full suite on Windows; `npm run lint` is the reliabl
 host check. Core policy, execution, or storage changes require focused tests at
 the owning seam.
 
-For the native-TUI migration, local Docker validation covers this TypeScript
-repository, Unix socket bridge, Session-to-Kernel handoff, and unchanged core
-regressions. Building and interactively validating the Rust
-`MetaAny/anyfusion-codex` fork is a Linux-server handoff; do not trigger that
-large compile during routine local MetaClaw validation.
+For the AnyFusion-Pi migration, local Docker validation covers this TypeScript repository, the Node 20/Node 22 process boundary, Unix socket bridge, stdin/stdout Planner RPC, Session-to-Kernel handoff, and unchanged core regressions. The Pi fork uses `npm run build:offline` and a self-contained Linux image; do not replace it with a host-global Pi install or run Planner code inside the MetaClaw Node 20 process.
 
 ## Code, Plans, And Commits
 

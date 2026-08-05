@@ -67,6 +67,13 @@ async function typeAndSubmit(text: string) {
   await flushUpdates();
 }
 
+async function waitForExecutorCall(attemptSandbox: FakeAttemptSandbox) {
+  for (let attempt = 0; attempt < 100 && attemptSandbox.create.mock.calls.length === 0; attempt += 1) {
+    await new Promise(resolve => setTimeout(resolve, 10));
+    await flushUpdates();
+  }
+}
+
 afterEach(() => {
   inputCapture.handler = undefined;
 });
@@ -217,6 +224,11 @@ describe('App conversation routing', () => {
 
     await typeAndSubmit('未来最容易被基座模型替代的模块是什么');
     await typeAndSubmit('可以，继续');
+    await waitForExecutorCall(attemptSandbox);
+    for (let attempt = 0; attempt < 100 && !app.lastFrame().includes('最容易被替代的是通用 prompt 编排'); attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+      await flushUpdates();
+    }
 
     expect(attemptSandbox.create).toHaveBeenCalled();
     expect(app.lastFrame()).toContain('最容易被替代的是通用 prompt 编排');
@@ -286,6 +298,7 @@ describe('App conversation routing', () => {
 
     await typeAndSubmit('未来随着基座模型的能力越来越强，是否还需要 harness');
     await typeAndSubmit('把刚才那段回答整理成三点结论');
+    await waitForExecutorCall(attemptSandbox);
 
     expect(attemptSandbox.create).toHaveBeenCalled();
     const followUpCall = attemptSandbox.create.mock.calls

@@ -23,7 +23,7 @@ export interface SessionKernelRuntimeDeps {
   callbacks: {
     appendOutput(...lines: string[]): void;
     deliverDirectReply(userInput: string, reply: string): void;
-    prepareTaskExecution(taskId: string, request: QueuedExecutionRequest): Promise<void>;
+    prepareTaskExecution(taskId: string, request: QueuedExecutionRequest): void;
     refreshRuntimeState(): void;
     setCurrentTaskId(taskId: string | null): void;
     getCurrentTaskId(): string | null;
@@ -154,7 +154,7 @@ export class SessionKernelRuntime {
     if (!task) throw new Error(`task not found: ${taskCommand.taskId}`);
     this.deps.callbacks.setCurrentTaskId(task.id);
     this.deps.callbacks.setFocusContext({ kind: 'task', taskId: task.id });
-    await this.deps.callbacks.prepareTaskExecution(task.id, buildExecutionRequest({
+    this.deps.callbacks.prepareTaskExecution(task.id, buildExecutionRequest({
       userInput,
       taskId: task.id,
       executionMode: task.status === 'blocked' ? 'resume-blocked' : 'resume-parked',
@@ -189,7 +189,7 @@ export class SessionKernelRuntime {
     }
     this.deps.callbacks.setCurrentTaskId(task.id);
     this.deps.callbacks.setFocusContext({ kind: 'task', taskId: task.id });
-    await this.deps.callbacks.prepareTaskExecution(task.id, {
+    this.deps.callbacks.prepareTaskExecution(task.id, {
       ...buildExecutionRequest({ userInput, taskId: task.id, executionMode: 'fresh', decision }),
       authorizedWorkGraph: decision.action.workGraph,
       workGraphAuthorization: {

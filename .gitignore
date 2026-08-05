@@ -13,3 +13,4 @@ docker/*.env
 .claude/
 docs/competitive-analysis/
 .agents/skills/research-metaclaw-competitors/
+docs/sales/

@@ -11,7 +11,7 @@ export interface WorkspacePublicationCompletion {
       | { key: string; type: 'artifact'; paths: string[] }
     >;
   }>;
-  completionSchemaVersion: 2;
+  completionSchemaVersion: 3;
 }
 
 export type WorkspacePublicationStatus =

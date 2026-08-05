@@ -1,4 +1,4 @@
-// CLI entrypoint that assembles storage, runtime modules, gateway processes, and the default AnyFusion Codex TUI.
+// CLI entrypoint that assembles storage, runtime modules, gateway processes, and the default AnyFusion Planner TUI.
 import { resolve } from 'path';
 import { mkdirSync, existsSync } from 'fs';
 import { createDatabase } from './storage/database.js';
@@ -117,27 +117,38 @@ async function main() {
   const sessionId = `sess_${nanoid(10)}`;
   const contextRecaller = new ContextRecaller(db);
   const notifier = createNotificationService(config);
+  const plannerHostSocketPath = (process.env.METACLAW_PLANNER_HOST_SOCKET
+    ?? process.env.METACLAW_PLANNER_TUI_SOCKET
+    ?? resolve(metaclawDir, 'anyfusion-planner.sock')).trim();
+  process.env.METACLAW_PLANNER_HOST_SOCKET = plannerHostSocketPath;
+  process.env.METACLAW_PLANNER_TUI_SOCKET = plannerHostSocketPath;
+  const plannerHost = new PlannerTuiBridge({ socketPath: plannerHostSocketPath, logger: console });
+  await plannerHost.start();
 
   if (cliArgs.scriptPath) {
-    const result = await runScriptedSessionFile(cliArgs.scriptPath, {
-      taskEngine,
-      memoryEngine,
-      orchestration,
-      db,
-      config,
-      sessionId,
-      contextRecaller,
-      notifier,
-    });
-    if (result.output.length > 0) {
-      process.stdout.write(`${result.output.join('\n')}\n`);
+    try {
+      const result = await runScriptedSessionFile(cliArgs.scriptPath, {
+        taskEngine,
+        memoryEngine,
+        orchestration,
+        db,
+        config,
+        sessionId,
+        contextRecaller,
+        notifier,
+        plannerHost,
+      });
+      if (result.output.length > 0) {
+        process.stdout.write(`${result.output.join('\n')}\n`);
+      }
+    } finally {
+      await plannerHost.stop();
     }
     return;
   }
 
-  const plannerTuiSocketPath = (process.env.METACLAW_PLANNER_TUI_SOCKET
-    ?? resolve(metaclawDir, 'anyfusion-planner.sock')).trim();
-  const plannerTuiCommand = process.env.METACLAW_PLANNER_TUI_COMMAND?.trim() ?? 'anyfusion-codex';
+  const plannerTuiSocketPath = plannerHostSocketPath;
+  const plannerTuiCommand = process.env.METACLAW_PLANNER_TUI_COMMAND?.trim() ?? 'anyfusion-planner';
   process.env.METACLAW_PLANNER_TUI_COMMAND = plannerTuiCommand;
   if (process.env.METACLAW_STANDBY_TUI !== '1') {
     const plannerTuiSession = new MetaclawSession({
@@ -149,13 +160,9 @@ async function main() {
       sessionId,
       contextRecaller,
       notifier,
+      plannerHost,
     });
     plannerTuiSession.initialize({ showDashboard: false });
-    const plannerTuiBridge = new PlannerTuiBridge({
-      socketPath: plannerTuiSocketPath,
-      session: plannerTuiSession,
-      logger: console,
-    });
     const nativeGatewayServer = new MetaclawGatewayServer({
       socketPath: gatewaySocketPath,
       taskEngine,
@@ -166,9 +173,9 @@ async function main() {
       contextRecaller,
       notifier,
       workspaceRoot: process.cwd(),
+      plannerHost,
     });
     await nativeGatewayServer.start();
-    await plannerTuiBridge.start();
     const blockedRecheckTimer = setInterval(() => {
       void plannerTuiSession.maybeReviewTaskPoolOnTimer().catch(error => {
         plannerTuiSession.appendSystemMessage(`错误: ${(error as Error).message}`);
@@ -182,8 +189,9 @@ async function main() {
       });
     } finally {
       clearInterval(blockedRecheckTimer);
+      plannerTuiSession.dispose();
       await Promise.all([
-        plannerTuiBridge.stop(),
+        plannerHost.stop(),
         nativeGatewayServer.stop(),
         markdownPreviewServer?.stop() ?? Promise.resolve(),
       ]);
@@ -201,13 +209,15 @@ async function main() {
     contextRecaller,
     notifier,
     workspaceRoot: process.cwd(),
+    plannerHost,
   });
 
   await gatewayServer.start();
   let gatewayFeishuBridge: Awaited<ReturnType<typeof startFeishuRuntimeBridge>> = null;
   let gatewayBlockedRecheckTimer: NodeJS.Timeout | null = null;
+  let gatewaySession: MetaclawSession | null = null;
   if (cliArgs.gateway) {
-    const gatewaySession = new (await import('./session/metaclaw-session.js')).MetaclawSession({
+    const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
@@ -216,36 +226,52 @@ async function main() {
       sessionId,
       contextRecaller,
       notifier,
+      plannerHost,
     });
-    gatewaySession.initialize({ showDashboard: false });
-    gatewayFeishuBridge = await startFeishuRuntimeBridge(config, gatewaySession);
+    gatewaySession = session;
+    session.initialize({ showDashboard: false });
+    gatewayFeishuBridge = await startFeishuRuntimeBridge(config, session);
     gatewayBlockedRecheckTimer = setInterval(() => {
-      void gatewaySession.maybeReviewTaskPoolOnTimer().catch(error => {
-        gatewaySession.appendSystemMessage(`错误: ${(error as Error).message}`);
+      void session.maybeReviewTaskPoolOnTimer().catch(error => {
+        session.appendSystemMessage(`错误: ${(error as Error).message}`);
       });
-    }, gatewaySession.getBlockedRecheckIntervalMs());
+    }, session.getBlockedRecheckIntervalMs());
   }
+  let shutdownPromise: Promise<void> | null = null;
+  const shutdown = (): Promise<void> => {
+    if (shutdownPromise) return shutdownPromise;
+    shutdownPromise = (async () => {
+      if (gatewayBlockedRecheckTimer) {
+        clearInterval(gatewayBlockedRecheckTimer);
+        gatewayBlockedRecheckTimer = null;
+      }
+      try {
+        await Promise.all([
+          gatewayFeishuBridge?.stop() ?? Promise.resolve(),
+          gatewayServer.stop(),
+          plannerHost.stop(),
+          markdownPreviewServer?.stop() ?? Promise.resolve(),
+        ]);
+      } finally {
+        gatewaySession?.dispose();
+        gatewaySession = null;
+      }
+    })();
+    return shutdownPromise;
+  };
   process.once('exit', () => {
     if (gatewayBlockedRecheckTimer) clearInterval(gatewayBlockedRecheckTimer);
+    gatewaySession?.dispose();
     void gatewayFeishuBridge?.stop();
     void markdownPreviewServer?.stop();
     void gatewayServer.stop();
+    void plannerHost.stop();
   });
   process.once('SIGINT', () => {
-    if (gatewayBlockedRecheckTimer) clearInterval(gatewayBlockedRecheckTimer);
-    void Promise.all([
-      gatewayFeishuBridge?.stop() ?? Promise.resolve(),
-      gatewayServer.stop(),
-      markdownPreviewServer?.stop() ?? Promise.resolve(),
-    ]).finally(() => process.exit(0));
+    void shutdown().finally(() => process.exit(0));
   });
   process.once('SIGTERM', () => {
-    if (gatewayBlockedRecheckTimer) clearInterval(gatewayBlockedRecheckTimer);
-    void Promise.all([
-      gatewayFeishuBridge?.stop() ?? Promise.resolve(),
-      gatewayServer.stop(),
-      markdownPreviewServer?.stop() ?? Promise.resolve(),
-    ]).finally(() => process.exit(0));
+    void shutdown().finally(() => process.exit(0));
   });
 
   if (cliArgs.gateway) {
@@ -255,7 +281,7 @@ async function main() {
   }
 
   // 9. 启动 TUI
-  renderApp({ taskEngine, memoryEngine, orchestration, db, config, sessionId, contextRecaller, notifier });
+  renderApp({ taskEngine, memoryEngine, orchestration, db, config, sessionId, contextRecaller, notifier, plannerHost });
 }
 
 main().catch((error) => {

@@ -1,11 +1,12 @@
 import { existsSync, realpathSync } from 'node:fs';
-import { isAbsolute, resolve, sep } from 'node:path';
+import { resolve, sep } from 'node:path';
 import { z } from 'zod';
 import type { Subtask } from '../core/types.js';
 import type { WorkGraphRequiredItem } from '../work-graph/index.js';
+import { parseWorkspaceDelta, type WorkspaceDelta } from './workspace-change-tracker.js';
 
-export const COMPLETION_MARKER_V2 = '<!-- metaclaw:completion:v2 -->';
-const MAX_ENVELOPE_BYTES = 128 * 1024;
+export const COMPLETION_MARKER_V3 = '<!-- metaclaw:completion:v3 -->';
+const MAX_REPORT_BYTES = 128 * 1024;
 
 const TextItemSchema = z.object({
   key: z.string(),
@@ -17,8 +18,13 @@ const ArtifactItemSchema = z.object({
   type: z.literal('artifact'),
   paths: z.array(z.string()),
 }).strict();
+const FailureSchema = z.object({
+  kind: z.enum(['capability_mismatch', 'task_failed', 'quality_failed']),
+  code: z.string().trim().min(1).max(96),
+  summary: z.string().trim().min(1).max(320),
+}).strict();
 const CompletedEnvelopeSchema = z.object({
-  schemaVersion: z.literal(2),
+  schemaVersion: z.literal(3),
   status: z.literal('completed'),
   subtaskId: z.string(),
   acceptanceEvidence: z.array(z.object({
@@ -32,30 +38,34 @@ const CompletedEnvelopeSchema = z.object({
   }).strict()),
 }).strict();
 const FailedEnvelopeSchema = z.object({
-  schemaVersion: z.literal(2),
+  schemaVersion: z.literal(3),
   status: z.literal('failed'),
   subtaskId: z.string(),
-  failure: z.object({
-    kind: z.enum(['capability_mismatch', 'task_failed', 'quality_failed']),
-    code: z.string().trim().min(1).max(96),
-    summary: z.string().trim().min(1).max(320),
-  }).strict(),
+  failure: FailureSchema,
 }).strict();
 const CompletionEnvelopeSchema = z.discriminatedUnion('status', [CompletedEnvelopeSchema, FailedEnvelopeSchema]);
+const CompletedReportSchema = z.object({
+  evidence: z.array(z.string().trim().min(1).max(1_000)).min(1).max(4),
+  noChangeReason: z.string().trim().min(1).max(1_000).nullable(),
+}).strict();
+const FailedReportSchema = z.object({ failure: FailureSchema }).strict();
+const CompletionReportSchema = z.union([CompletedReportSchema, FailedReportSchema]);
 
-export type CompletionEnvelopeV2 = z.infer<typeof CompletionEnvelopeSchema>;
-export type CompletedEnvelopeV2 = z.infer<typeof CompletedEnvelopeSchema>;
-export type CompletionHandoffV2 = CompletedEnvelopeV2['handoffs'][number];
+export type CompletionEnvelopeV3 = z.infer<typeof CompletionEnvelopeSchema>;
+export type CompletedEnvelopeV3 = z.infer<typeof CompletedEnvelopeSchema>;
+export type CompletionHandoffV3 = CompletedEnvelopeV3['handoffs'][number];
+type CompletionReport = z.infer<typeof CompletionReportSchema>;
 
 export type CompletionContractErrorCode =
   | 'completion_acceptance_mismatch'
   | 'completion_artifact_invalid'
-  | 'completion_artifact_required'
   | 'completion_budget_exceeded'
   | 'completion_handoff_mismatch'
   | 'completion_malformed'
-  | 'completion_patch_evidence_missing'
-  | 'completion_subtask_mismatch';
+  | 'completion_no_change_reason_mismatch'
+  | 'completion_report_workspace_changed'
+  | 'completion_subtask_mismatch'
+  | 'completion_workspace_delta_uncertain';
 
 export interface CompletionContractViolation {
   code: CompletionContractErrorCode;
@@ -67,14 +77,14 @@ export type CompletionProtocolResult =
   | {
     ok: true;
     body: string;
-    envelope: CompletionEnvelopeV2;
+    envelope: CompletionEnvelopeV3;
     normalizedArtifacts: string[];
     warnings: string[];
   }
   | {
     ok: false;
     body: string | null;
-    envelope: CompletionEnvelopeV2 | null;
+    envelope: CompletionEnvelopeV3 | null;
     violations: CompletionContractViolation[];
   };
 
@@ -88,31 +98,61 @@ export interface IncomingHandoffUsage {
   artifactPaths: number;
 }
 
-/** Parses, strips and deterministically verifies the exact v2 completion trailer. */
+type ParsedCompletionReportResult =
+  | { ok: true; body: string; report: CompletionReport }
+  | Extract<CompletionProtocolResult, { ok: false }>;
+type CompletionProtocolFailure = Extract<CompletionProtocolResult, { ok: false }>;
+
+/** Parses, strips and deterministically verifies the exact v3 completion trailer. */
 export function validateCompletionProtocol(input: {
   rawResponse: string;
   subtask: Subtask;
   outgoingHandoffs: OutgoingHandoffContract[];
-  targetPaths: string[];
-  cwd?: string;
+  workspaceRoot: string;
+  workspaceDelta: unknown;
   incomingUsageByTarget?: ReadonlyMap<string, IncomingHandoffUsage>;
 }): CompletionProtocolResult {
   const parsed = parseCompletion(input.rawResponse);
   if (!parsed.ok) return parsed;
 
   const violations: CompletionContractViolation[] = [];
-  const { body, envelope } = parsed;
+  const { body } = parsed;
+  if ('failure' in parsed.report) {
+    const envelope = materializeCompletionEnvelope(parsed.report, input.subtask, input.outgoingHandoffs, []);
+    return { ok: true, body, envelope, normalizedArtifacts: [], warnings: [] };
+  }
+  const workspaceDelta = parseWorkspaceDelta(input.workspaceDelta);
+  if (!workspaceDelta) {
+    return {
+      ok: false,
+      body,
+      envelope: null,
+      violations: [contractViolation(
+        'completion_workspace_delta_uncertain',
+        'workspaceDelta',
+        'workspace delta is missing or malformed',
+      )],
+    };
+  }
+  const normalizedArtifacts = validateWorkspaceDelivery(
+    input.subtask,
+    parsed.report.noChangeReason,
+    workspaceDelta,
+    input.workspaceRoot,
+    violations,
+  );
+  const envelope = materializeCompletionEnvelope(
+    parsed.report,
+    input.subtask,
+    input.outgoingHandoffs,
+    normalizedArtifacts,
+  );
   if (envelope.subtaskId !== input.subtask.id) {
     violations.push(contractViolation('completion_subtask_mismatch', 'subtaskId', `expected ${input.subtask.id}, received ${envelope.subtaskId}`));
-  }
-  if (envelope.status === 'failed') {
-    return { ok: true, body, envelope, normalizedArtifacts: [], warnings: [] };
   }
   validateAcceptance(input.subtask, envelope, violations);
   validateHandoffs(input.outgoingHandoffs, envelope, violations);
   validateBudgets(envelope, violations, input.incomingUsageByTarget);
-  const normalizedArtifacts = validateArtifacts(envelope, input.targetPaths, input.cwd ?? process.cwd(), violations);
-  validateExpectedOutput(input.subtask, envelope, violations);
 
   if (violations.length > 0) {
     return { ok: false, body, envelope, violations: violations.sort(compareViolation) };
@@ -122,52 +162,81 @@ export function validateCompletionProtocol(input: {
     body,
     envelope,
     normalizedArtifacts,
-    warnings: collectWarnings(input.subtask, body),
+    warnings: [],
   };
 }
 
-function parseCompletion(rawResponse: string): CompletionProtocolResult {
-  const markerMatches = [...rawResponse.matchAll(new RegExp(COMPLETION_MARKER_V2.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'))];
+function parseCompletion(rawResponse: string): ParsedCompletionReportResult {
+  const markerMatches = [...rawResponse.matchAll(new RegExp(COMPLETION_MARKER_V3.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'))];
   if (markerMatches.length !== 1) {
     return failure('completion_malformed', 'marker', `expected exactly one final completion marker, received ${markerMatches.length}`);
   }
   const markerIndex = markerMatches[0]!.index!;
   const body = rawResponse.slice(0, markerIndex).trim();
-  const rawEnvelope = rawResponse.slice(markerIndex + COMPLETION_MARKER_V2.length).trimStart();
+  const rawReport = rawResponse.slice(markerIndex + COMPLETION_MARKER_V3.length).trimStart();
   if (!body) return failure('completion_malformed', 'body', 'completion body must be non-empty');
-  if (!rawEnvelope || Buffer.byteLength(rawEnvelope, 'utf8') > MAX_ENVELOPE_BYTES) {
-    return failure('completion_budget_exceeded', 'envelope', 'completion envelope is empty or exceeds 128 KiB');
+  if (!rawReport || Buffer.byteLength(rawReport, 'utf8') > MAX_REPORT_BYTES) {
+    return failure('completion_budget_exceeded', 'report', 'completion report is empty or exceeds 128 KiB');
   }
   let candidate: unknown;
   try {
-    candidate = JSON.parse(rawEnvelope);
+    candidate = JSON.parse(rawReport);
   } catch (error) {
-    return failure('completion_malformed', 'envelope', `completion envelope is not strict JSON: ${error instanceof Error ? error.message : String(error)}`);
+    return failure('completion_malformed', 'report', `completion report is not strict JSON: ${error instanceof Error ? error.message : String(error)}`);
   }
-  const parsed = CompletionEnvelopeSchema.safeParse(candidate);
-  if (!parsed.success) {
+  const report = CompletionReportSchema.safeParse(candidate);
+  if (!report.success) {
     return {
       ok: false,
       body,
       envelope: null,
-      violations: parsed.error.issues.map(issue => contractViolation(
+      violations: report.error.issues.map(issue => contractViolation(
         'completion_malformed',
-        issue.path.join('.') || 'envelope',
+        issue.path.join('.') || 'report',
         issue.message,
       )),
     };
   }
-  return { ok: true, body, envelope: parsed.data, normalizedArtifacts: [], warnings: [] };
+  return { ok: true, body, report: report.data };
+}
+
+function materializeCompletionEnvelope(
+  report: CompletionReport,
+  subtask: Subtask,
+  outgoingHandoffs: OutgoingHandoffContract[],
+  artifacts: string[],
+): CompletionEnvelopeV3 {
+  if ('failure' in report) {
+    return {
+      schemaVersion: 3,
+      status: 'failed',
+      subtaskId: subtask.id,
+      failure: report.failure,
+    };
+  }
+  const evidence = [...report.evidence];
+  return {
+    schemaVersion: 3,
+    status: 'completed',
+    subtaskId: subtask.id,
+    acceptanceEvidence: subtask.acceptance.map(item => ({ key: item.key, evidence: [...evidence] })),
+    artifacts,
+    handoffs: outgoingHandoffs.map(contract => ({
+      toSubtaskId: contract.toSubtaskId,
+      items: contract.requiredItems.map(item => item.type === 'text'
+        ? { key: item.key, type: 'text' as const, value: evidence.join('\n') }
+        : { key: item.key, type: 'artifact' as const, paths: [...artifacts] }),
+    })),
+  };
 }
 
 function validateAcceptance(
   subtask: Subtask,
-  envelope: CompletedEnvelopeV2,
+  envelope: CompletedEnvelopeV3,
   violations: CompletionContractViolation[],
 ): void {
   const expected = new Set(subtask.acceptance.map(item => item.key));
   const actual = new Set<string>();
-  let total = 0;
   for (const [index, item] of envelope.acceptanceEvidence.entries()) {
     if (actual.has(item.key)) violations.push(contractViolation('completion_acceptance_mismatch', `acceptanceEvidence.${index}.key`, `duplicate acceptance key ${item.key}`));
     actual.add(item.key);
@@ -175,7 +244,6 @@ function validateAcceptance(
       violations.push(contractViolation('completion_acceptance_mismatch', `acceptanceEvidence.${index}.evidence`, 'acceptance evidence must contain 1 to 4 entries'));
     }
     for (const [evidenceIndex, evidence] of item.evidence.entries()) {
-      total += evidence.length;
       if (!evidence.trim() || evidence.length > 1_000) {
         violations.push(contractViolation('completion_budget_exceeded', `acceptanceEvidence.${index}.evidence.${evidenceIndex}`, 'evidence must contain 1 to 1000 characters'));
       }
@@ -184,12 +252,11 @@ function validateAcceptance(
   if (!sameSet(expected, actual)) {
     violations.push(contractViolation('completion_acceptance_mismatch', 'acceptanceEvidence', `acceptance keys must equal authorized keys: ${[...expected].sort().join(', ')}`));
   }
-  if (total > 12_000) violations.push(contractViolation('completion_budget_exceeded', 'acceptanceEvidence', 'acceptance evidence exceeds 12000 characters'));
 }
 
 function validateHandoffs(
   contracts: OutgoingHandoffContract[],
-  envelope: CompletedEnvelopeV2,
+  envelope: CompletedEnvelopeV3,
   violations: CompletionContractViolation[],
 ): void {
   const expectedByTarget = new Map(contracts.map(contract => [contract.toSubtaskId, contract.requiredItems]));
@@ -220,7 +287,7 @@ function validateHandoffs(
 }
 
 function validateBudgets(
-  envelope: CompletedEnvelopeV2,
+  envelope: CompletedEnvelopeV3,
   violations: CompletionContractViolation[],
   incomingUsageByTarget: ReadonlyMap<string, IncomingHandoffUsage> | undefined,
 ): void {
@@ -259,70 +326,82 @@ function validateBudgets(
   if (envelope.artifacts.length > 40) violations.push(contractViolation('completion_budget_exceeded', 'artifacts', 'node artifacts exceed 40 paths'));
 }
 
-function validateArtifacts(
-  envelope: CompletedEnvelopeV2,
-  targetPaths: string[],
-  cwd: string,
+function validateWorkspaceDelivery(
+  subtask: Subtask,
+  noChangeReason: string | null,
+  delta: WorkspaceDelta,
+  workspaceRoot: string,
   violations: CompletionContractViolation[],
 ): string[] {
-  const declared = new Set<string>();
-  const normalized: string[] = [];
-  const realTargets = targetPaths.filter(existsSync).map(path => realpathSync(path));
-  for (const [index, artifact] of envelope.artifacts.entries()) {
-    if (!artifact.trim() || artifact.length > 1_024) {
-      violations.push(contractViolation('completion_artifact_invalid', `artifacts.${index}`, 'artifact path must contain 1 to 1024 characters'));
-      continue;
+  if (delta.baselineTruncated || delta.finalTruncated) {
+    violations.push(contractViolation(
+      'completion_workspace_delta_uncertain',
+      'workspaceDelta',
+      'workspace delta is truncated and cannot authorize completion',
+    ));
+    return [];
+  }
+  if (subtask.deliveryKind === 'report') {
+    if (delta.changed.length > 0) {
+      violations.push(contractViolation(
+        'completion_report_workspace_changed',
+        'workspaceDelta.changed',
+        'report delivery must not change the workspace',
+      ));
     }
-    const candidate = isAbsolute(artifact) ? artifact : resolve(cwd, artifact);
+    if (noChangeReason !== null) {
+      violations.push(contractViolation(
+        'completion_no_change_reason_mismatch',
+        'noChangeReason',
+        'report delivery requires noChangeReason to be null',
+      ));
+    }
+    return [];
+  }
+  if (delta.changed.length === 0 && noChangeReason === null) {
+    violations.push(contractViolation(
+      'completion_no_change_reason_mismatch',
+      'noChangeReason',
+      'edit delivery without workspace changes requires a no-change reason',
+    ));
+  }
+  if (delta.changed.length > 0 && noChangeReason !== null) {
+    violations.push(contractViolation(
+      'completion_no_change_reason_mismatch',
+      'noChangeReason',
+      'edit delivery with workspace changes requires noChangeReason to be null',
+    ));
+  }
+
+  if (!existsSync(workspaceRoot)) {
+    violations.push(contractViolation('completion_artifact_invalid', 'workspaceRoot', 'workspace root does not exist'));
+    return [];
+  }
+  const realRoot = realpathSync(workspaceRoot);
+  const artifacts: string[] = [];
+  for (const [index, change] of delta.changed.entries()) {
+    if (change.afterHash === null) continue;
+    const candidate = resolve(workspaceRoot, change.path);
     if (!existsSync(candidate)) {
-      violations.push(contractViolation('completion_artifact_invalid', `artifacts.${index}`, `artifact does not exist: ${artifact}`));
+      violations.push(contractViolation(
+        'completion_artifact_invalid',
+        `workspaceDelta.changed.${index}.path`,
+        `changed output does not exist: ${change.path}`,
+      ));
       continue;
     }
     const real = realpathSync(candidate);
-    if (!realTargets.some(target => isWithin(target, real))) {
-      violations.push(contractViolation('completion_artifact_invalid', `artifacts.${index}`, `artifact escapes Task target paths: ${artifact}`));
+    if (!isWithin(realRoot, real)) {
+      violations.push(contractViolation(
+        'completion_artifact_invalid',
+        `workspaceDelta.changed.${index}.path`,
+        `changed output escapes the workspace: ${change.path}`,
+      ));
       continue;
     }
-    if (declared.has(real)) {
-      violations.push(contractViolation('completion_artifact_invalid', `artifacts.${index}`, `duplicate artifact path: ${artifact}`));
-      continue;
-    }
-    declared.add(real);
-    normalized.push(real);
+    artifacts.push(real);
   }
-  for (const [handoffIndex, handoff] of envelope.handoffs.entries()) {
-    for (const [itemIndex, item] of handoff.items.entries()) {
-      if (item.type !== 'artifact') continue;
-      for (const path of item.paths) {
-        const candidate = isAbsolute(path) ? path : resolve(cwd, path);
-        const real = existsSync(candidate) ? realpathSync(candidate) : candidate;
-        if (!declared.has(real)) violations.push(contractViolation('completion_artifact_invalid', `handoffs.${handoffIndex}.items.${itemIndex}.paths`, `handoff artifact must also be declared at top level: ${path}`));
-      }
-    }
-  }
-  return normalized;
-}
-
-function validateExpectedOutput(subtask: Subtask, envelope: CompletedEnvelopeV2, violations: CompletionContractViolation[]): void {
-  if (subtask.expectedOutput === 'artifact' && envelope.artifacts.length === 0) {
-    violations.push(contractViolation('completion_artifact_required', 'artifacts', 'artifact output requires at least one valid artifact'));
-  }
-  if (subtask.expectedOutput === 'patch') {
-    const evidence = envelope.acceptanceEvidence.flatMap(item => item.evidence).join('\n').toLowerCase();
-    if (!/(test|测试|未测试|not tested|not run|未运行)/i.test(evidence)) {
-      violations.push(contractViolation('completion_patch_evidence_missing', 'acceptanceEvidence', 'patch output requires test evidence or an explicit not-tested explanation'));
-    }
-  }
-}
-
-function collectWarnings(subtask: Subtask, body: string): string[] {
-  if (subtask.expectedOutput === 'analysis' && !/(source|来源|limit|限制)/i.test(body)) {
-    return ['analysis output does not explicitly identify sources or limitations'];
-  }
-  if (subtask.expectedOutput === 'review' && !/(verdict|结论|approve|request changes|通过|不通过)/i.test(body)) {
-    return ['review output does not contain an explicit verdict'];
-  }
-  return [];
+  return artifacts;
 }
 
 function isWithin(parent: string, child: string): boolean {
@@ -338,7 +417,7 @@ function sameMap(left: Map<string, string>, right: Map<string, string>): boolean
   return left.size === right.size && [...left].every(([key, value]) => right.get(key) === value);
 }
 
-function failure(code: CompletionContractErrorCode, path: string, message: string): CompletionProtocolResult {
+function failure(code: CompletionContractErrorCode, path: string, message: string): CompletionProtocolFailure {
   return { ok: false, body: null, envelope: null, violations: [contractViolation(code, path, message)] };
 }
 

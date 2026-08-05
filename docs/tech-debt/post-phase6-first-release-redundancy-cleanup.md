@@ -105,7 +105,7 @@
 | `src/executor/factory.ts` | 已删除 deprecated Executor factory |
 | `src/session/session-execution-coordinator.ts` | 已删除 Session → Execution 兼容转发 barrel |
 | `src/storage/planning-decision-repo.ts` | 已删除旧 Planning Decision repository |
-| SQLite v1–v28 顺序升级链 | 已压平为首次发布基线 schema；不要重新引入版本升级兼容 |
+| SQLite v1–v29 顺序升级链 | 已压平为首次发布基线 schema；不要重新引入版本升级兼容 |
 | Phase 6 attempt terminal/recovery 收束 | 已抽出 `AttemptTerminalService` 并补齐恢复测试，不属于本轮瘦身范围 |
 
 ## 3. P0：自然语言语义影子栈（已完成，2026-07-28）
@@ -515,6 +515,6 @@ Phase 6 已建立 durable workflow、attempt receipt、Kernel decision ledger、
 - 已有 Task 的 availability-exhausted replan 不再走普通 `reject_request`，而是持久化为 `waiting_for_availability` 和 deferred proposal，并由 Kernel 将 Task 阻塞为 `kernel_availability`；
 - Executor 恢复后提交 durable `executor_recovered` 事实。Kernel 对最新 Task/generation/revision/frontier 重新准入，合法时只激活 revision 并把 Task 转为 `ready`，不立即派发；
 - Planner MCP 可读取 bounded、脱敏的 recent recovery checks，用户询问时 Planner 有足够事实解释失败原因；
-- SQLite 首次发布基线升级到 v28，Kernel wire/ledger 升级到 v5，Docker shell 数据卷同步到 v28。
+- SQLite 首次发布基线升级到 v29，Kernel wire/ledger 保持 v5，Docker shell 数据卷同步到 v29；v29 增加 Planner proposal turn/submission 幂等与 accepted-turn lock。
 
 11.5 的跨事实查询一致性与 11.6 的 TUI liveness 展示仍是独立技术债，本批次没有用恢复机制掩盖或顺带重写它们。

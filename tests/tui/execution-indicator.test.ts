@@ -12,7 +12,11 @@ import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config, ExecutorResult } from '../../src/core/types.js';
 import type { PlanningAgentPlan } from '../../src/planning/planning-types.js';
-import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
+import {
+  planningAgentFromPlanMock,
+  stubPlanningAgent,
+  workGraphPlan,
+} from '../support/planning-agent-plans.js';
 import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
 
 const inputCapture = vi.hoisted(() => ({
@@ -111,7 +115,7 @@ describe('App execution indicator', () => {
         config: createConfig(),
         sessionId: 'sess_planner_indicator',
         contextRecaller,
-        planningAgent: { plan: vi.fn(() => deferred.promise) },
+        planningAgent: planningAgentFromPlanMock(vi.fn(() => deferred.promise)),
       })
     );
 
@@ -178,12 +182,11 @@ describe('App execution indicator', () => {
     const submitPromise = inputCapture.handler?.('', { return: true }) ?? Promise.resolve();
     await flushUpdates();
 
-    expect(app.frames.some(frame => frame.includes('当前执行 1 | 待执行 0 | 已挂起 0 | 阻塞 0'))).toBe(true);
-
     for (let attempt = 0; attempt < 100 && attemptSandbox.create.mock.calls.length === 0; attempt += 1) {
       await new Promise(resolve => setTimeout(resolve, 10));
     }
     expect(attemptSandbox.create).toHaveBeenCalled();
+    expect(app.frames.some(frame => frame.includes('当前执行 1 | 待执行 0 | 已挂起 0 | 阻塞 0'))).toBe(true);
 
     deferred.resolve({
       success: true,
@@ -193,7 +196,10 @@ describe('App execution indicator', () => {
     });
 
     await submitPromise;
-    await flushUpdates();
+    for (let attempt = 0; attempt < 100 && !app.lastFrame().includes('completed 1 Subtask(s)'); attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+      await flushUpdates();
+    }
 
     expect(
       app.frames.some(frame => frame.includes('completed 1 Subtask(s)') && frame.includes('当前执行 1 |'))

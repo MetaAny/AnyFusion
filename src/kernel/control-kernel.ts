@@ -59,7 +59,7 @@ export interface KernelEventEnvelope {
 
 export interface KernelPlanProposal {
   id: string;
-  schemaVersion: 6;
+  schemaVersion: 7;
   action: 'direct_reply' | 'clarification' | 'task_control' | 'plan_work_graph' | 'authorization_resolution' | 'no_action';
   confidence: number;
   reason: string;
@@ -564,7 +564,7 @@ export class ControlKernel {
         plannerPlanId: proposal.id,
       }, 'Planner interpretation of exact authorization response accepted');
     }
-    if (proposal.task.taskId && !snapshot.tasks.some(task => task.id === proposal.task.taskId)) {
+    if (proposal.task.taskId !== null && !snapshot.tasks.some(task => task.id === proposal.task.taskId)) {
       return decision(event, { type: 'reject_request' }, `task not found: ${proposal.task.taskId}`);
     }
     if (proposal.action === 'task_control') {

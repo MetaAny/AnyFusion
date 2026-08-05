@@ -72,6 +72,10 @@ export interface KernelExecutionRuntimeInput {
   recoveryOnly?: boolean;
 }
 
+export interface PreparedKernelExecutionInput extends KernelExecutionRuntimeInput {
+  graphState: 'ready' | 'missing' | 'conflict';
+}
+
 export interface KernelExecutionRuntimeDeps {
   sessionId: string;
   orchestration: OrchestrationEngine;
@@ -417,7 +421,7 @@ export class KernelExecutionRuntime {
     const task = this.deps.taskRuntimeService.findTask(taskId);
     if (!task) return false;
     const before = task.updatedAt;
-    await this.execute({
+    await this.execute(this.prepareExecution({
       taskId,
       request: {
         userPrompt: task.goal,
@@ -427,7 +431,7 @@ export class KernelExecutionRuntime {
         schedulingReason: reason,
       },
       recoveryOnly: true,
-    });
+    }));
     return this.deps.taskRuntimeService.findTask(taskId)?.updatedAt !== before;
   }
 
@@ -1067,7 +1071,28 @@ export class KernelExecutionRuntime {
   }
 
 
-  async execute(input: KernelExecutionRuntimeInput): Promise<void> {
+  prepareExecution(input: KernelExecutionRuntimeInput): PreparedKernelExecutionInput {
+    const task = this.deps.taskRuntimeService.findTask(input.taskId);
+    if (!task) throw new Error(`task not found: ${input.taskId}`);
+    const graph = this.deps.workGraphRuntimeService.apply({
+      task,
+      userPrompt: input.request.userPrompt,
+      sessionId: this.deps.sessionId,
+      authorizedWorkGraph: input.request.authorizedWorkGraph ?? null,
+      authorization: input.request.workGraphAuthorization ?? null,
+    });
+    if (graph.outcome === 'not_executable' && input.request.authorizedWorkGraph) {
+      throw new Error(`authorized Work Graph could not be persisted: ${graph.reason}`);
+    }
+    return {
+      ...input,
+      graphState: graph.outcome === 'not_executable'
+        ? graph.reason === 'missing_graph' ? 'missing' : 'conflict'
+        : 'ready',
+    };
+  }
+
+  async execute(input: PreparedKernelExecutionInput): Promise<void> {
     const { taskId, request } = input;
     const finishExecution = async (lines: string[], _scheduleNext = false) => {
       this.deps.callbacks.clearRunningExecutorName(taskId);
@@ -1082,16 +1107,7 @@ export class KernelExecutionRuntime {
       this.deps.callbacks.appendOutput(`Error: task not found ${taskId}`);
       return;
     }
-    const graph = this.deps.workGraphRuntimeService.apply({
-      task,
-      userPrompt: request.userPrompt,
-      sessionId: this.deps.sessionId,
-      authorizedWorkGraph: request.authorizedWorkGraph ?? null,
-      authorization: request.workGraphAuthorization ?? null,
-    });
-    const graphState = graph.outcome === 'not_executable'
-      ? graph.reason === 'missing_graph' ? 'missing' : 'conflict'
-      : 'ready';
+    const graphState = input.graphState;
 
     const executionId = `exec_${generateInteractionId()}`;
     const progressTracker = this.deps.executionProgressService.createTracker({ taskId, executionId });

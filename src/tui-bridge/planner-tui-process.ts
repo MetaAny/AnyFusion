@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { buildPlannerMcpLaunchEnv } from '../planning/planner-mcp-launch-env.js';
 import { buildEnvFromFile } from '../utils/env-file.js';
 
 export interface PlannerTuiProcessOptions {
@@ -7,7 +8,7 @@ export interface PlannerTuiProcessOptions {
   cwd: string;
 }
 
-/** Launches the downstream Codex binary with the isolated Planner home/config. */
+/** Launches the downstream AnyFusion-Pi Planner with isolated home/config. */
 export async function runPlannerTuiProcess(options: PlannerTuiProcessOptions): Promise<void> {
   const command = process.env.METACLAW_PLANNER_TUI_COMMAND?.trim();
   if (!command) {
@@ -20,13 +21,15 @@ export async function runPlannerTuiProcess(options: PlannerTuiProcessOptions): P
     stdio: 'inherit',
     env: {
       ...env,
-      CODEX_HOME: process.env.METACLAW_PLANNER_CODEX_HOME,
+      ANYFUSION_PLANNER_HOME: process.env.METACLAW_PLANNER_HOME,
+      ANYFUSION_PLANNER_SESSION_ID: options.sessionId,
       METACLAW_PLANNER_SESSION_ID: options.sessionId,
       METACLAW_PLANNER_TUI_SOCKET: options.socketPath,
       ANYFUSION_BRIDGE_SOCKET: options.socketPath,
       ANYFUSION_PLANNER_MODE: '1',
       ANYFUSION_PLANNER_SCHEMA_PATH: process.env.ANYFUSION_PLANNER_SCHEMA_PATH
         ?? process.env.METACLAW_PLANNER_SCHEMA_PATH,
+      ...buildPlannerMcpLaunchEnv(),
     },
   });
   const result = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
@@ -34,7 +37,7 @@ export async function runPlannerTuiProcess(options: PlannerTuiProcessOptions): P
     child.once('exit', (code, signal) => resolve({ code, signal }));
   });
   if (result.code !== 0 && result.signal === null) {
-    throw new Error(`AnyFusion Codex TUI exited with code ${result.code ?? 'unknown'}`);
+    throw new Error(`AnyFusion Planner TUI exited with code ${result.code ?? 'unknown'}`);
   }
 }
 

@@ -286,7 +286,7 @@ export function createPlannerMcpServer(reader: PlannerDataReader): McpServer {
     inputSchema: { taskId: z.string().min(1).max(160) },
   }, async input => toolResult(reader.getTaskContext(input.taskId)));
   server.registerTool('get_current_session_context', {
-    description: 'Read bounded durable MetaClaw interaction and planning-decision audit facts for the current trusted session. Native Codex thread history is the authority for dialogue continuity.',
+    description: 'Read bounded durable MetaClaw interaction and planning-decision audit facts for the current trusted session. The persisted AnyFusion-Pi session is the authority for dialogue continuity.',
     inputSchema: { limit: z.number().int().min(1).max(MAX_RESULTS).optional() },
   }, async input => toolResult(reader.getCurrentSessionContext(input.limit)));
   server.registerTool('get_planning_context', {

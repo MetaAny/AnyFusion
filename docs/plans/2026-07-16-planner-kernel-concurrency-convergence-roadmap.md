@@ -38,7 +38,7 @@ Canonical definitions 已经是 Codex/Pi 静态路由能力、Planner catalog、
 
 `dependencies` 已完全替换 `dependsOn`，同时作为 DAG 拓扑与 keyed `text`/`artifact` delivery contract 的唯一事实源。独立 `src/work-graph/` 提供 Planning、Kernel 和 Execution 共享的类型与纯校验；Runtime 只注入已完成直接入边的不可变 handoff，不继承祖先结果。
 
-当前生产图为严格 v5，Executor 响应通过 Completion Protocol 精确交付 acceptance evidence、artifacts 和 outgoing handoffs。Phase 6 在 2026-07-28 以 SQLite v27 / Kernel v4 完成；2026-07-30 的 Executor recovery amendment 已把当前基线升级为全新安装 SQLite v28 与 Kernel v5。系统仍不保留旧图双读或旧数据库升级路径。
+当前生产图为严格 v5，Executor 通过 Completion Protocol v2 只提交 identity-free evidence/artifacts report，Runtime 根据已绑定的 acceptance 与 outgoing handoff contract 生成权威内部结果。Phase 6 在 2026-07-28 以 SQLite v27 / Kernel v4 完成；2026-07-30 的 Executor recovery amendment 将 Kernel 升级到 v5，2026-08-02 的结构化 Planner proposal 工具迁移将全新安装 SQLite 基线升级到 v29。系统仍不保留旧 completion envelope/图双读或旧数据库升级路径。
 
 ### 2.3 Kernel 控制面已统一
 

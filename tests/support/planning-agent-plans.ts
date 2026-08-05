@@ -16,7 +16,7 @@ import type { ContextRef } from '../../src/work-graph/index.js';
 function basePlan(): PlanningAgentPlan {
   return {
     id: 'plan_test',
-    schemaVersion: 6,
+    schemaVersion: 7,
     action: 'direct_reply',
     confidence: 0.9,
     reason: 'test plan',
@@ -35,7 +35,7 @@ function basePlan(): PlanningAgentPlan {
     risk: { level: 'low', requiresConfirmation: false, reasons: [] },
     authorizationResolution: null,
     workGraph: null,
-    source: 'codex-planner',
+    source: 'anyfusion-planner',
   };
 }
 
@@ -47,13 +47,13 @@ export function singleSubtaskWorkGraph(input: {
   goal: string;
   title?: string;
   executor?: string;
-  expectedOutput?: SubtaskProposal['expectedOutput'];
+  deliveryKind?: SubtaskProposal['deliveryKind'];
   acceptance?: string[];
   riskLevel?: SubtaskProposal['riskLevel'];
   contextRefs?: ContextRef[];
 }): WorkGraphProposal {
   const executor = input.executor === 'pi-agent' ? 'pi-agent' : 'codex-cli';
-  const expectedOutput = input.expectedOutput ?? 'patch';
+  const deliveryKind = input.deliveryKind ?? 'edit';
   return {
     reason: 'single executor work graph',
     subtasks: [{
@@ -64,14 +64,12 @@ export function singleSubtaskWorkGraph(input: {
       contextRefs: input.contextRefs ?? [{ kind: 'current_user_input' }],
       requiredCapabilities: [executor === 'pi-agent' ? 'current-web-research' : 'workspace-engineering'],
       preferredAgentClassList: [executor],
-      expectedOutput,
-      acceptance: (input.acceptance ?? (expectedOutput === 'patch'
-        ? ['List changed files and provide test command output or explain why tests were not run.']
-        : ['Satisfy the user request and report verification or remaining risk.']))
+      deliveryKind,
+      acceptance: (input.acceptance ?? ['Satisfy the user request and report verification or remaining risk.'])
         .map((description, index) => ({
           key: `criterion_${index + 1}`,
           description,
-          requiredEvidence: expectedOutput === 'patch' ? ['test result or explicit not-tested reason'] : [],
+          requiredEvidence: [],
         })),
       riskLevel: input.riskLevel ?? 'low',
     }],
@@ -87,17 +85,15 @@ export function workGraphPlan(input: {
   canModifyFiles?: boolean;
   matchedBoundary?: string[];
   includeRecentConversationContext?: boolean;
-  expectedOutput?: SubtaskProposal['expectedOutput'];
+  deliveryKind?: SubtaskProposal['deliveryKind'];
   priority?: PlanningAgentPlan['task']['priority'];
   contextRefs?: ContextRef[];
   overrides?: Partial<PlanningAgentPlan>;
 } ): PlanningAgentPlan {
   const executor = input.executor ?? 'codex-cli';
-  // Default to a non-repo summary task: no repo test-evidence verifier gate, no
-  // file modification. Code/repo tests opt in via capabilityClass 'code_edit',
-  // expectedOutput 'patch', canModifyFiles/requiresVerification.
+  // Default to a report task. Code/repo tests opt in through code_edit.
   const capabilityClass = input.capabilityClass ?? 'general';
-  const expectedOutput = input.expectedOutput ?? (capabilityClass === 'code_edit' ? 'patch' : 'summary');
+  const deliveryKind = input.deliveryKind ?? (capabilityClass === 'code_edit' ? 'edit' : 'report');
   return {
     ...basePlan(),
     action: 'plan_work_graph',
@@ -114,7 +110,7 @@ export function workGraphPlan(input: {
       goal: input.goal,
       title: input.title,
       executor,
-      expectedOutput,
+      deliveryKind,
       contextRefs: input.contextRefs,
     }),
     ...input.overrides,
@@ -158,7 +154,10 @@ export function clarificationPlan(question: string, overrides: Partial<PlanningA
 }
 
 // A PlanningAgent stub returning a fixed plan (or a queue of plans, one per turn).
-export function stubPlanningAgent(...plans: PlanningAgentPlan[]): PlanningAgent & { plan: ReturnType<typeof vi.fn> } {
+export function stubPlanningAgent(...plans: PlanningAgentPlan[]): PlanningAgent & {
+  plan: ReturnType<typeof vi.fn>;
+  submit: ReturnType<typeof vi.fn>;
+} {
   const plan = vi.fn();
   if (plans.length <= 1) {
     plan.mockResolvedValue(plans[0] ?? directReplyPlan());
@@ -168,5 +167,16 @@ export function stubPlanningAgent(...plans: PlanningAgentPlan[]): PlanningAgent 
     }
     plan.mockResolvedValue(plans[plans.length - 1]!);
   }
-  return { plan } as PlanningAgent & { plan: ReturnType<typeof vi.fn> };
+  return planningAgentFromPlanMock(plan);
+}
+
+export function planningAgentFromPlanMock(plan: ReturnType<typeof vi.fn>): PlanningAgent & {
+  plan: ReturnType<typeof vi.fn>;
+  submit: ReturnType<typeof vi.fn>;
+} {
+  const submit = vi.fn(async (context, submitter) => submitter.submit(await plan(context)));
+  return { plan, submit } as PlanningAgent & {
+    plan: ReturnType<typeof vi.fn>;
+    submit: ReturnType<typeof vi.fn>;
+  };
 }

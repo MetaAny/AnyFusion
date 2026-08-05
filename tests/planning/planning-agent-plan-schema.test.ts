@@ -8,7 +8,7 @@ import {
 function outputPlan() {
   return {
     id: 'plan_1',
-    schemaVersion: 6,
+    schemaVersion: 7,
     action: 'plan_work_graph',
     confidence: 0.9,
     reason: 'work is required',
@@ -36,12 +36,12 @@ function outputPlan() {
         contextRefs: [{ kind: 'current_user_input' }],
         requiredCapabilities: ['workspace-engineering'],
         preferredAgentClassList: ['codex-cli'],
-        expectedOutput: 'patch',
+        deliveryKind: 'edit',
         acceptance: [{ key: 'tests_pass', description: 'tests pass', requiredEvidence: ['test result'] }],
         riskLevel: 'low',
       }],
     },
-    source: 'codex-planner',
+    source: 'anyfusion-planner',
   };
 }
 

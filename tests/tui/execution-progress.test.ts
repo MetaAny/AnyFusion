@@ -99,12 +99,15 @@ describe('App execution progress', () => {
       await flushUpdates();
     }
     await (inputCapture.handler?.('', { return: true }) ?? Promise.resolve());
-    await flushUpdates();
-    await flushUpdates();
+    for (let attempt = 0; attempt < 100 && !app.lastFrame().includes('[DONE]'); attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+      await flushUpdates();
+    }
 
     expect(app.lastFrame()).toContain('【Executor: codex-cli｜派发准备】');
     expect(app.lastFrame()).toContain('→ Executor: codex-cli 将处理该任务');
-    expect(app.lastFrame()).toContain('当前任务 #');
+    expect(app.lastFrame()).toContain('当前任务');
+    expect(app.lastFrame()).toContain('#task_plan_event_proposal_');
     expect(app.lastFrame()).toContain('[DONE] 整理 Phoenix 项目周报');
     expect(app.lastFrame()).not.toContain('已启动 codex-cli 执行器');
     expect(app.lastFrame()).not.toContain('正在检索市场份额数据');
@@ -168,7 +171,8 @@ describe('App execution progress', () => {
 
     const firstAnimationFrame = app.lastFrame() ?? '';
     expect(firstAnimationFrame).toMatch(/Executor: codex-cli 执行中\.{1,3}/);
-    expect(app.lastFrame()).toContain('当前任务 #');
+    expect(app.lastFrame()).toContain('当前任务');
+    expect(app.lastFrame()).toContain('#task_plan_event_proposal_');
     expect(app.lastFrame()).toContain('[RUNNING] 整理 Phoenix 项目周报');
 
     await new Promise(resolve => setTimeout(resolve, 400));
@@ -177,8 +181,10 @@ describe('App execution progress', () => {
     expect(app.lastFrame()).not.toBe(firstAnimationFrame);
 
     await submitPromise;
-    await new Promise(resolve => setTimeout(resolve, 200));
-    await flushUpdates();
+    for (let attempt = 0; attempt < 100 && app.lastFrame().includes('Executor: codex-cli 执行中'); attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+      await flushUpdates();
+    }
 
     expect(app.lastFrame()).not.toContain('Executor: codex-cli 执行中');
 

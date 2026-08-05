@@ -12,6 +12,7 @@ export interface SessionTaskExecutionApplicationDeps {
     appendOutput(...lines: string[]): void;
     appendGuidance(scene: string, suggestion: { taskId: string; recommendedAction: string; reasons: string[] }): void;
     refreshRuntimeState(): void;
+    startBackgroundExecution(taskId: string, launch: () => Promise<void>): void;
   };
 }
 
@@ -19,17 +20,21 @@ export interface SessionTaskExecutionApplicationDeps {
 export class SessionTaskExecutionApplicationService {
   constructor(private readonly deps: SessionTaskExecutionApplicationDeps) {}
 
-  async prepareTaskExecution(
+  prepareTaskExecution(
     taskId: string,
     request: QueuedExecutionRequest,
-  ): Promise<void> {
+  ): void {
     const task = this.deps.taskRuntimeService.findTask(taskId);
     if (!task) {
       this.deps.callbacks.appendOutput(`Task not found: ${taskId}`);
       return;
     }
     this.appendExecutionGuidance(task, request);
-    await this.deps.kernelExecutionRuntime.execute({ taskId, request });
+    const prepared = this.deps.kernelExecutionRuntime.prepareExecution({ taskId, request });
+    this.deps.callbacks.startBackgroundExecution(
+      taskId,
+      () => this.deps.kernelExecutionRuntime.execute(prepared),
+    );
   }
 
   private appendExecutionGuidance(task: Task, request: QueuedExecutionRequest): void {

@@ -59,7 +59,7 @@ function flushUpdates() {
   return new Promise(resolve => setTimeout(resolve, 0));
 }
 
-async function waitFor(assertion: () => void, attempts = 30) {
+async function waitFor(assertion: () => void, attempts = 100) {
   let lastError: unknown;
   for (let index = 0; index < attempts; index += 1) {
     try {
@@ -67,6 +67,7 @@ async function waitFor(assertion: () => void, attempts = 30) {
       return;
     } catch (error) {
       lastError = error;
+      await new Promise(resolve => setTimeout(resolve, 10));
       await flushUpdates();
     }
   }

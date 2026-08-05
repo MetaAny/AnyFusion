@@ -11,8 +11,11 @@ import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
-import type { PlanningAgent } from '../../src/planning/planning-agent.js';
-import { workGraphPlan, taskControlPlan } from '../support/planning-agent-plans.js';
+import {
+  planningAgentFromPlanMock,
+  workGraphPlan,
+  taskControlPlan,
+} from '../support/planning-agent-plans.js';
 import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
 
 const inputCapture = vi.hoisted(() => ({
@@ -97,8 +100,8 @@ describe('App resume-running task noop', () => {
     // Turn 1 creates the durable task; turn 2 references the now-running task and
     // asks to continue it. The running task id is only known after turn 1, so the
     // resume plan resolves it lazily from the repo at plan() time.
-    const planningAgent: PlanningAgent = {
-      plan: vi.fn().mockImplementation(async (context: { userInput: string }) => {
+    const planningAgent = planningAgentFromPlanMock(
+      vi.fn().mockImplementation(async (context: { userInput: string }) => {
         if (context.userInput.includes('把之前挂起的任务继续完成')) {
           return taskControlPlan({
             control: 'resume_task',
@@ -111,7 +114,7 @@ describe('App resume-running task noop', () => {
           canModifyFiles: true,
         });
       }),
-    };
+    );
 
     const app = render(
       React.createElement(App, {

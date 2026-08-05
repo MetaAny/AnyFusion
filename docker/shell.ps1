@@ -7,7 +7,9 @@
 # works, and you also get a general-purpose shell for inspecting /workspace
 # output files. VS Code Remote-SSH can open the same /workspace as a folder.
 #
-# The container's main process is sshd, so it stays up across sessions. Login:
+# The container's main process is sshd, so it stays up across sessions. The
+# published port is loopback-only; this local workflow is not a remote SSH service.
+# Login:
 #   user: root   password: metaclaw   port: 2222
 #
 # Usage:
@@ -23,7 +25,7 @@
 # After -SetupSsh, `ssh metaclaw` (host alias) and VS Code Remote-SSH connect
 # with no password. The key lives in .tmp\ssh_key (gitignored).
 #
-# Source edits require `-Rebuild`: runtime code, Codex homes, skills, and the
+# Source edits require `-Rebuild`: runtime code, Planner homes, skills, and the
 # entrypoint are baked into the image. Only workspace outputs and MetaClaw data
 # use named volumes; host build/config directories are never bind-mounted.
 #
@@ -53,25 +55,26 @@ $repoRoot    = Split-Path -Parent $PSScriptRoot
 # The SSH layer sits on the hermetic runtime image. Build-BaseImage compiles the
 # runtime from source; Build-Image only adds the SSH server.
 $baseImage   = 'metaclaw-runtime'
-$anyFusionCodexImage = 'anyfusion-codex:local'
-$anyFusionCodexRoot = Join-Path (Split-Path -Parent $repoRoot) 'AnyFusion-Codex'
+$anyFusionPiImage = 'anyfusion-pi-planner:local'
+$anyFusionPiRoot = Join-Path (Split-Path -Parent $repoRoot) 'AnyFusion-Pi'
 $imageTag    = 'metaclaw-tui-ssh'
 $container   = 'metaclaw-shell'
 $sshHost     = 'localhost'
+$sshBindHost = '127.0.0.1'
 $sshPort     = 2222
 $sshUser     = 'root'
 $sshPassword = 'metaclaw'   # only used to print a reminder; ssh prompts for it
-$plannerEnvFile = Join-Path $repoRoot 'docker\planner-codex.env'
+$plannerEnvFile = Join-Path $repoRoot 'docker\planner-pi.env'
 $codexExecutorEnvFile = Join-Path $repoRoot 'docker\executor-codex.env'
 $piExecutorEnvFile = Join-Path $repoRoot 'docker\executor-pi.env'
-$plannerEnvContainerPath = '/run/metaclaw/env/planner-codex.env'
+$plannerEnvContainerPath = '/run/metaclaw/env/planner-pi.env'
 $codexExecutorEnvContainerPath = '/run/metaclaw/env/executor-codex.env'
 $piExecutorEnvContainerPath = '/run/metaclaw/env/executor-pi.env'
 $workspaceVolume = 'metaclaw-shell-workspace'
 # Pre-release schemas are intentionally not migrated. Scope the persistent data
 # volume to the current schema so -Rebuild starts clean after a schema break
 # while preserving the previous volume for manual recovery.
-$dataVolume = 'metaclaw-shell-data-v28'
+$dataVolume = 'metaclaw-shell-data-v30-anyfusion-planner'
 $controlNetwork = 'metaclaw-control'
 $controlHost = 'metaclaw-control'
 $codexAttemptImage = 'metaclaw-executor-codex:phase5'
@@ -101,6 +104,23 @@ function Test-ContainerExists {
 # Mounts are fixed when a container is created. Detect shells created before the
 # Runtime gained Docker Engine access so the default workflow does not silently
 # restart a container that can never provision executor sandboxes.
+function Test-ContainerUsesCurrentImage {
+    if (-not (Test-ContainerExists)) { return $false }
+    $containerImage = docker inspect --format '{{.Image}}' $container 2>$null
+    if ($LASTEXITCODE -ne 0) { return $false }
+    $tagImage = docker image inspect --format '{{.Id}}' $imageTag 2>$null
+    if ($LASTEXITCODE -ne 0) { return $false }
+    return (([string]$containerImage).Trim() -eq ([string]$tagImage).Trim())
+}
+
+function Test-ContainerHasLoopbackSshBinding {
+    if (-not (Test-ContainerExists)) { return $false }
+    $hostIps = docker inspect --format '{{range (index .HostConfig.PortBindings "22/tcp")}}{{println .HostIp}}{{end}}' $container 2>$null
+    if ($LASTEXITCODE -ne 0) { return $false }
+    $bindings = @($hostIps | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    return ($bindings.Count -gt 0 -and @($bindings | Where-Object { ([string]$_).Trim() -ne $sshBindHost }).Count -eq 0)
+}
+
 function Test-ContainerHasDockerSocket {
     if (-not (Test-ContainerExists)) { return $false }
     $destinations = docker inspect --format '{{range .Mounts}}{{println .Destination}}{{end}}' $container 2>$null
@@ -185,7 +205,7 @@ function Ensure-SshKey {
     if (Test-Path $sshKeyPath) { return }
     New-Item -ItemType Directory -Force -Path $sshKeyDir | Out-Null
     Write-Host "Generating dedicated SSH key for passwordless login..." -ForegroundColor Yellow
-    & ssh-keygen -t ed25519 -N '""' -f $sshKeyPath -C 'metaclaw-shell' -q
+    & ssh-keygen -t ed25519 -N '' -f $sshKeyPath -C 'metaclaw-shell' -q
     if ($LASTEXITCODE -ne 0) {
         Write-Error "ssh-keygen failed."
         exit 1
@@ -273,17 +293,17 @@ function Test-Prereqs {
     }
 }
 
-# Build the pinned downstream Codex TUI fork used only by the Planner surface.
-function Build-AnyFusionCodexImage {
+# Build the pinned AnyFusion-Pi Planner fork used only by the Planner surface.
+function Build-AnyFusionPiImage {
     param([switch]$Force)
-    if (-not $Force -and (Test-ImageExists $anyFusionCodexImage)) { return }
-    $dockerfile = Join-Path $anyFusionCodexRoot 'Dockerfile.release'
+    if (-not $Force -and (Test-ImageExists $anyFusionPiImage)) { return }
+    $dockerfile = Join-Path $anyFusionPiRoot 'Dockerfile.anyfusion-planner'
     if (-not (Test-Path $dockerfile)) {
-        Write-Error "Missing AnyFusion-Codex sibling repository or Dockerfile.release at $anyFusionCodexRoot."
+        Write-Error "Missing AnyFusion-Pi sibling repository or Dockerfile.anyfusion-planner at $anyFusionPiRoot."
         exit 1
     }
-    Write-Host ("Building Planner TUI image " + $anyFusionCodexImage + " ...") -ForegroundColor Yellow
-    docker build -f $dockerfile -t $anyFusionCodexImage $anyFusionCodexRoot
+    Write-Host ("Building AnyFusion Planner image " + $anyFusionPiImage + " ...") -ForegroundColor Yellow
+    docker build -f $dockerfile -t $anyFusionPiImage $anyFusionPiRoot
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
@@ -291,9 +311,9 @@ function Build-AnyFusionCodexImage {
 function Build-BaseImage {
     param([switch]$Force)
     if (-not $Force -and (Test-ImageExists $baseImage)) { return }
-    Build-AnyFusionCodexImage -Force:$Force
+    Build-AnyFusionPiImage -Force:$Force
     Write-Host ("Base image " + $baseImage + " not found, building hermetic runtime image ...") -ForegroundColor Yellow
-    docker build --build-arg ANYFUSION_CODEX_IMAGE=$anyFusionCodexImage -f (Join-Path $repoRoot 'docker\Dockerfile.runtime') -t $baseImage $repoRoot
+    docker build --build-arg ANYFUSION_PI_IMAGE=$anyFusionPiImage -f (Join-Path $repoRoot 'docker\Dockerfile.runtime') -t $baseImage $repoRoot
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
@@ -377,6 +397,35 @@ function Ensure-AttemptImages {
     }
 }
 
+# Attempt images are rebuilt in place under stable local tags. A persisted
+# resolved_image_id from the previous container would therefore look like image
+# drift even though this bootstrap intentionally supplied the new canonical
+# images. Clear only the two builtin pins after container start; the existing
+# Executor probe remains responsible for resolving and persisting current IDs.
+function Reset-BuiltinExecutorImagePins {
+    if (-not (Test-ContainerExists)) { return }
+    $bootstrapScript = @'
+const { existsSync } = require('node:fs');
+const Database = require('better-sqlite3');
+const dbPath = '/data/metaclaw/metaclaw.db';
+if (!existsSync(dbPath)) process.exit(0);
+const db = new Database(dbPath);
+try {
+  const table = db.prepare('SELECT 1 FROM sqlite_master WHERE type = ? AND name = ?').get('table', 'agent_classes');
+  if (table) {
+    db.prepare('UPDATE agent_classes SET resolved_image_id = NULL WHERE name IN (?, ?)').run('codex-cli', 'pi-agent');
+  }
+} finally {
+  db.close();
+}
+'@
+    docker exec -w /app $container node -e $bootstrapScript 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error 'Failed to reset builtin Executor image pins.'
+        exit $LASTEXITCODE
+    }
+}
+
 function Start-ShellContainer {
     # Remove any stale container with the same name (silent if none exists).
     if (Test-ContainerExists) {
@@ -398,19 +447,9 @@ function Start-ShellContainer {
     # - internal control network + alias: attempt sandboxes reach model/evidence
     #   gateways as hostname `metaclaw-control`
     #
-    # --security-opt seccomp=unconfined is granted ONCE here, at container
-    # creation. The read-only planner Codex sandboxes shell execution with
-    # bubblewrap, which needs unprivileged user namespaces; Docker's default
-    # seccomp profile blocks the `unshare` syscall bwrap uses, so without this
-    # the planner's shell tool fails closed ("No permissions to create a new
-    # namespace") and it cannot read repository files. This only loosens THIS
-    # container's syscall filter and is a create-time flag: subsequent
-    # `docker start` (stop/resume) reuse it with no extra grant. Rebuilding the
-    # image and creating a fresh container re-applies it here.
     docker run -d --name $container `
-      --security-opt seccomp=unconfined `
       --network bridge `
-      -p "${sshPort}:22" `
+      -p "${sshBindHost}:${sshPort}:22" `
       --entrypoint /bin/bash `
       --mount 'type=bind,src=//var/run/docker.sock,dst=/var/run/docker.sock' `
       -v "${workspaceVolume}:/workspace" `
@@ -450,7 +489,8 @@ function Start-ShellContainer {
     # Ensure SSH sessions see control-plane env even when the image still has an
     # older persist-ssh-environment.sh (before the next -Rebuild).
     Ensure-ControlEnvironmentInContainer -HostPathMap $hostPathMap
-    Write-Host ("SSH container ready on localhost:" + $sshPort + " (user=" + $sshUser + " password=" + $sshPassword + ").") -ForegroundColor Green
+    Reset-BuiltinExecutorImagePins
+    Write-Host ("SSH container ready on 127.0.0.1:" + $sshPort + " (user=" + $sshUser + " password=" + $sshPassword + ").") -ForegroundColor Green
     Write-Host ("Control network: " + $controlNetwork + " (alias " + $controlHost + ").") -ForegroundColor DarkGray
     if (Test-Path $sshKeyPath) {
         Write-Host "Passwordless login active (key at .tmp\ssh_key)." -ForegroundColor Green
@@ -462,6 +502,16 @@ function Ensure-ContainerRunning {
     Ensure-ControlNetwork
     Ensure-AttemptImages
     if (Test-ContainerExists) {
+        if (-not (Test-ContainerUsesCurrentImage)) {
+            Write-Host "Container uses an older image; recreating it from $imageTag..." -ForegroundColor Yellow
+            Start-ShellContainer
+            return
+        }
+        if (-not (Test-ContainerHasLoopbackSshBinding)) {
+            Write-Host "Container SSH is not loopback-only; recreating it safely..." -ForegroundColor Yellow
+            Start-ShellContainer
+            return
+        }
         if (-not (Test-ContainerHasDockerSocket)) {
             Write-Host "Container predates the Docker socket mount; recreating it..." -ForegroundColor Yellow
             Start-ShellContainer
@@ -476,6 +526,11 @@ function Ensure-ContainerRunning {
         if ($running -ne 'true') {
             Write-Host "Container exists but is stopped, starting it..." -ForegroundColor Yellow
             docker start $container | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                Write-Error "Failed to start container."
+                exit $LASTEXITCODE
+            }
+            Reset-BuiltinExecutorImagePins
         }
         return
     }
@@ -534,7 +589,7 @@ function Clear-StaleHostKey {
 function Enter-Tui {
     Wait-SshReady
     Clear-StaleHostKey
-    Write-Host ("Launching AnyFusion Codex TUI over SSH (port " + $sshPort + ")...") -ForegroundColor Cyan
+    Write-Host ("Launching AnyFusion Planner TUI over SSH (port " + $sshPort + ")...") -ForegroundColor Cyan
     Write-Host "Tip: /exit to leave the TUI; Ctrl+C to force-quit. Container keeps running." -ForegroundColor DarkGray
     $args = Ssh-CommonArgs
     $args += @('-t', 'cd /workspace && node /app/dist/index.js')

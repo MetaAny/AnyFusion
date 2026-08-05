@@ -14,7 +14,7 @@ function subtask(overrides: Partial<SubtaskProposal> = {}): SubtaskProposal {
     contextRefs: [{ kind: 'current_user_input' }],
     requiredCapabilities: ['workspace-engineering'],
     preferredAgentClassList: ['codex-cli'],
-    expectedOutput: 'patch',
+    deliveryKind: 'edit',
     acceptance: [{ key: 'tests_pass', description: 'tests pass', requiredEvidence: ['test result'] }],
     riskLevel: 'low',
     ...overrides,
@@ -24,7 +24,7 @@ function subtask(overrides: Partial<SubtaskProposal> = {}): SubtaskProposal {
 function plan(subtasks: SubtaskProposal[] = [subtask()]): PlanningAgentPlan {
   return {
     id: 'plan_1',
-    schemaVersion: 6,
+    schemaVersion: 7,
     action: 'plan_work_graph',
     confidence: 0.9,
     reason: 'work is required',
@@ -43,7 +43,7 @@ function plan(subtasks: SubtaskProposal[] = [subtask()]): PlanningAgentPlan {
     risk: { level: 'low', requiresConfirmation: false, reasons: [] },
     authorizationResolution: null,
     workGraph: { reason: 'capability-minimal work graph', subtasks },
-    source: 'codex-planner',
+    source: 'anyfusion-planner',
   };
 }
 

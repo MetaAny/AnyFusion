@@ -32,7 +32,7 @@ Every Executor response ends with one final `<!-- metaclaw:completion:v1 -->` ma
 
 The strict budgets are: 128 KiB UTF-8 for the envelope; one to four acceptance evidence strings per key, 1,000 characters each and 12,000 total; 4,000 characters per text item; 12,000 text characters and 20 artifact paths per edge; 24,000 text characters and 40 artifact paths across all outgoing edges and across all incoming edges of one downstream node; 40 top-level artifacts; and 1,024 characters per path. Artifacts must exist and remain within Task `targetPaths` after realpath resolution; symlink escape is rejected and a handoff artifact must also appear in the top-level artifact set. No limit is satisfied by truncation.
 
-Stable blocking codes are `completion_malformed`, `completion_subtask_mismatch`, `completion_acceptance_mismatch`, `completion_handoff_mismatch`, `completion_budget_exceeded`, `completion_artifact_invalid`, `completion_artifact_required`, and `completion_patch_evidence_missing`. Analysis source/limitation and review-verdict heuristics produce warnings only. Phase 2 performs deterministic contract validation and does not claim independent semantic certification.
+The original v1 protocol used the stable blocking codes `completion_malformed`, `completion_subtask_mismatch`, `completion_acceptance_mismatch`, `completion_handoff_mismatch`, `completion_budget_exceeded`, `completion_artifact_invalid`, `completion_artifact_required`, and `completion_patch_evidence_missing`. Analysis source/limitation and review-verdict heuristics produced warnings only. That phase performed deterministic contract validation and did not claim independent semantic certification.
 
 ### Attempt and persistence
 
@@ -49,6 +49,14 @@ Phase 2 stays serial. Phase 3 introduces a `handoff_contract_failed` Kernel even
 ### Phase 5 amendment (2026-07-22)
 
 ADR-0024 delivers the deferred workspace contract. Each Task generation + Subtask now owns a persistent workspace whose immutable checkpoint manifest is the versioned `workspace_state`. A downstream Subtask may compose state only from its completed direct dependencies; Runtime must block a conflict and submit a normalized Kernel fact rather than absorb sibling or user-working-tree state implicitly. Git workspace state identifies the MetaClaw-managed commit/branch/diff facts, while non-Git state identifies the workspace URI, checkpoint and content-addressed objects. Large bodies remain outside SQLite.
+
+### Work Graph v6 and identity-free Completion Protocol v3 amendment (2026-08-03)
+
+PlanningAgentPlan hard-upgrades to v7 and the Work Graph contract baseline to v6. `expectedOutput` is removed and every Subtask declares `deliveryKind: edit | report`. The Work Graph wire object does not gain its own schema-version field. Acceptance remains structured; Runtime no longer infers delivery semantics from patch/artifact/analysis/review text categories.
+
+The model-facing Completion Protocol hard-upgrades to v3. A successful report contains only bounded `evidence` strings and nullable `noChangeReason`; a failed report retains the controlled `failure` object. The model does not emit artifacts, schema/status identity, Task/Subtask/attempt/WorkUnit IDs, acceptance keys, or outgoing handoff identities and keys.
+
+After a successful Executor response and before completion validation, Runtime computes and persists one authoritative workspace delta. `report` requires zero created/modified/deleted paths and null `noChangeReason`; changed `edit` requires a null reason; zero-delta `edit` requires a non-empty reason. Runtime derives artifacts from created/modified files only, while deletions remain visible in delta/evidence. Truncated or indeterminate delta fails closed, and response-only correction reuses the source attempt's persisted delta. Runtime then materializes authoritative acceptance and handoff identities. Completion v2, the original v1 blocking-code set, patch/artifact heuristics, and old output-kind execution paths are historical only and are rejected rather than dual-read or repaired.
 
 ## Consequences
 

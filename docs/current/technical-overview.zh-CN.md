@@ -2,9 +2,9 @@
 
 [English Technical Overview](technical-overview.md) | [中文首页](../../README.zh-CN.md)
 
-> 当前实现基线（2026-07-30）：PlanningAgentPlan v6、Work Graph
-> v5、Kernel event/snapshot/decision contract v5、Completion Protocol v2，
-> 以及只支持全新安装的 SQLite schema v28。`KernelWorkflow` 串行完成
+> 当前实现基线（2026-08-03）：PlanningAgentPlan v7、Work Graph
+> v6、Kernel event/snapshot/decision contract v5、Completion Protocol v3，
+> 以及支持唯一事务式 29→30 迁移的 SQLite schema v30。`KernelWorkflow` 串行完成
 > event、Decision 和 application，attempt supervisor 在单一活跃顶层 Task
 > 内并行启动最多四个隔离 attempt。ADR-0011 保持有效；多顶层 Task 调度
 > 属于未来独立路线图。
@@ -24,13 +24,13 @@ AnyFusion 是一个本地优先的 AI Task OS。它把自然语言需求变成�
 - 将复杂任务规划为显式 subtasks、验收标准和聚合规则。
 - 将工作表示为 task-owned subtask graph，排序候选 agent classes，并让空闲 executor work units claim ready subtasks。
 - Planner → ControlKernel → Runtime 是唯一策略主链；验收、retry、fallback、replan 和 recovery 不再由第二套 Agentic Loop 解释。
-- 每个活动 MetaClaw session 绑定一个原生 Codex Planner thread；已确认偏好和运行时事实通过只读 Planner MCP 按需查询。
+- 每个活动 MetaClaw session 绑定一个持久 AnyFusion-Pi Planner session；已确认偏好和运行时事实通过只读查询边界按需获取。
 - 生成文件自动记录为任务产物。
 - 飞书回复、文件同步和 Markdown 在线预览由后端统一处理。
 - 本地 Gateway 支持多个终端连接同一个 AnyFusion runtime。
-- 默认本地界面使用下游 AnyFusion-Codex 原生 TUI，保留 Codex 原生 thread、历史、resume/fork/archive、压缩、命令、补全、MCP、approval、interrupt 和工具渲染。
+- 默认本地界面使用平级 AnyFusion-Pi Planner TUI，保留对话历史、resume/fork/archive、压缩、命令、补全、interrupt 和只读工具渲染。
 - 在不转移 Task、Kernel 或 Executor 权限的前提下增加响应式只读 AnyFusion 任务面板；原 Ink UI 完整保留为备用模块。
-- 提供 `npm run smoke:anyfusion` 烟测，默认验证同一原生 Codex Planner session 的两轮对话记忆；文件产物场景可显式选择。
+- 提供 `npm run smoke:anyfusion` 烟测，默认验证同一持久 AnyFusion-Pi Planner session 的两轮对话记忆；文件产物场景可显式选择。
 
 ## 核心架构
 
@@ -42,7 +42,7 @@ flowchart LR
   Surfaces --> Session[MetaclawSession<br/>统一 runtime 协调层]
   Session --> MemoryFast[显式记忆和偏好快路]
   Session --> Planning[Planner Work Unit<br/>PlanningAgent]
-  Planning --> Plan[PlanningAgentPlan v6<br/>意图、目标、候选、<br/>v5 graph 或授权确认]
+  Planning --> Plan[PlanningAgentPlan v7<br/>意图、目标、候选、<br/>v6 graph 或授权确认]
   Plan --> Event[KernelEvent<br/>plan_proposed]
   Event --> Workflow[Durable KernelWorkflow v5<br/>inbox、snapshot、decision、application]
   Workflow --> Kernel[ControlKernel<br/>frontier、batch、资源、<br/>permission 与恢复]
@@ -62,7 +62,7 @@ flowchart LR
   Batch --> Attempt[AttemptSupervisor<br/>最多四个 attempt]
   Attempt --> Context[SubtaskExecutionContext<br/>直接 handoff 与选定 evidence]
   Context --> Executors[ExecutionRuntime<br/>canonical Codex / Pi sandbox]
-  Executors --> Verify[Completion Protocol v2<br/>receipt 与 candidate commit]
+  Executors --> Verify[Completion Protocol v3<br/>delta、receipt 与 candidate commit]
   Verify --> Publish[Git publication gate<br/>稳定顺序集成]
   Publish --> Delivery[交付和 UI<br/>TUI 进度、飞书、文件、预览链接]
   Conversation --> Delivery
@@ -78,9 +78,11 @@ flowchart LR
   Attempt <--> Store
 ```
 
-所有自然语言输入统一进入隔离的 Codex `PlanningAgent`，产出严格 v6 `PlanningAgentPlan`。Work Graph 继续使用 v5，Planner 不枚举资源 claim 或 execution layer。`ControlKernel` 根据 frontier、pending/active item、AgentClass、资源和 slot 事实授权确定性 batch；Execution 并行运行 attempt，并由 publication worker 按拓扑层、首次授权顺序和 Subtask ID 发布成果。
+所有自然语言输入统一进入隔离的 AnyFusion-Pi `PlanningAgent`，产出严格 v7 `PlanningAgentPlan`。Work Graph 使用 v6 契约，Planner 不枚举资源 claim 或 execution layer。`ControlKernel` 根据 frontier、pending/active item、AgentClass、资源和 slot 事实授权确定性 batch；Execution 并行运行 attempt，并由 publication worker 按拓扑层、首次授权顺序和 Subtask ID 发布成果。
 
-Codex `PlanningAgent` 使用专用 runner，而不复用 Executor adapter。一个活动 MetaClaw session 对应一个原生 Codex thread：首轮捕获 `thread.started.thread_id`，后续通过 `codex exec resume` 续轮。Codex 自己管理对话历史；MetaClaw 不再从 SQLite interaction 重建提示词。Planner 仍使用独立 `CODEX_HOME`、原生 developer instructions、核心 Skill、output schema、只读 sandbox 和专用 MCP。
+AnyFusion-Pi `PlanningAgent` 使用专用 process runner，而不复用 Executor adapter。一个活动 MetaClaw session 对应一个持久 Pi session 文件。非交互入口以 `--mode rpc` 启动 Planner，通过 stdin/stdout 交换 JSONL；同一 session 的 turn 串行执行，避免多个进程并发写入 session 文件。Planner fork 管理对话历史和固定 system instructions；MetaClaw 不再从 SQLite interaction 重建提示词。Provider/Model 与 Planner 工具由 AnyFusion 固定管理。每个语义 turn 通过受限原生 `submit_planning_proposal({ plan })` 工具提交；runtime 注入 session、turn、user input 和 deterministic submission identity。rejection 是当前 ReAct turn 的结构化反馈，transport uncertain 与 rejection 严格分离；不存在 assistant 文本 proposal parser、proposal 专用 retry、repair prompt 或外层 validation loop。
+
+本地 AnyFusion-Pi TUI 与 RPC runner 通过 mode-`0600` Unix JSONL `PlannerTuiBridge` 和 Host Protocol v2 共用同一 proposal 工具链。bridge 还提供有界只读 Task 投影、`command_complete/command_completion`，并透传用户明确输入的 MetaClaw slash command。Pi 复用原生异步编辑器、候选列表、Tab、上下键和 tool-call 机制；命令树遍历、replacement range、hint/error、动态 Task/Executor 候选、参数校验与执行仍唯一来自 `MetaclawSession → CommandCatalog/InputController`。MetaClaw 持久化 proposal submission，实现 rejected revision、accepted turn lock、identical replay 和 conflict；Pi 只展示补全数据或权威结果，不获得通用 mutation API，也不能直接调用 Kernel、调度、Execution 或 Executor。
 
 Executor 健康恢复是事件驱动的。`ExecutorRecoveryRefreshService` 只检查
 enabled 且持久健康状态已经是 `error` 的 AgentClass，对同一 class 的并发
@@ -91,7 +93,7 @@ planning cycle、Task resume/recovery、Executor 配置变化和
 `/executor refresh [name|all]`。
 
 Planning 与恢复刷新并行开始，但 Kernel 准入前必须等待两者汇合。相关候选
-恢复时，Planner 可在同一个原生 Codex thread 中修订一次提案。已有 Task
+恢复时，Planner 可在同一个持久 AnyFusion-Pi Planner session 中修订一次提案。已有 Task
 仍无可用 eligible class 时，Kernel 会把精确提案保存为
 `waiting_for_availability` 并结构化阻塞；后续 `executor_recovered` 事实
 可重新准入该提案，将 Task 转为 `ready`，不会再次调用 Planner，也不会立即
@@ -112,7 +114,7 @@ flowchart LR
   Answer --> UI[TUI 或飞书]
 ```
 
-这条路径仍然是语义驱动。原生 Codex thread 保留“继续”或“你刚才回答了一半”等对话上下文；持久 MetaClaw 事实仍通过 MCP 显式查询。PlanningAgent 把最终答案写入 `response.directReply`，runtime 原样交付。
+这条路径仍然是语义驱动。持久 AnyFusion-Pi Planner session 保留“继续”或“你刚才回答了一半”等对话上下文；持久 MetaClaw 事实仍通过 MCP 显式查询。PlanningAgent 把最终答案写入 `response.directReply`，runtime 原样交付。
 
 ### 持久任务路径
 
@@ -131,7 +133,7 @@ flowchart LR
   Ready --> Batch[Kernel dispatch_batch<br/>持久 attempt items]
   Batch --> Attempt[Attempt supervisor<br/>独立 claim 与运行]
   Attempt --> Run[ExecutionRuntime<br/>传输并执行]
-  Run --> Verify[Completion Protocol v2<br/>receipt 与 candidate]
+  Run --> Verify[Completion Protocol v3<br/>delta、receipt 与 candidate]
   Verify --> Publish[Git publication gate]
   Publish --> Done{是否集成？}
   Done -->|是| Result[原子发布 result、handoff、<br/>artifact、workspace state 与 done]
@@ -159,11 +161,11 @@ flowchart LR
 
 conversation / task 的边界很重要：
 
-- Conversation：即时回答，不创建持久任务。原生 Codex thread 负责对话连续性；direct reply 持久化为审计事实，但不会被回放进后续提示词。
+- Conversation：即时回答，不创建持久任务。持久 AnyFusion-Pi Planner session 负责对话连续性；direct reply 持久化为审计事实，但不会被回放进后续提示词。
 - Task control：查看或改变已有任务状态。适合“当前在跑什么”“继续那个任务”“清空阻塞任务”。
 - Durable task：创建或继续需要执行、持久化、产物、恢复、调度或后续检索的工作。
 
-当前 direct reply 路径是显式的：MetaClaw 把当前轮发送给已绑定的原生 Codex thread，PlanningAgent 仅在需要时通过 MCP 查询确认偏好或运行时事实，runtime 直接交付 `response.directReply`，不 claim executor work unit。
+当前 direct reply 路径是显式的：MetaClaw 把当前轮发送给已绑定的持久 AnyFusion-Pi Planner session，PlanningAgent 仅在需要时通过 MCP 查询确认偏好或运行时事实，runtime 直接交付 `response.directReply`，不 claim executor work unit。
 
 [AnyFusion Task OS 架构与策略升级方案](../archive/plans/2026-06-14-metaclaw-task-os-architecture-strategy-upgrade.md) 中的本轮主线已经进入代码：确定性任务检索索引、PlanningAgent work graph proposal、统一 `ControlKernel` authorization、持久化 subtasks、work-unit claiming、汇总与验收都已实现并有针对性测试覆盖。Executor Discovery、远程 Registry、弹性 work-unit spawn 和大规模多客户端 Gateway 扩展仍然不是本轮重点。
 
@@ -524,14 +526,14 @@ Skill 的限制：
 anyfusion
 ```
 
-默认命令启动固定版本的 AnyFusion-Codex 原生 TUI：
+默认命令启动固定版本的 AnyFusion-Pi Planner TUI：
 
-- Codex 持有原生 conversation thread、transcript 历史、resume/fork/archive、compaction、斜杠命令、补全、MCP、approval、interrupt 与工具渲染。
-- AnyFusion 品牌仅属于展示层；可执行命令仍为 `codex`，Codex 协议、配置路径与内部技术标识保持兼容。
-- 宽终端右侧显示全局 Task 池和当前 Task/Subtask/Executor/blocking 的只读投影；窄终端隐藏面板并保持原生单栏对话布局。
-- 任务面板不能写 Task 状态、选择策略、调度 attempt、调用 Kernel 或控制 Executor。
-- direct reply 与 clarification 按普通对话展示；proposal 展示人类可读摘要，原始 v6 JSON 只作为 Planner/Stop Hook 内部数据。
-- bridge 断开、数据过期或格式错误只影响面板，不得终止 Codex 对话。
+- AnyFusion-Pi 持有 conversation transcript、resume/fork/archive、compaction、斜杠命令、补全、中断处理和只读工具渲染。
+- 可执行命令为 `anyfusion-planner`；fork 禁用用户可见的 Pi/Earendil 品牌、账号登录、自更新和任意 Provider/Model 切换。
+- 本地 host bridge 传递有界的全局 Task 池以及当前 Task/Subtask/Executor/blocking 投影。宽/中终端在 transcript 右侧显示 dashboard；窄终端自动隐藏并保持普通对话可用。初始 loading、unavailable 和 malformed/stale snapshot 只降级面板，不修改 Task 状态。
+- 当前投影和 dashboard 都是只读的，不能写 Task 状态、选择策略、调度 attempt、调用 Kernel 或控制 Executor。
+- direct reply 与 clarification 由 accepted tool result 展示；rejected proposal 可在同一 Agent turn 修订，首个 accepted submission 终止本轮并展示 MetaClaw 权威 `displayText`。
+- bridge 断开、数据过期或格式错误会明确降级 Task 投影或 proposal 提交，不能伪装 Task 已创建，也不得终止普通对话。
 - 设置 `METACLAW_STANDBY_TUI=1` 可启动完整保留的 Ink 备用实现；该模块不是默认入口，也不承担本次迁移后的持续功能开发。
 
 或使用项目脚本：
@@ -584,9 +586,9 @@ anyfusion --connect
 
 ### 在 Docker 中运行（Windows / 容器化）
 
-在 Windows 上，`docker/` 工作流将容器作为 SSH 服务运行，为原生 TUI 提供真实 PTY，并允许通过 shell 或 VS Code Remote-SSH 浏览 `/workspace`。Planner TUI 与非交互 PlanningAgent 使用服务器预构建并固定版本的 AnyFusion-Codex Linux 产物；Executor attempt 继续使用原版 Codex 镜像，Pi 作为候选执行器保留。Docker 分别只读挂载 `planner-codex.env`、`executor-codex.env` 和 `executor-pi.env`；Planner Codex、Executor Codex 与 Executor Pi 只在启动各自子进程时加载对应文件，entrypoint 也使用各自文件中的 base URL 渲染配置。
+在 Windows 上，`docker/` 工作流将 Linux 容器作为 SSH 服务运行，为原生 TUI 提供真实 PTY，并允许通过 shell 或 VS Code Remote-SSH 浏览 `/workspace`。首期部署只保证 Linux 容器/服务器；Windows 只是 Docker 验证宿主，不是原生 Planner 目标。runtime 从固定版本的 `anyfusion-pi-planner` 镜像复制 Planner：MetaClaw control process 保持 Node 20，Planner artifact 自带 Node 22。Executor attempt 继续使用各自 canonical Codex/Pi 镜像。Docker 分别只读挂载 `planner-pi.env`、`executor-codex.env` 和 `executor-pi.env`，entrypoint 根据各自 base URL 渲染隔离配置。
 
-完整运行镜像内置 CLI、Planner MCP、v6 schema、Planner Skill、Stop Hook、native-TUI bridge，以及相互隔离的 Planner/Executor Codex 配置；它从预构建的 `anyfusion-codex:local` 产物复制 Planner 二进制，本仓库不编译 Rust Fork。宿主不再挂载 `dist`、Codex/PI 配置或 entrypoint；源码变化后使用 `docker/shell.ps1 -Rebuild`，运行时只保留 workspace/data volume。当前 Windows 调试链路把 Docker Desktop Unix socket 挂载给可信 shell Runtime，并自动重建缺少该挂载的旧 shell 容器。Executor attempt 由该可信 Engine endpoint 创建为兄弟容器：source、inputs、handoffs 和 `.git` 只读，私有 `/workspace` 可写，`/tmp` 为 tmpfs；attempt 不获得 Docker socket 或真实 provider credential，而是通过带随机短期 token 的 attempt-scoped model gateway 调用模型。完整要求见 [Phase 5 Runtime Security](phase-5-runtime-security.md)。
+完整 runtime image 内置 MetaClaw CLI、v7 schema、编译后的 Planner MCP server、版本化 host bridge 与隔离的 Planner/Executor template。`docker/Dockerfile.runtime` 从预构建 Planner image 复制 `/opt/anyfusion-planner`；MetaClaw 不会在 Node 20 下安装或运行 Planner package。MetaClaw 向 Pi 注入绝对 Node 20 可执行文件和 `/app/dist/planner-mcp.js` 参数，Planner 自身仍使用 Node 22。Pi executor 继续位于独立 Node 22 attempt image。源码变化后使用 `docker/shell.ps1 -Rebuild`；只保留 workspace/data volume。Executor attempt 由可信 Engine endpoint 创建为兄弟容器：source、inputs、handoffs 和 `.git` 只读，私有 `/workspace` 可写，`/tmp` 为 tmpfs；attempt 不获得 Docker socket 或真实 provider credential，而是通过随机短期 token 的 attempt-scoped model gateway 调用模型。完整要求见 [Phase 5 Runtime Security](phase-5-runtime-security.md)。
 
 ## 配置
 
@@ -764,8 +766,8 @@ AnyFusion 会：
 
 主 TUI 的补全、`/help`、参数校验和执行都来自同一个 `CommandCatalog`。`↑/↓` 选择候选，`Tab` 只补全光标所在 token，`Enter` 只提交完整且有效的命令；目录节点、缺参命令和无效动态引用会保留在编辑器中。旧扁平入口和 aliases 不再注册。
 
-AnyFusion-Codex 下游原生 TUI 是默认本地入口。Codex 持有会话交互，MetaClaw 只向
-面板投影只读 Task 状态，并继续独占所有持久化 Task、Kernel 和 Executor 权限。
+AnyFusion-Pi 下游原生 TUI 是默认本地入口。Planner fork 持有会话交互；MetaClaw 向
+面板投影只读 Task 状态，并继续独占确定性命令执行以及所有持久化 Task、Kernel 和 Executor 权限。Pi TUI 通过 host bridge 查询完整 MetaClaw 命令树，使用 Pi 原生补全 UI 展示候选并应用 MetaClaw 返回的 replacement range，提交前再次校验，再透传用户原始输入；它不维护第二套 CommandCatalog。AnyFusion 像素风欢迎组件在 quiet startup 下仍保留，展示 Planner 版本、bridge 状态、模型/工作区与有界任务摘要。
 原 Ink TUI 完整保留在 `src/tui/`，可通过 `METACLAW_STANDBY_TUI=1` 启动，但它是
 备用模块而不是第二套持续维护的前端。飞书与 Gateway 是后端交付面，不依赖本地使用哪套 TUI。
 
@@ -794,14 +796,14 @@ AnyFusion 当前只调度一个活跃顶层 Task。Work Graph 纯函数从依赖
 
 ## PlanningAgent、ControlKernel 和 Work Unit
 
-自然语言 dispatch 拆成 Planner 理解、Kernel 授权和 Runtime 执行三层。除 slash command、显式 ID、路径、URL 和附件外，raw input 都进入 `PlanningAgent`；自然语言“记住”不再是快路。Planner 可按需调用只读 MCP，并产出严格 v6 `PlanningAgentPlan`。Work Graph 仍为 v5；授权确认只能解释同一 Task 中既有精确 request ID，不能修改 target、scope 或 grant。
+自然语言 dispatch 拆成 Planner 理解、Kernel 授权和 Runtime 执行三层。除 slash command、显式 ID、路径、URL 和附件外，raw input 都进入 `PlanningAgent`；自然语言“记住”不再是快路。Planner 可按需调用只读 MCP，并通过原生 proposal 工具提交严格 v7 `PlanningAgentPlan`。Work Graph 使用 v6 契约；授权确认只能解释同一 Task 中既有精确 request ID，不能修改 target、scope 或 grant。
 
 - `direct_reply`、`clarification`、`task_control` 或 `no_action`：除非 kernel 把 plan 重写为可执行工作，否则不应 claim executor work unit。
-- `plan_work_graph`：planner 提出一个 work graph proposal，节点是未来的 `Subtask` 记录。每个 proposal 都带有依赖、验收标准、期望输出、required agent-class kind 和候选 executor agent classes。
+- `plan_work_graph`：planner 提出一个 work graph proposal，节点是未来的 `Subtask` 记录。每个 proposal 都带有依赖、验收标准、`deliveryKind: edit | report`、受控的 `requiredCapabilities` 和完整有序的 canonical AgentClass 候选集合。
 
 `ControlKernel` v5 验证 schema、priority、task status、单活跃任务冲突、Work Graph、AgentClass 和 scheduling snapshot，也唯一决定 batch dispatch、Task/Subtask 取消、显式部分接受、generation replan、deferred availability、Executor recovery、retry/fallback、merge repair/conflict replan、permission grant/deny/escalate、partition wait 和 sandbox recovery。
 
-`DurableKernelWorkflow` 负责 event inbox、Decision/application 原子 issuance、幂等 Runtime apply 和 observation drain。`WorkGraphRuntimeService` 只持久化或投影 Kernel 授权的 v5 graph revision。`KernelExecutionRuntime` 构造快照并应用授权；`AttemptSupervisor` 管理 durable child launch；`SubtaskAttemptRunner` 负责 attempt-aware claim、唯一 context、Completion Protocol、receipt 和 candidate commit；`WorkspacePublicationWorker` 负责稳定 Git 集成与原子 completion 发布。
+`DurableKernelWorkflow` 负责 event inbox、Decision/application 原子 issuance、幂等 Runtime apply 和 observation drain。`WorkGraphRuntimeService` 只持久化或投影 Kernel 授权的 v6 Work Graph revision。`KernelExecutionRuntime` 构造快照并应用授权；`AttemptSupervisor` 管理 durable child launch；`SubtaskAttemptRunner` 负责 attempt-aware claim、唯一 context、Completion Protocol、receipt 和 candidate commit；`WorkspacePublicationWorker` 负责稳定 Git 集成与原子 completion 发布。
 
 旧版 `ExecutorRouter`、`ExecutorRoutingCoordinator`、`ExecutionPolicyPlanner` 以及 `IntentOrchestrator` 路由子系统已整体删除——不再有独立的 executor-selection 层。`repo_execution`、`research_workflow` 等旧 route intent 名称仅作为 agent class 排序的 affinity key 保留。
 
@@ -809,7 +811,9 @@ AnyFusion 当前只调度一个活跃顶层 Task。Work Graph 纯函数从依赖
 
 AnyFusion 可以把复杂需求表示成 work graph，而不是把整段需求一次性塞给一个 executor。图没有 single/multi execution mode；Planner 只在受控能力交接或必要交付边界建立多个 Subtasks。每条 `dependencies` 边同时是拓扑与 keyed `text`/`artifact` handoff contract。
 
-在 active session path 中，proposal 只有在 `ControlKernel` 授权并创建 durable application 后才会成为持久化 v5 `Subtask` revision。未发布产品只创建当前唯一 SQLite v28 schema，并拒绝 pre-release 数据库；不再创建或双读旧 Planning、Subtask、worktree audit 表。当前 schema 一次包含 durable workflow、graph revision、resource/workspace/permission/sandbox、dispatch/publication/merge audit、cancellation cleanup、lease revocation、generation replan request、deferred availability proposal、bounded Executor recovery checks 和 `full | partial_accepted` completion kind。下游只有在直接依赖 publication 成功后才进入 frontier，并合并其完整 Git ancestry；integration branch 不会隐式成为 sibling 基线。Executor 成功先进入 `awaiting_integration`，publication 成功后才原子发布 completion facts。文本允许 Git 三方合并；二进制路径独占且不自动合并。冲突由原 AgentClass 最多修三次，再独立 conflict replan 一次，仍失败则 park。
+`SubtaskExecutionContext` 是唯一生产 Executor 输入。Task 标题/目标仅作背景，当前 Subtask 目标是唯一操作指令，越界 sibling 只暴露标题。Runtime 不把 Task/Subtask/attempt/WorkUnit 身份及 acceptance/handoff key 交给模型复制。Completion Protocol v3 的模型侧严格 JSON 只允许 `evidence` 与可空 `noChangeReason`，或受控 `failure`；模型提供的身份和 artifacts 会被拒绝。Runtime 在校验前计算一次权威 workspace delta：`report` 必须零变化，`edit` 的有变化/零变化分别要求空原因/非空原因；新增和修改文件由 Runtime 生成 artifacts，删除只保留在 delta/evidence。delta 截断或不确定时 fail-closed，随后 Runtime 根据绑定 Subtask 与 outgoing contract 生成权威内部 envelope 并执行预算和直接边汇总校验。
+
+在 active session path 中，proposal 只有在 `ControlKernel` 授权并创建 durable application 后才会成为持久化 Work Graph v6 `Subtask` revision。未发布产品使用 SQLite schema v30，且只支持事务式 29→30 升级；运行时不双读旧 Planning、Subtask 或 worktree 契约。当前 schema 包含持久化 Planner proposal turn/submission 与 accepted-turn lock，并包含 durable workflow、graph revision、resource/workspace/permission/sandbox、dispatch/publication/merge audit、cancellation cleanup、lease revocation、generation replan request、deferred availability proposal、bounded Executor recovery checks 和 `full | partial_accepted` completion kind。下游只有在直接依赖 publication 成功后才进入 frontier，并合并其完整 Git ancestry；integration branch 不会隐式成为 sibling 基线。Executor 成功先进入 `awaiting_integration`，publication 成功后才原子发布 completion facts。文本允许 Git 三方合并；二进制路径独占且不自动合并。冲突由原 AgentClass 最多修三次，再独立 conflict replan 一次，仍失败则 park。
 
 已经脱离生产链路的 `ExecutionStrategyPlanner`、`ExecutionPolicy`、`MultiExecutorOrchestrator` 和 `AgenticLoopController` 实现已删除。work graph 与 work unit dispatch 成为权威路径后，这些旧实现不再参与运行时。`ExecutionAggregator` 继续供验证流水线执行结构化的多结果证据检查。
 
@@ -872,12 +876,12 @@ anyfusion --script /tmp/anyfusion-flow.txt
 
 `--script` 会逐行执行输入，空行和以 `#` 开头的行会被忽略。
 
-`npm run smoke:anyfusion` 默认运行 `planner-session`：在同一个 MetaClaw session 中发送两轮对话，确认第二轮能回忆本轮未重复的口令，并确认只创建一个原生 Codex session 文件。执行器产物回归仍可显式运行 `--scenario artifact` 或 `--scenario python-hello`。
+`npm run smoke:anyfusion` 默认运行 `planner-session`：在同一个 MetaClaw session 中发送两轮对话，确认第二轮能回忆本轮未重复的口令，并确认只创建一个持久 AnyFusion-Pi Planner session 文件。执行器产物回归仍可显式运行 `--scenario artifact` 或 `--scenario python-hello`。
 
 针对性测试：
 
 ```bash
-npm test -- tests/planning/planner-codex-runner.test.ts
+npm test -- tests/planner-process-runner.test.ts
 npm test -- tests/session/planning-agent-session-routing.test.ts
 npm test -- tests/session/planning-kernel-path.test.ts
 npm test -- tests/kernel/control-kernel.test.ts
@@ -905,7 +909,7 @@ src/
 ├── learning/       # 反思、周报、技能治理、晋升门禁和安全扫描
 ├── memory/         # 显式偏好、确定性会话上下文和 vault 导出
 ├── notifications/  # 通知适配器，例如飞书通知
-├── planning/       # PlanningAgent 接口（CodexPlanningAgent）、context builder、plan schema/词汇、校验
+├── planning/       # PlanningAgent 接口（AnyFusionPlanningAgent）、context builder、plan schema/词汇、校验
 ├── resource/       # Partition identity、冲突、permission profile 与 bounded grant 纯规则
 ├── session/        # Session 协调、PlanningAgent/ControlKernel wiring 与状态投影
 ├── storage/        # SQLite migrations 和 repositories

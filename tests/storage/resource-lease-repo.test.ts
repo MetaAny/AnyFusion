@@ -15,9 +15,9 @@ function seedForeignKeys(db: Database.Database): void {
   const insertSubtask = db.prepare(`INSERT INTO subtasks (
     id, task_id, graph_revision, generation_id, title, goal, status, dependencies_json,
     context_refs_json, required_capabilities_json, preferred_agent_class_list_json,
-    expected_output, acceptance_json, risk_level, result, artifacts_json,
+    delivery_kind, acceptance_json, risk_level, result, artifacts_json,
     verification_json, error, created_at, updated_at
-  ) VALUES (?, 'task', 1, 'gen', ?, ?, 'ready', '[]', '[]', '[]', '[]', 'summary', '[]', 'low', '', '[]', '{}', NULL, ?, ?)`);
+  ) VALUES (?, 'task', 1, 'gen', ?, ?, 'ready', '[]', '[]', '[]', '[]', 'report', '[]', 'low', '', '[]', '{}', NULL, ?, ?)`);
   insertSubtask.run('subtask-a', 'a', 'a', now, now);
   insertSubtask.run('subtask-b', 'b', 'b', now, now);
   new AgentClassService({ db }).seedDefaults();

@@ -14,7 +14,7 @@ function createUnit(overrides: Partial<ExecutionSubtask>): ExecutionSubtask {
     executorHint: 'codex-cli',
     dependsOn: [],
     inputs: { taskId: 'task_agg', resources: [], recalledTaskIds: [] },
-    expectedOutput: 'summary',
+    deliveryKind: 'report',
     acceptance: [],
     riskLevel: 'low',
     ...overrides,
@@ -46,8 +46,8 @@ describe('ExecutionAggregator', () => {
   it('summarizes research and implementation outputs with artifacts when verification passes', () => {
     const result = new ExecutionAggregator().aggregate({
       subtasks: [
-        createUnit({ id: 'subtask_research', expectedOutput: 'analysis' }),
-        createUnit({ id: 'subtask_implementation', expectedOutput: 'patch' }),
+        createUnit({ id: 'subtask_research', deliveryKind: 'report' }),
+        createUnit({ id: 'subtask_implementation', deliveryKind: 'edit' }),
       ],
       results: [
         createResult({
@@ -75,8 +75,8 @@ describe('ExecutionAggregator', () => {
   it('flags conflicting subtask outputs', () => {
     const result = new ExecutionAggregator().aggregate({
       subtasks: [
-        createUnit({ id: 'subtask_a', expectedOutput: 'analysis' }),
-        createUnit({ id: 'subtask_b', expectedOutput: 'analysis' }),
+        createUnit({ id: 'subtask_a', deliveryKind: 'report' }),
+        createUnit({ id: 'subtask_b', deliveryKind: 'report' }),
       ],
       results: [
         createResult({ subtaskId: 'subtask_a', output: '来源: A. conclusion conflict with B.' }),
@@ -90,44 +90,25 @@ describe('ExecutionAggregator', () => {
     expect(result.finalOutput).toContain('Verification: concerns');
   });
 
-  it('flags missing artifact paths for artifact subtasks', () => {
+  it('does not infer edit contract failures from output wording or model artifact claims', () => {
     const result = new ExecutionAggregator().aggregate({
       subtasks: [
-        createUnit({ id: 'subtask_artifact', expectedOutput: 'artifact' }),
+        createUnit({ id: 'subtask_edit', deliveryKind: 'edit' }),
       ],
       results: [
-        createResult({ subtaskId: 'subtask_artifact', output: '已生成最终方案，但没有返回路径。' }),
+        createResult({ subtaskId: 'subtask_edit', output: 'Changed src/core/foo.ts.', artifacts: [] }),
       ],
       aggregation: createAggregationPlan(),
     });
 
-    expect(result.status).toBe('concerns');
-    expect(result.concerns[0]).toMatchObject({
-      subtaskId: 'subtask_artifact',
-      severity: 'warning',
-    });
-    expect(result.concerns[0]?.message).toContain('文件路径');
-  });
-
-  it('flags patch subtasks that do not mention tests or a tests-not-run reason', () => {
-    const result = new ExecutionAggregator().aggregate({
-      subtasks: [
-        createUnit({ id: 'subtask_patch', expectedOutput: 'patch' }),
-      ],
-      results: [
-        createResult({ subtaskId: 'subtask_patch', output: 'Changed src/core/foo.ts.' }),
-      ],
-      aggregation: createAggregationPlan(),
-    });
-
-    expect(result.status).toBe('concerns');
-    expect(result.concerns[0]?.message).toContain('测试命令');
+    expect(result.status).toBe('pass');
+    expect(result.concerns).toEqual([]);
   });
 
   it('flags missing subtask results as errors', () => {
     const result = new ExecutionAggregator().aggregate({
       subtasks: [
-        createUnit({ id: 'subtask_missing', expectedOutput: 'review' }),
+        createUnit({ id: 'subtask_missing', deliveryKind: 'report' }),
       ],
       results: [],
       aggregation: createAggregationPlan(),

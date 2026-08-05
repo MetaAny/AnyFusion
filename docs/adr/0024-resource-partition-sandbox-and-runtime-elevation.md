@@ -44,7 +44,7 @@ The initial product guarantee ends at the sandbox profile and this authorization
 
 ### User authorization
 
-PlanningAgentPlan v6 adds only an authorization-resolution action for a pending exact request; Work Graph remains v5. Planner may interpret an ordinary-language approve/deny response but cannot change the request target or scope. Deterministic commands and connector actions produce the same `permission_resolution_received` event. User input records an authorization fact; ControlKernel still issues the final bounded grant.
+PlanningAgentPlan v7 retains only an authorization-resolution action for a pending exact request; Work Graph v6 does not add resource authority. Planner may interpret an ordinary-language approve/deny response but cannot change the request target or scope. Deterministic commands and connector actions produce the same `permission_resolution_received` event. User input records an authorization fact; ControlKernel still issues the final bounded grant.
 
 ### Persistence and recovery
 

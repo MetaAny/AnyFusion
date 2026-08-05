@@ -41,8 +41,9 @@ export class TaskEngine {
    */
   create(input: { id?: string; title: string; goal: string; resources?: string[] }): Task {
     const now = new Date().toISOString();
+    const taskId = input.id?.trim() ? input.id : generateTaskId();
     const task: Task = {
-      id: input.id ?? generateTaskId(),
+      id: taskId,
       title: input.title,
       goal: input.goal,
       status: 'created',

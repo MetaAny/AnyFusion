@@ -65,10 +65,12 @@ export async function runScriptedSession(
   }
 
   await session.waitForAsyncWork();
-  return {
+  const result = {
     output: session.getSnapshot().output,
     exitRequested,
   };
+  session.dispose();
+  return result;
 }
 
 export async function runScriptedSessionFile(

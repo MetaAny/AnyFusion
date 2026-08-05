@@ -161,7 +161,7 @@ function executorInput(
     context: {
       taskBackground: { id: 'task_1', title: 'Task', goal: 'Research', instruction: 'background_only' as const },
       currentSubtask: {
-        id: subtaskId, title: 'Research', goal: 'Research', expectedOutput: 'summary' as const,
+        id: subtaskId, title: 'Research', goal: 'Research', deliveryKind: 'report' as const,
         acceptance: [{ key: 'done', description: 'done', requiredEvidence: [] }],
       },
       incomingHandoffs: [], outgoingHandoffRequirements: [], selectedEvidence: [], outOfScopeSiblings: [],

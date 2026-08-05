@@ -9,8 +9,12 @@ describe('KernelExecutionRuntime dispatch snapshots', () => {
       updatedAt: '2026-07-22T00:00:00.000Z',
     };
     const findTask = vi.fn().mockReturnValue(task);
+    const applyWorkGraph = vi.fn().mockReturnValue({
+      outcome: 'recovered', workGraph: { reason: 'existing', subtasks: [] }, subtasks: [],
+    });
     const runtime = new KernelExecutionRuntime({
       taskRuntimeService: { findTask },
+      workGraphRuntimeService: { apply: applyWorkGraph },
       taskEventRepo: {},
       dispatchItemRepo: {},
       maxConcurrentAttempts: 4,
@@ -19,7 +23,8 @@ describe('KernelExecutionRuntime dispatch snapshots', () => {
 
     await runtime.recoverDue(task.id);
 
-    expect(findTask).toHaveBeenCalledTimes(2);
+    expect(findTask).toHaveBeenCalledTimes(3);
+    expect(applyWorkGraph).toHaveBeenCalledTimes(1);
   });
 
   it('derives recovery safety from the failed Subtask instead of the ready frontier', () => {

@@ -1,0 +1,8 @@
+{
+  "defaultProvider": "anyint",
+  "defaultModel": "gpt-5.6-luna",
+  "quietStartup": true,
+  "defaultProjectTrust": "always",
+  "enableSkillCommands": false,
+  "defaultThinkingLevel": "high"
+}

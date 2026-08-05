@@ -11,7 +11,13 @@ import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config, ExecutorResult } from '../../src/core/types.js';
-import { stubPlanningAgent, directReplyPlan, workGraphPlan, clarificationPlan } from '../support/planning-agent-plans.js';
+import {
+  clarificationPlan,
+  directReplyPlan,
+  planningAgentFromPlanMock,
+  stubPlanningAgent,
+  workGraphPlan,
+} from '../support/planning-agent-plans.js';
 import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
 
 const inputCapture = vi.hoisted(() => ({
@@ -458,7 +464,7 @@ describe('App input availability', () => {
     const pendingPlan = new Promise<ReturnType<typeof workGraphPlan>>(resolve => {
       resolvePlan = resolve;
     });
-    const planningAgent = { plan: vi.fn().mockReturnValue(pendingPlan) };
+    const planningAgent = planningAgentFromPlanMock(vi.fn().mockReturnValue(pendingPlan));
 
     const app = render(
       React.createElement(App, {
@@ -488,6 +494,9 @@ describe('App input availability', () => {
     expect(app.lastFrame()).toContain('status: processing');
 
     resolvePlan(workGraphPlan({ goal: '生成一个状态报告', matchedBoundary: ['repo_execution'] }));
+    for (let attempt = 0; attempt < 100 && attemptSandbox.create.mock.calls.length === 0; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
     await flushUpdates();
 
     expect(app.lastFrame()).not.toContain('已识别可执行任务');
@@ -495,7 +504,8 @@ describe('App input availability', () => {
     expect(app.lastFrame()).toContain('【Executor: codex-cli｜派发准备】');
     expect(app.lastFrame()).toContain('→ Executor: codex-cli 将处理该任务');
     expect(app.lastFrame()).toContain('status: running codex-cli');
-    expect(app.lastFrame()).toContain('当前任务 #');
+    expect(app.lastFrame()).toContain('当前任务');
+    expect(app.lastFrame()).toContain('#task_plan_event_proposal_');
     expect(app.lastFrame()).toContain('[RUNNING] 生成一个状态报告');
 
     executorDeferred.resolve({
@@ -505,7 +515,11 @@ describe('App input availability', () => {
       durationMs: 100,
     });
     await submitPromise;
-    await flushUpdates();
+    for (let attempt = 0; attempt < 100 && !app.lastFrame().includes('status: idle'); attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+      await flushUpdates();
+    }
+    expect(app.lastFrame()).toContain('status: idle');
 
     app.unmount();
     app.cleanup();
@@ -581,11 +595,11 @@ describe('App input availability', () => {
     const attemptSandbox = new FakeAttemptSandbox((_input, attemptIndex) => attemptIndex === 0
       ? { body: 'first done', wait: firstDeferred.promise.then(result => result.exitCode) }
       : { body: 'queued done' });
-    const planningAgent = {
-      plan: vi.fn()
+    const planningAgent = planningAgentFromPlanMock(
+      vi.fn()
         .mockResolvedValueOnce(workGraphPlan({ goal: '主线任务', matchedBoundary: ['repo_execution'] }))
         .mockResolvedValueOnce(clarificationPlan('我不确定你想继续聊天、创建新任务，还是恢复某个已有任务。')),
-    };
+    );
 
     const app = render(
       React.createElement(App, {

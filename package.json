@@ -12,7 +12,7 @@
   },
   "scripts": {
     "dev": "tsup --watch",
-    "build": "tsup && node dist/generate-planner-schema.js dist/planning-agent-plan-v6.schema.json && node dist/emit-pi-attempt-extension.js dist/pi-attempt-tools.ts",
+    "build": "tsup && node dist/generate-planner-schema.js dist/planning-agent-plan-v7.schema.json && node dist/emit-pi-attempt-extension.js dist/pi-attempt-tools.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "tsc --noEmit",

@@ -11,7 +11,7 @@ export interface ExecutionSubtask {
     resources: string[];
     recalledTaskIds: string[];
   };
-  expectedOutput: 'analysis' | 'patch' | 'artifact' | 'review' | 'summary';
+  deliveryKind: 'edit' | 'report';
   acceptance: string[];
   riskLevel: 'low' | 'medium' | 'high';
 }
@@ -68,18 +68,6 @@ export interface ExecutionAggregationResult {
   }>;
 }
 
-function hasTestEvidence(output: string): boolean {
-  return /(npm test|npm run|vitest|jest|pytest|go test|cargo test|测试通过|未运行测试|未跑测试|not run tests|tests not run)/i.test(output);
-}
-
-function hasResearchSourceEvidence(output: string): boolean {
-  return /(来源|source|http:\/\/|https:\/\/|限制|未联网|无法访问|资料)/i.test(output);
-}
-
-function hasReviewVerdict(output: string): boolean {
-  return /\b(pass|concerns)\b|通过|风险|问题|未通过|建议/i.test(output);
-}
-
 function hasConflict(left: SubtaskResult, right: SubtaskResult): boolean {
   const pair = `${left.output}\n${right.output}`;
   return /(冲突|conflict|contradict|不一致)/i.test(pair);
@@ -131,45 +119,6 @@ export class ExecutionAggregator {
         continue;
       }
 
-      if (unit.expectedOutput === 'patch' && !hasTestEvidence(result.output)) {
-        concerns.push({
-          subtaskId: unit.id,
-          criterionId: 'patch_verified',
-          severity: 'warning',
-          message: 'patch 类 subtask 未提供测试命令或未运行测试说明',
-          feedback: '请补充测试命令和测试结果；如果不能运行测试，明确说明原因和风险。',
-        });
-      }
-
-      if (unit.expectedOutput === 'analysis' && !hasResearchSourceEvidence(result.output)) {
-        concerns.push({
-          subtaskId: unit.id,
-          criterionId: 'research_sourced',
-          severity: 'warning',
-          message: 'research/analysis 类 subtask 未列出来源或来源限制',
-          feedback: '请补充来源、材料范围或来源限制，避免无依据结论。',
-        });
-      }
-
-      if (unit.expectedOutput === 'review' && !hasReviewVerdict(result.output)) {
-        concerns.push({
-          subtaskId: unit.id,
-          criterionId: 'review_verdict',
-          severity: 'warning',
-          message: 'review 类 subtask 未给出 pass 或 concerns',
-          feedback: '请给出明确 pass 或 concerns，并列出剩余风险。',
-        });
-      }
-
-      if (unit.expectedOutput === 'artifact' && result.artifacts.length === 0) {
-        concerns.push({
-          subtaskId: unit.id,
-          criterionId: 'artifact_delivered',
-          severity: 'warning',
-          message: 'artifact 类 subtask 未返回文件路径',
-          feedback: '请返回可定位的文件路径，或提供完整最终内容。',
-        });
-      }
     }
 
     for (let leftIndex = 0; leftIndex < input.results.length; leftIndex += 1) {

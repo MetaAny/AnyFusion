@@ -11,6 +11,7 @@ import type { Config } from '../../src/core/types.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import {
   stubPlanningAgent,
+  planningAgentFromPlanMock,
   directReplyPlan,
   workGraphPlan,
   taskControlPlan,
@@ -561,9 +562,9 @@ describe('Round 3 task boundary acceptance', () => {
       config: createConfig(),
       sessionId: 'sess_resume_parked_without_new_task',
       contextRecaller,
-      planningAgent: {
-        plan: vi.fn(async () => taskControlPlan({ control: 'resume_task', taskId: parkedTaskId })),
-      },
+      planningAgent: planningAgentFromPlanMock(
+        vi.fn(async () => taskControlPlan({ control: 'resume_task', taskId: parkedTaskId })),
+      ),
     });
 
     session.initialize();
@@ -608,9 +609,9 @@ describe('Round 3 task boundary acceptance', () => {
       config: createConfig(),
       sessionId: 'sess_resume_blocked_without_new_task',
       contextRecaller,
-      planningAgent: {
-        plan: vi.fn(async () => taskControlPlan({ control: 'recover_blocked', taskId: blockedTaskId })),
-      },
+      planningAgent: planningAgentFromPlanMock(
+        vi.fn(async () => taskControlPlan({ control: 'recover_blocked', taskId: blockedTaskId })),
+      ),
     });
 
     session.initialize();

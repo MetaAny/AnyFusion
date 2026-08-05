@@ -1,11 +1,26 @@
-# AnyFusion Codex 原生 TUI 定制迁移计划
+# AnyFusion Codex 原生 TUI 定制迁移计划（失败归档）
 
-> 状态：实现完成；本机 MetaClaw 验证通过；AnyFusion-Codex Linux 编译与交互验收待服务器完成
+> 状态：失败并终止；不得继续作为当前实施依据
+> 终止日期：2026-07-31
+> 替代计划：[AnyFusion Pi Planner 与原生 TUI 迁移计划](../../plans/2026-07-31-pi-planner-tui-migration.md)
 > 计划日期：2026-07-30
 > 目标产品名：AnyFusion；`MetaClaw` / `metaclaw` 继续作为内部运行时名称与兼容 CLI alias
 > 核心边界：本计划只调整本地 TUI 展示与接入，不修改 Kernel、Execution、Executor 的设计逻辑
 
-## 当前交付状态
+## 失败结论
+
+本计划的 Planner/Kernel/Executor 所有权边界仍然成立，但 Codex fork 作为 Planner TUI 载体失败：
+
+- Codex Rust workspace 的依赖下载和本地编译经过数小时仍无法完成；
+- Linux 服务器同样出现长时间编译和资源饥饿；
+- 该构建、发布和持续 rebase 成本远超一次 Planner presentation 迁移可接受范围；
+- 继续投入只会扩大 downstream 运维负担，不会改善 AnyFusion Kernel 或 Executor 能力。
+
+因此自 2026-07-31 起停止 AnyFusion-Codex 功能开发、服务器编译和默认入口推进。本文件保留当时的设计与交付状态，作为失败路线的历史记录；其中的只读 Task panel、proposal 重新校验、Application-Shell bridge、进程隔离、Ink TUI 保留和不修改 Kernel/Executor 等边界由 Pi 替代计划继承。
+
+不得根据本文件继续实施“Codex 作为默认 Planner TUI”的结论。当前实施依据是新的 Pi 迁移计划。
+
+## 终止时交付状态
 
 实现已经落在两个独立仓库：
 

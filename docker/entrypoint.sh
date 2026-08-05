@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Container entrypoint that:
 #  1. Persists non-secret MetaClaw runtime paths for SSH login sessions.
-#  2. Reads Planner Codex, Executor Codex, and Executor Pi provider settings
-#     from their assigned env files.
-#  3. Renders the writable Codex and Pi configs with each executor's base URL.
+#  2. Reads AnyFusion Planner, Executor Codex, and Executor Pi provider
+#     settings from their assigned env files.
+#  3. Renders the writable Planner, Codex, and Pi configs with each base URL.
 #  4. Executes the requested runtime command.
 set -euo pipefail
 
@@ -58,13 +58,25 @@ render() {
 PLANNER_ENV_FILE="${METACLAW_PLANNER_ENV_FILE:-}"
 CODEX_EXECUTOR_ENV_FILE="${METACLAW_CODEX_EXECUTOR_ENV_FILE:-}"
 PI_EXECUTOR_ENV_FILE="${METACLAW_PI_EXECUTOR_ENV_FILE:-}"
-PLANNER_OPENAI_BASE_URL="$(require_base_url 'Planner Codex' "$PLANNER_ENV_FILE")"
+PLANNER_OPENAI_BASE_URL="$(require_base_url 'AnyFusion Planner' "$PLANNER_ENV_FILE")"
 CODEX_EXECUTOR_OPENAI_BASE_URL="$(require_base_url 'Executor Codex' "$CODEX_EXECUTOR_ENV_FILE")"
 PI_EXECUTOR_OPENAI_BASE_URL="$(require_base_url 'Executor Pi' "$PI_EXECUTOR_ENV_FILE")"
 
 # pam_env supplies these non-secret paths to sessions started by sshd.
 source /opt/metaclaw/persist-ssh-environment.sh
 persist_ssh_environment /etc/environment
+
+PLANNER_AGENT_DIR="${ANYFUSION_PLANNER_HOME:-/var/lib/metaclaw/anyfusion-planner/agent}"
+PLANNER_TEMPLATE_DIR="/opt/metaclaw/planner-pi-config"
+
+if [ -d "$PLANNER_TEMPLATE_DIR" ]; then
+  mkdir -p "$PLANNER_AGENT_DIR"
+  for f in models.json settings.json; do
+    if [ -f "$PLANNER_TEMPLATE_DIR/$f" ]; then
+      render "$PLANNER_TEMPLATE_DIR/$f" "$PLANNER_OPENAI_BASE_URL" > "$PLANNER_AGENT_DIR/$f"
+    fi
+  done
+fi
 
 PI_AGENT_DIR="${HOME}/.pi/agent"
 PI_TEMPLATE_DIR="/opt/metaclaw/pi-config"
@@ -78,15 +90,11 @@ if [ -d "$PI_TEMPLATE_DIR" ]; then
   done
 fi
 
-PLANNER_CODEX_HOME="${METACLAW_PLANNER_CODEX_HOME:-/var/lib/metaclaw/codex/planner}"
 EXECUTOR_CODEX_HOME="${METACLAW_EXECUTOR_CODEX_HOME:-/var/lib/metaclaw/codex/executor}"
 CODEX_TEMPLATE_DIR="/opt/metaclaw/codex-config"
 
-mkdir -p "$PLANNER_CODEX_HOME" "$EXECUTOR_CODEX_HOME"
-render "$CODEX_TEMPLATE_DIR/planner/config.toml" "$PLANNER_OPENAI_BASE_URL" > "$PLANNER_CODEX_HOME/config.toml"
+mkdir -p "$EXECUTOR_CODEX_HOME"
 render "$CODEX_TEMPLATE_DIR/executor/config.toml" "$CODEX_EXECUTOR_OPENAI_BASE_URL" > "$EXECUTOR_CODEX_HOME/config.toml"
-rm -rf "$PLANNER_CODEX_HOME/skills"
-cp -R "$CODEX_TEMPLATE_DIR/planner/skills" "$PLANNER_CODEX_HOME/skills"
 
 METACLAW_HOME_DIR="${METACLAW_HOME:-/data/metaclaw}"
 mkdir -p "$METACLAW_HOME_DIR"

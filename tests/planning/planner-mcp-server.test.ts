@@ -246,17 +246,17 @@ describe('PlannerDataReader', () => {
     expect(after).toBe(before);
   });
 
-  it('enables the diagnostic query and tells Planner to use it only on demand', () => {
-    const config = readFileSync('docker/codex-config/planner/config.toml', 'utf-8');
-    const skill = readFileSync(
-      'docker/codex-config/planner/skills/metaclaw-planner/SKILL.md',
+  it('registers bounded executor diagnostics for explicit on-demand queries', () => {
+    const server = readFileSync('src/planning/planner-mcp-server.ts', 'utf-8');
+    const authority = readFileSync(
+      'docs/adr/0015-planner-owned-semantics-and-tool-mediated-context.md',
       'utf-8',
     );
 
-    expect(config).toContain('"get_executor_diagnostics"');
-    expect(config).toContain('"list_executor_status"');
-    expect(config).not.toContain('"list_executor_classes"');
-    expect(skill).toContain('user asks why execution is blocked');
-    expect(skill).toContain('get_executor_diagnostics');
+    expect(server).toContain("server.registerTool('get_executor_diagnostics'");
+    expect(server).toContain("server.registerTool('list_executor_status'");
+    expect(server).not.toContain("server.registerTool('list_executor_classes'");
+    expect(server).toContain('when the user asks why execution is blocked');
+    expect(authority).toContain('only through an explicit read-only diagnostic tool when the');
   });
 });

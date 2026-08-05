@@ -19,7 +19,7 @@ The product must first prove concurrency inside the single active top-level Task
 
 ### Pure scheduling authority
 
-Work Graph v5 remains the only dependency structure and does not gain execution layers. A pure Work Graph function derives a runnable frontier from the current revision and immutable lifecycle facts.
+Work Graph v6 remains the only dependency structure and does not gain execution layers. Its `deliveryKind` contract changes completion validation, not scheduling authority. A pure Work Graph function derives a runnable frontier from the current revision and immutable lifecycle facts.
 
 ControlKernel contract v4 receives a scheduling snapshot containing the frontier, pending and active dispatch items, bounded AgentClass availability, normalized resource conflicts, `maxConcurrentAttempts` and free slots. Its `dispatch_batch` Decision authorizes a deterministic ordered set of items. Each item fixes its attempt identity, AgentClass, resource grant, attempt kind and order.
 

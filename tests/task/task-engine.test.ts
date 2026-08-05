@@ -30,6 +30,13 @@ describe('TaskEngine', () => {
     expect(task.status).toBe('created');
   });
 
+  it.each(['', '   '])('should replace a blank explicit task id with a generated id', id => {
+    const task = engine.create({ id, title: '测试任务', goal: '拒绝空主键' });
+
+    expect(task.id).toMatch(/^task_/);
+    expect(repo.findById(id)).toBeNull();
+  });
+
   it('should transition task status', () => {
     const task = engine.create({ title: '测试', goal: '测试' });
     const ready = engine.transition(task.id, 'ready');

@@ -18,7 +18,7 @@ const event: KernelEvent = {
   targetGraphRevision: 1,
   proposal: {
     id: 'plan_1',
-    schemaVersion: 6,
+    schemaVersion: 7,
     action: 'direct_reply',
     confidence: 0.9,
     reason: 'answer directly',
@@ -31,7 +31,7 @@ const event: KernelEvent = {
     risk: { level: 'low', requiresConfirmation: false, reasons: [] },
     authorizationResolution: null,
     workGraph: null,
-    source: 'codex-planner',
+    source: 'anyfusion-planner',
   },
 };
 
@@ -95,6 +95,19 @@ describe('ControlKernel', () => {
     expect(new ControlKernel().decide(replanEvent, replanSnapshot).action).toMatchObject({
       type: 'authorize_task_plan', taskId: 'task_1', generationId: 'generation_1',
       graphRevision: 2, proposalSource: 'replan',
+    });
+  });
+
+  it('rejects an empty non-null task reference instead of authorizing it as a new Task', () => {
+    const proposal = workGraphPlan({ goal: 'Create an artifact' });
+    proposal.task.taskId = '';
+
+    expect(new ControlKernel().decide({ ...event, proposal }, {
+      ...snapshot,
+      eligibleContextRefKeys: ['current_user_input'],
+    })).toMatchObject({
+      action: { type: 'reject_request' },
+      reason: 'task not found: ',
     });
   });
 

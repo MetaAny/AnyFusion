@@ -37,7 +37,7 @@ export interface WorkGraphSubtask {
   contextRefs: ContextRef[];
   requiredCapabilities: RoutingCapabilityId[];
   preferredAgentClassList: BuiltinExecutorName[];
-  expectedOutput: 'analysis' | 'patch' | 'artifact' | 'review' | 'summary';
+  deliveryKind: 'edit' | 'report';
   acceptance: WorkGraphAcceptanceCriterion[];
   riskLevel: 'low' | 'medium' | 'high';
 }

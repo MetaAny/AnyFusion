@@ -154,7 +154,7 @@ export interface SubtaskExecutionSpec {
   workUnit: WorkUnit;
   agentClass: AgentClass;
   acceptance: WorkGraphAcceptanceCriterion[];
-  expectedOutput: Subtask['expectedOutput'];
+  deliveryKind: Subtask['deliveryKind'];
 }
 
 /** Runs a claimed subtask with its selected executor and converts adapter output into the shared ExecutionResult shape. */

@@ -41,6 +41,10 @@ export class KernelWorkflowRepo implements KernelWorkflowStore {
     return row ? parseCurrentEvent(row.event_json, row.schema_version) : null;
   }
 
+  findApplicationByDecisionId(decisionId: string): KernelDecisionApplicationRecord | null {
+    return this.findApplication(decisionId);
+  }
+
   listCapacitySignals(
     taskId: string,
     cycleId: string,

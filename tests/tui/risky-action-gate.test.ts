@@ -148,6 +148,14 @@ describe('App risky action gate', () => {
 
     await submitLine('直接把邮件发给客户');
     await submitLine('确认执行');
+    for (let attempt = 0; attempt < 100 && attemptSandbox.create.mock.calls.length === 0; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+      await flushUpdates();
+    }
+    for (let attempt = 0; attempt < 100 && !app.lastFrame().includes('已发送给客户'); attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+      await flushUpdates();
+    }
 
     expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
     expect(app.lastFrame()).toContain('已发送给客户');

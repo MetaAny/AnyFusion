@@ -17,10 +17,10 @@ import type { SubtaskRepo } from '../storage/subtask-repo.js';
 import type { ExecutionMode } from './types.js';
 import type { ExecutionRuntime } from './execution-runtime.js';
 import {
-  COMPLETION_MARKER_V2,
+  COMPLETION_MARKER_V3,
   validateCompletionProtocol,
   type CompletionContractViolation,
-  type CompletionHandoffV2,
+  type CompletionHandoffV3,
 } from './completion-protocol.js';
 import { SubtaskExecutionContextBuilder } from './subtask-execution-context.js';
 import type { WorkUnitClaimService } from './work-unit-claim-service.js';
@@ -35,7 +35,12 @@ import type {
   KernelAttemptPayload,
   KernelRecoveryMode,
 } from '../kernel/control-kernel.js';
-import { captureWorkspaceState, deriveWorkspaceDelta, type WorkspaceState } from './workspace-change-tracker.js';
+import {
+  captureWorkspaceState,
+  deriveWorkspaceDelta,
+  type WorkspaceDelta,
+  type WorkspaceState,
+} from './workspace-change-tracker.js';
 import type { WorkspaceStore, WorkspaceHandle, StoredWorkspaceCheckpoint } from './workspace-store.js';
 import type { AttemptSandboxPort } from './attempt-sandbox.js';
 import {
@@ -234,6 +239,7 @@ export class SubtaskAttemptRunner {
     let evidenceCapability: { revoke(): void } | null = null;
     let evidenceToolServer: ExecutionEvidenceToolServer | null = null;
     let workspaceBaseline: WorkspaceState | null = null;
+    let workspaceDelta: WorkspaceDelta | null = null;
     let workspace: WorkspaceHandle | null = null;
     let gitWorkspace: ManagedGitWorkspace | null = null;
     let mergeRepair: {
@@ -400,7 +406,7 @@ export class SubtaskAttemptRunner {
             mergeRepair.conflictingPaths,
             gitWorkspace.filesPath,
           ),
-          expectedOutput: 'patch',
+          deliveryKind: 'edit',
         } : undefined,
         completionContractOverride: mergeRepair ? {
           marker: '---METACLAW-MERGE-REPAIR---',
@@ -477,7 +483,7 @@ export class SubtaskAttemptRunner {
       const execution = await this.deps.executionRuntime.run({
         taskId: input.taskId,
         executionId: input.executionId,
-        spec: { subtask, workUnit: claim.workUnit, agentClass, acceptance: subtask.acceptance, expectedOutput: subtask.expectedOutput },
+        spec: { subtask, workUnit: claim.workUnit, agentClass, acceptance: subtask.acceptance, deliveryKind: subtask.deliveryKind },
         executorInput: {
           context: built.context,
           sandbox: {
@@ -551,6 +557,16 @@ export class SubtaskAttemptRunner {
               failure: executionFailure ?? { kind: 'unknown', scope: 'attempt', code: 'executor_failed', summary: error },
             };
       }
+
+      workspaceDelta = deriveWorkspaceDelta(
+        workspaceBaseline,
+        captureWorkspaceState(workspace.filesPath),
+      );
+      this.attemptRuntimeRepo.recordWorkspaceDelta(
+        attemptId,
+        workspaceDelta,
+        new Date().toISOString(),
+      );
 
       if (mergeRepair) {
         const report = parseMergeRepairReport(rawResponse);
@@ -644,8 +660,8 @@ export class SubtaskAttemptRunner {
         rawResponse,
         subtask,
         outgoingHandoffs,
-        targetPaths: built.context.workspaceContext.targetPaths,
-        cwd: built.context.workspaceContext.workingDirectory,
+        workspaceRoot: built.context.workspaceContext.workingDirectory,
+        workspaceDelta,
         incomingUsageByTarget: new Map(outgoingHandoffs.map(contract => [
           contract.toSubtaskId,
           summarizeHandoffUsage(this.handoffRepo.listIncoming(task.id, contract.toSubtaskId)),
@@ -676,7 +692,7 @@ export class SubtaskAttemptRunner {
         this.persistNonSuccess({
           attemptId, executionId: input.executionId, taskId: task.id, subtaskId: subtask.id,
           workUnitId: claim.workUnit.id, agentClassName: agentClass.name, startedAt,
-          terminalState: 'executor_failed', rawResponse, completionSchemaVersion: 2,
+          terminalState: 'executor_failed', rawResponse, completionSchemaVersion: 3,
           errorCode: failure.code, errorDetail: failure.summary,
           failure: { ...failure, scope: 'task' },
         });
@@ -720,7 +736,7 @@ export class SubtaskAttemptRunner {
         artifacts: completion.normalizedArtifacts,
         warnings: completion.warnings,
         handoffs: completedEnvelope.handoffs,
-        completionSchemaVersion: 2,
+        completionSchemaVersion: 3,
       };
       if (!dispatchItem) {
         throw new Error(`authorized dispatch item not found: ${attemptId}`);
@@ -736,7 +752,7 @@ export class SubtaskAttemptRunner {
           startedAt,
           terminalState: 'completed',
           rawResponse,
-          completionSchemaVersion: 2,
+          completionSchemaVersion: 3,
           warnings: completion.warnings,
         }, completedAt),
         expectedSubtaskStatus: 'running',
@@ -859,12 +875,16 @@ export class SubtaskAttemptRunner {
           // The terminal receipt remains authoritative; checkpoint recovery is best effort here.
         }
       }
-      if (workspaceBaseline && workspace) {
-        this.attemptRuntimeRepo.recordWorkspaceDelta(
-          attemptId,
-          deriveWorkspaceDelta(workspaceBaseline, captureWorkspaceState(workspace.filesPath)),
-          new Date().toISOString(),
-        );
+      if (!workspaceDelta && workspaceBaseline && workspace) {
+        try {
+          this.attemptRuntimeRepo.recordWorkspaceDelta(
+            attemptId,
+            deriveWorkspaceDelta(workspaceBaseline, captureWorkspaceState(workspace.filesPath)),
+            new Date().toISOString(),
+          );
+        } catch {
+          // Failed attempts retain their terminal receipt even when best-effort delta capture fails.
+        }
       }
       evidenceCapability?.revoke();
       await evidenceToolServer?.close();
@@ -889,7 +909,15 @@ export class SubtaskAttemptRunner {
     const task = this.deps.taskRuntimeService.findTask(input.taskId);
     const subtask = this.deps.subtaskRepo.findById(input.subtaskId);
     const source = this.receiptRepo.findByAttemptId(input.sourceAttemptId);
-    if (!task || !subtask || subtask.status !== 'awaiting_decision' || !source || source.agentClassName !== input.agentClassName) {
+    const sourceRuntime = this.attemptRuntimeRepo.find(input.sourceAttemptId);
+    if (
+      !task
+      || !subtask
+      || subtask.status !== 'awaiting_decision'
+      || !source
+      || !sourceRuntime
+      || source.agentClassName !== input.agentClassName
+    ) {
       return { outcome: 'cancelled_or_stale', attemptId: input.attemptId, reason: 'response-only correction source is stale' };
     }
     const claim = await this.deps.workUnitClaimService.claim({
@@ -903,7 +931,7 @@ export class SubtaskAttemptRunner {
       claim.startAttempt();
       this.deps.subtaskRepo.updateStatus(subtask.id, 'running');
       claim.markRunning();
-      const prompt = buildCorrectionPrompt(source.rawResponse, input.completionContract, input.violations);
+      const prompt = buildCorrectionPrompt(source.rawResponse, input.violations);
       const result = await this.deps.executionRuntime.runResponseOnly(input.agentClassName, prompt, 128 * 1024);
       if (!result?.success) {
         const error = result?.error ?? 'AgentClass does not enforce response-only correction';
@@ -929,13 +957,12 @@ export class SubtaskAttemptRunner {
         generationId: subtask.generationId,
         subtaskId: subtask.id,
       }, this.deps.sourceRoot);
-      const targetPath = gitWorkspace.filesPath;
       const completion = validateCompletionProtocol({
         rawResponse: result.output,
         subtask,
         outgoingHandoffs,
-        targetPaths: [targetPath],
-        cwd: gitWorkspace.filesPath,
+        workspaceRoot: gitWorkspace.filesPath,
+        workspaceDelta: sourceRuntime.workspaceDelta,
         incomingUsageByTarget: new Map(outgoingHandoffs.map(contract => [
           contract.toSubtaskId,
           summarizeHandoffUsage(this.handoffRepo.listIncoming(task.id, contract.toSubtaskId)),
@@ -966,7 +993,7 @@ export class SubtaskAttemptRunner {
         this.persistNonSuccess({
           attemptId: input.attemptId, executionId: input.executionId, taskId: task.id, subtaskId: subtask.id,
           workUnitId: claim.workUnit.id, agentClassName: input.agentClassName, startedAt,
-          terminalState: 'executor_failed', rawResponse: result.output, completionSchemaVersion: 2,
+          terminalState: 'executor_failed', rawResponse: result.output, completionSchemaVersion: 3,
           errorCode: failure.code, errorDetail: failure.summary,
         });
         claim.markFailed(failure.summary);
@@ -989,7 +1016,7 @@ export class SubtaskAttemptRunner {
         receipt: buildReceipt({
           attemptId: input.attemptId, executionId: input.executionId, taskId: task.id, subtaskId: subtask.id,
           workUnitId: claim.workUnit.id, agentClassName: input.agentClassName, startedAt,
-          terminalState: 'completed', rawResponse: result.output, completionSchemaVersion: 2, warnings: completion.warnings,
+          terminalState: 'completed', rawResponse: result.output, completionSchemaVersion: 3, warnings: completion.warnings,
         }, completedAt),
         expectedSubtaskStatus: 'running',
         nextSubtaskStatus: 'awaiting_integration',
@@ -1007,7 +1034,7 @@ export class SubtaskAttemptRunner {
             artifacts: completion.normalizedArtifacts,
             warnings: completion.warnings,
             handoffs: completedEnvelope.handoffs,
-            completionSchemaVersion: 2,
+            completionSchemaVersion: 3,
           },
           topologyLayer: deriveTopologyLayer(subtask.id, allSubtasks),
           firstDispatchOrder: dispatchItem.batchOrder,
@@ -1222,7 +1249,7 @@ export class SubtaskAttemptRunner {
   }
 }
 
-function summarizeHandoffUsage(handoffs: Array<{ items: CompletionHandoffV2['items'] }>): {
+function summarizeHandoffUsage(handoffs: Array<{ items: CompletionHandoffV3['items'] }>): {
   textCharacters: number;
   artifactPaths: number;
 } {
@@ -1362,17 +1389,36 @@ function buildReceipt(input: {
 
 function buildCorrectionPrompt(
   rawResponse: string,
-  completionContract: unknown,
   violations: CompletionContractViolation[],
 ): string {
+  const guidance = [...new Set(violations.map(violation => correctionGuidance(violation.code)))];
   return [
     'Correct only the final response format. Do not execute the task, use tools, inspect files, or change the workspace.',
     'Return non-empty Markdown followed by exactly one completion trailer.',
-    `Trailer marker: ${COMPLETION_MARKER_V2}`,
-    `Completion contract:\n${JSON.stringify(completionContract, null, 2)}`,
-    `Violations:\n${JSON.stringify(violations, null, 2)}`,
+    `Trailer marker: ${COMPLETION_MARKER_V3}`,
+    'Successful report schema: {"evidence":["<concise evidence>"],"noChangeReason":null}',
+    'Failure report schema: {"failure":{"kind":"task_failed","code":"<stable_code>","summary":"<concise explanation>"}}',
+    'Do not return schema/status identity, Task/Subtask/attempt/WorkUnit IDs, acceptance keys, or handoff identities. Runtime owns and injects them.',
+    `Validation guidance:\n${guidance.map(item => `- ${item}`).join('\n')}`,
     `Original response:\n${rawResponse}`,
   ].join('\n\n');
+}
+
+function correctionGuidance(code: CompletionContractViolation['code']): string {
+  switch (code) {
+    case 'completion_artifact_invalid':
+      return 'Do not declare artifact paths; Runtime derives changed files from the authoritative workspace delta.';
+    case 'completion_no_change_reason_mismatch':
+      return 'Use null when files changed or for report delivery; for a zero-change edit provide a concise non-empty reason.';
+    case 'completion_report_workspace_changed':
+      return 'The report changed the workspace and cannot be corrected by response formatting; return a structured failure.';
+    case 'completion_workspace_delta_uncertain':
+      return 'The workspace delta is not authoritative and cannot be repaired in the response; return a structured failure.';
+    case 'completion_budget_exceeded':
+      return 'Keep evidence concise: one to four entries, at most 1000 characters each.';
+    default:
+      return 'Return exactly one strict identity-free report matching one of the schemas above.';
+  }
 }
 
 function boundedRecoveryPacket(
