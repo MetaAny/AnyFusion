@@ -45,11 +45,11 @@ export interface ExecutorRegistryDeps {
 
 export interface ExecutorRegistrationInspection {
   configured: boolean;
-  bindingSource: 'sandbox' | 'unbound';
+  bindingSource: 'sandbox' | 'worktree' | 'unbound';
   adapterName: string | null;
 }
 
-/** Resolves AgentClasses to the canonical sandboxed executor adapter. */
+/** Resolves AgentClasses to the canonical executor adapter and active backend. */
 export class ExecutorRegistry {
   constructor(private readonly deps: ExecutorRegistryDeps) {}
 
@@ -62,12 +62,18 @@ export class ExecutorRegistry {
 
   inspect(name: string): ExecutorRegistrationInspection {
     const agentClass = this.deps.agentClassLookup.findByName(name);
+    const worktree = (this.deps.attemptSandbox.kind ?? 'container') === 'worktree';
     const configured = Boolean(
-      agentClass?.executionImageRef
-      && agentClass.resolvedImageId
-      && agentClass.permissionProfileId,
+      agentClass?.permissionProfileId
+      && (worktree
+        ? ['codex-cli', 'pi-agent'].includes(name)
+        : agentClass.executionImageRef && agentClass.resolvedImageId),
     );
-    return { configured, bindingSource: configured ? 'sandbox' : 'unbound', adapterName: configured ? name : null };
+    return {
+      configured,
+      bindingSource: configured ? worktree ? 'worktree' : 'sandbox' : 'unbound',
+      adapterName: configured ? name : null,
+    };
   }
 
   async probe(name: string, previousFailure?: KernelFailure | null): Promise<ExecutorProbeResult> {
@@ -83,7 +89,19 @@ export class ExecutorRegistry {
         },
       };
     }
-    if (agentClass.executionImageRef && !agentClass.resolvedImageId) {
+    const worktree = (this.deps.attemptSandbox.kind ?? 'container') === 'worktree';
+    if (worktree && !['codex-cli', 'pi-agent'].includes(name)) {
+      return {
+        available: false,
+        failure: {
+          kind: 'configuration',
+          scope: 'agent_class',
+          code: 'worktree_executor_not_canonical',
+          summary: `Worktree execution supports only canonical Codex and Pi AgentClasses: ${name}`,
+        },
+      };
+    }
+    if (!worktree && agentClass.executionImageRef && !agentClass.resolvedImageId) {
       try {
         const imageId = await this.deps.attemptSandbox.resolveImage(agentClass.executionImageRef);
         if (!imageId.startsWith('sha256:')) {
@@ -122,20 +140,22 @@ export class ExecutorRegistry {
         },
       };
     }
-    try {
-      await this.deps.attemptSandbox.probeControlNetwork?.(
-        this.deps.controlNetwork ?? process.env.METACLAW_CONTROL_NETWORK ?? 'metaclaw-control',
-      );
-    } catch (error) {
-      return {
-        available: false,
-        failure: {
-          kind: 'adapter',
-          scope: 'agent_class',
-          code: 'executor_control_network_unavailable',
-          summary: error instanceof Error ? error.message : String(error),
-        },
-      };
+    if (!worktree) {
+      try {
+        await this.deps.attemptSandbox.probeControlNetwork?.(
+          this.deps.controlNetwork ?? process.env.METACLAW_CONTROL_NETWORK ?? 'metaclaw-control',
+        );
+      } catch (error) {
+        return {
+          available: false,
+          failure: {
+            kind: 'adapter',
+            scope: 'agent_class',
+            code: 'executor_control_network_unavailable',
+            summary: error instanceof Error ? error.message : String(error),
+          },
+        };
+      }
     }
     return adapter.probe(previousFailure);
   }

@@ -6,11 +6,8 @@
       "apiKey": "$OPENAI_API_KEY",
       "models": [
         {
-          "id": "gpt-5.6-luna",
+          "id": "gpt-5.6-terra",
           "reasoning": true,
-          "thinkingLevelMap": {
-            "high": "max"
-          },
           "compat": {
             "supportsReasoningEffort": true
           }

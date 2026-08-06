@@ -2,6 +2,7 @@
 export interface CodexNonInteractiveArgsOptions {
   ephemeral?: boolean;
   outputLastMessagePath?: string;
+  sandbox?: 'workspace-write' | 'danger-full-access';
 }
 
 export function buildCodexNonInteractiveArgs(
@@ -11,7 +12,7 @@ export function buildCodexNonInteractiveArgs(
   return [
     'exec',
     '--sandbox',
-    'workspace-write',
+    options.sandbox ?? 'workspace-write',
     '-c',
     'approval_policy="never"',
     '--skip-git-repo-check',
@@ -34,7 +35,7 @@ export function buildCodexResumeArgs(
     'exec',
     'resume',
     '--sandbox',
-    'workspace-write',
+    options.sandbox ?? 'workspace-write',
     '-c',
     'approval_policy="never"',
     '--skip-git-repo-check',

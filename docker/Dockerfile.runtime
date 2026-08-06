@@ -47,22 +47,26 @@ ENV NODE_ENV=production \
     METACLAW_PLANNER_TUI_SOCKET=/data/metaclaw/anyfusion-planner.sock \
     ANYFUSION_BRIDGE_SOCKET=/data/metaclaw/anyfusion-planner.sock \
     ANYFUSION_PLANNER_MODE=1 \
+    METACLAW_EXECUTOR_BACKEND=worktree \
+    METACLAW_EXECUTOR_CODEX_HOME=/var/lib/metaclaw/codex/executor \
+    METACLAW_EXECUTOR_PI_HOME=/root \
     METACLAW_CODEX_EXECUTOR_ENV_FILE=/run/metaclaw/env/executor-codex.env \
     METACLAW_PI_EXECUTOR_ENV_FILE=/run/metaclaw/env/executor-pi.env
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends bash ca-certificates fd-find git openssh-client openssh-server python3 ripgrep \
+  && apt-get install -y --no-install-recommends bash ca-certificates curl fd-find git openssh-client openssh-server python3 ripgrep \
   && ln -sf /usr/bin/fdfind /usr/local/bin/fd \
   && rm -rf /var/lib/apt/lists/* \
   && mkdir -p /run/sshd \
   && echo 'root:metaclaw' | chpasswd \
   && sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config \
   && sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config \
-  && npm install -g --ignore-scripts @openai/codex@0.144.1
+  && npm install -g --ignore-scripts @openai/codex@0.144.1 @earendil-works/pi-coding-agent@0.80.2
 
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./package.json
+COPY --from=builder /app/dist/pi-attempt-tools.ts /opt/metaclaw/pi-attempt-tools.ts
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=planner-builder /opt/anyfusion-planner /opt/anyfusion-planner
 COPY docker/entrypoint.sh /opt/metaclaw/entrypoint.sh
@@ -79,8 +83,10 @@ RUN test "$(node --version)" = 'v22.19.0' \
   && test ! -e /opt/anyfusion-planner/node \
   && test -d /app/node_modules \
   && test -d /opt/anyfusion-planner/app/node_modules \
+  && printf '#!/bin/sh\nexec node /app/dist/capability-request-cli.js "$@"\n' > /usr/local/bin/request_capability \
+  && printf '#!/bin/sh\nexec node /app/dist/capability-use-cli.js "$@"\n' > /usr/local/bin/use_capability \
   && sed -i 's/\r$//' /opt/metaclaw/entrypoint.sh /opt/metaclaw/persist-ssh-environment.sh \
-  && chmod +x /opt/metaclaw/entrypoint.sh \
+  && chmod +x /opt/metaclaw/entrypoint.sh /usr/local/bin/request_capability /usr/local/bin/use_capability \
   && mkdir -p /data/metaclaw /workspace /var/empty/metaclaw-planner /var/lib/metaclaw/anyfusion-planner/agent /var/lib/metaclaw/anyfusion-planner/sessions
 
 VOLUME ["/data", "/workspace"]

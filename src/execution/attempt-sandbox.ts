@@ -1,5 +1,11 @@
 export type SandboxMountMode = 'ro' | 'rw';
 
+/** Execution backends supported by the Runtime. */
+export type AttemptSandboxKind = 'container' | 'worktree';
+
+/** Whether Executor prompts use container aliases or native Runtime paths. */
+export type AttemptSandboxPathMode = 'container' | 'native';
+
 export interface AttemptSandboxMount {
   source: string;
   target: string;
@@ -44,6 +50,8 @@ export interface AttemptSandboxRecord {
 }
 
 export interface AttemptSandboxPort {
+  readonly kind?: AttemptSandboxKind;
+  readonly pathMode?: AttemptSandboxPathMode;
   resolveImage(imageRef: string): Promise<string>;
   probeControlNetwork?(controlNetwork: string): Promise<void>;
   create(input: CreateAttemptSandboxInput): Promise<AttemptSandboxRecord>;

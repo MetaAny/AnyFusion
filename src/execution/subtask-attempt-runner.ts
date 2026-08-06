@@ -385,6 +385,9 @@ export class SubtaskAttemptRunner {
         now: startedAt,
       });
       const evidenceToolsAvailable = input.agentClassName === 'codex-cli' || input.agentClassName === 'pi-agent';
+      const attemptControlHost = this.deps.attemptSandbox.pathMode === 'native'
+        ? '127.0.0.1'
+        : process.env.METACLAW_CONTROL_HOST ?? 'metaclaw-control';
       const built = this.contextBuilder.build({
         executionId: input.executionId,
         task,
@@ -422,7 +425,7 @@ export class SubtaskAttemptRunner {
       evidenceCapability = built.evidenceCapability;
       if (evidenceToolsAvailable) {
         evidenceToolServer = new ExecutionEvidenceToolServer(built.evidenceCapability, {
-          advertisedHost: process.env.METACLAW_CONTROL_HOST ?? 'metaclaw-control',
+          advertisedHost: attemptControlHost,
         });
         built.context.evidenceTools.binding = await evidenceToolServer.start();
       }
@@ -477,7 +480,7 @@ export class SubtaskAttemptRunner {
         },
       });
       capabilityToolServer = new CapabilityRequestToolServer(permissionWorkflow, {
-        advertisedHost: process.env.METACLAW_CONTROL_HOST ?? 'metaclaw-control',
+        advertisedHost: attemptControlHost,
       });
       const capabilityBinding = await capabilityToolServer.start();
       const execution = await this.deps.executionRuntime.run({

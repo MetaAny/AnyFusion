@@ -175,10 +175,10 @@ conversation / task 的边界很重要：
 
 | 执行器 | 命令 | 适合任务 | 安装要求 |
 | --- | --- | --- | --- |
-| Codex CLI | `codex` | 仓库修改、测试、确定性实现、带 patch 的代码审查 | 安装并登录 OpenAI Codex CLI |
-| Pi Agent | `pi` | 调研、报告生成、多步骤信息综合、agentic CLI 工作流 | 安装 `@earendil-works/pi-coding-agent` 并完成登录 |
+| Codex CLI | `codex` | 仓库修改、测试、确定性实现、带 patch 的代码审查 | 统一 Runtime 已内置并配置；只有直接 Linux 开发才需本机安装 |
+| Pi Agent | `pi` | 调研、报告生成、多步骤信息综合、agentic CLI 工作流 | 统一 Runtime 已内置并配置；只有直接 Linux 开发才需本机安装 |
 
-默认运行时命令是 `codex`，静态目录中表示为 `codex-cli` AgentClass，但不预置虚假的空闲 executor WorkUnit。获批后，Runtime 优先 claim 健康 idle 实例；没有容量时创建 `starting` 实例并探测，失败则按 Plan 候选顺序回退，全部失败时阻塞任务。Pi 是 canonical 的当前网页研究类；配置为默认值但尚未注册的其他 Executor 会以不含路由能力的未分类 AgentClass 启动，已有的非 canonical 类则保持不变。
+默认 worktree 后端只执行 canonical `codex-cli` 与 `pi-agent`。获批后，Runtime claim 或创建 WorkUnit，再把对应 CLI 作为统一 Runtime 的子进程启动，并把 `cwd` 设为当前 Subtask Git worktree。该路径不扩展第三方 Executor 注册；旧 Docker attempt 后端仍可通过 `METACLAW_EXECUTOR_BACKEND=docker` 显式启用。
 
 ## 前提条件
 
@@ -203,8 +203,9 @@ sudo apt-get install -y build-essential python3 make g++
 
 执行器前提：
 
-- 使用默认 `codex-cli`：安装并登录 OpenAI Codex CLI。
-- 构建或拉取 canonical Codex/Pi AgentClass 所绑定的执行镜像。
+- 统一 Runtime 镜像已内置 Codex/Pi CLI 和配置。
+- 直接 Linux 开发时，在本机安装并配置要使用的 canonical CLI。
+- 只有 Docker 兼容模式才需要构建或拉取 canonical attempt 镜像。
 
 飞书集成前提：
 
@@ -479,7 +480,7 @@ AnyFusion 调用方式：
 pi -p "<prompt>"
 ```
 
-Pi attempt 通过 canonical `metaclaw-executor-pi:phase5` 镜像和统一的 `SandboxedExecutorAdapter` seam 运行。
+Pi attempt 默认通过统一的 `SandboxedExecutorAdapter` seam 在当前 Subtask worktree 中运行 `pi` 子进程；Docker 兼容模式仍使用 canonical `metaclaw-executor-pi:phase5` 镜像。
 
 ## Executor 与 Skill 的差异
 
@@ -487,7 +488,7 @@ Executor 和 Skill 是生态里的不同层。
 
 Executor 是“谁来干活”。Skill 是“干活时带什么方法、知识和工具规范”。
 
-Executor 是 sandboxed AgentClass runtime，例如 canonical Codex CLI 与 Pi Agent 镜像。它决定模型、工具链、权限、运行环境、上下文窗口、文件读写能力、非交互执行方式、成本和可靠性边界。
+Executor 是 AgentClass runtime，例如 canonical Codex CLI 与 Pi Agent。它可以作为 worktree 子进程运行，也可以走 Docker 兼容后端；它决定模型、工具链、权限、运行环境、上下文窗口、文件读写能力、非交互执行方式、成本和可靠性边界。
 
 Skill 更像轻量能力包。它描述某一类工作应该怎么做：怎么做期货分析、怎么做代码审查、怎么跑调研流程、怎么输出报告格式。Skill 可以改善某个 Executor 的表现，但不会自动改变这个 Executor 的 runtime、权限、工具或安装状态。
 
@@ -585,11 +586,11 @@ anyfusion --gateway
 anyfusion --connect
 ```
 
-### 在 Docker 中运行（Windows / 容器化）
+### 在 Docker 中运行（macOS / Windows / 容器化）
 
-在 Windows 上，`docker/` 工作流将 Linux 容器作为 SSH 服务运行，为原生 TUI 提供真实 PTY，并允许通过 shell 或 VS Code Remote-SSH 浏览 `/workspace`。首期部署只保证 Linux 容器/服务器；Windows 使用统一 Docker runtime，不是原生 Planner 目标。一次 BuildKit 构建以 MetaClaw 为默认 context，并以兄弟 AnyFusion-Pi 仓库为必需的 `anyfusion-pi` context。最终镜像只包含一份 Node 22.19+，MetaClaw control process 位于 `/app`，隔离的 Planner process 位于 `/opt/anyfusion-planner/app`，两者保留独立依赖树。Executor attempt 继续使用各自 canonical Codex/Pi 镜像。Docker 分别只读挂载 `planner-pi.env`、`executor-codex.env` 和 `executor-pi.env`，entrypoint 根据各自 base URL 渲染隔离配置。
+在 macOS 和 Windows 上，`docker/` 工作流将 Linux Runtime 作为 SSH 服务运行，为原生 TUI 提供真实 PTY，并允许通过 shell 或 VS Code Remote-SSH 浏览 `/workspace`。这条受支持路径需要 Docker Desktop，因为 Runtime 与 Executor CLI 依赖 Linux。一次 BuildKit 构建以 MetaClaw 为默认 context，并以兄弟 AnyFusion-Pi 仓库为必需的 `anyfusion-pi` context。最终镜像只包含一份 Node 22.19+，MetaClaw control process 位于 `/app`，隔离的 Planner process 位于 `/opt/anyfusion-planner/app`，两者保留独立依赖树；canonical Codex/Pi attempt 直接在该 Runtime 内作为 worktree 子进程运行。
 
-完整 runtime image 内置 MetaClaw CLI、v7 schema、编译后的 Planner MCP server、构建后的 AnyFusion-Pi 应用、版本化 host bridge 与隔离的 Planner/Executor template。`docker/Dockerfile.runtime` 构建两个仓库 context，并把两个独立应用树复制进最终镜像。Planner launcher 与 MetaClaw 注入的 `/app/dist/planner-mcp.js` 命令都使用 `/usr/local/bin/node`，禁止存在 `/opt/anyfusion-planner/node`。Pi executor 继续位于独立 Node 22 attempt image。任一仓库源码变化后都使用 `docker/shell.ps1 -Rebuild`；只保留 workspace/data volume。Executor attempt 由可信 Engine endpoint 创建为兄弟容器：source、inputs、handoffs 和 `.git` 只读，私有 `/workspace` 可写，`/tmp` 为 tmpfs；attempt 不获得 Docker socket 或真实 provider credential，而是通过随机短期 token 的 attempt-scoped model gateway 调用模型。完整要求见 [Phase 5 Runtime Security](phase-5-runtime-security.md)。
+完整 Runtime image 内置 MetaClaw CLI、v7 schema、编译后的 Planner MCP server、构建后的 AnyFusion-Pi 应用、版本化 host bridge、Codex/Pi CLI 与对应配置。`docker/Dockerfile.runtime` 构建两个仓库 context，并把两个独立应用树复制进最终镜像。Planner launcher 与 MetaClaw 注入的 `/app/dist/planner-mcp.js` 命令都使用 `/usr/local/bin/node`，禁止存在 `/opt/anyfusion-planner/node`。默认 launcher 只启动这一个 Runtime 容器，不挂 Docker socket、不构建 sibling Executor 镜像，也不创建 attempt control network。任一仓库源码变化后都使用 `docker/shell.ps1 -Rebuild`；只保留 workspace/data volume。完整要求见 [Phase 5 Runtime Security](phase-5-runtime-security.md)。
 
 ## 配置
 
@@ -791,7 +792,7 @@ AnyFusion 当前只调度一个活跃顶层 Task。Work Graph 纯函数从依赖
 
 当一个顶层任务正在运行时，`ControlKernel` 会拒绝新的无关自然语言 durable task，以及针对其他任务的执行请求。它仍允许普通问答、澄清、状态查询、清理任务命令，以及明确指向当前活跃任务的请求。Slash command 和确定性执行入口也进入统一 Kernel seam。第二个顶层任务的排队、紧急抢占和自动恢复在当前范围内刻意关闭；ADR-0011 把这记录为一个可逆决策。
 
-单个已接纳的顶层任务内部可以存在多个并行 Subtasks。一个 Subtask 同时最多一个 pending/active attempt；attempt、WorkUnit 和短命容器一一绑定。完成顺序不决定发布顺序，`awaiting_integration` 期间下游不可运行。
+单个已接纳的顶层任务内部可以存在多个并行 Subtasks。一个 Subtask 同时最多一个 pending/active attempt；attempt、WorkUnit 和短命 Executor 进程一一绑定。完成顺序不决定发布顺序，`awaiting_integration` 期间下游不可运行。
 
 整 Task 取消和显式 Subtask 取消也必须进入 durable Kernel seam。取消栅栏先提交，`cancelling` dispatch/publication 在精确 sandbox 退出或确认缺失、WorkUnit 与 lease 释放前继续占用容量；晚到 outcome 只记为 `no_op`。Subtask 取消按下游闭包原子执行，不影响独立 sibling；剩余工作收束后 Task 进入 `blocked`，用户只能取消整个 Task，或通过 `/task <taskId> accept-partial` 显式接受已发布部分。
 

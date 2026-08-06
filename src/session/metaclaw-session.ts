@@ -31,6 +31,7 @@ import { WorkUnitClaimService } from '../execution/work-unit-claim-service.js';
 import { WorkspaceStore } from '../execution/workspace-store.js';
 import { WorkspaceRetentionService } from '../execution/workspace-retention-service.js';
 import { DockerCliAttemptSandboxAdapter } from '../execution/docker-cli-attempt-sandbox-adapter.js';
+import { WorktreeAttemptSandboxAdapter } from '../execution/worktree-attempt-sandbox-adapter.js';
 import type { AttemptSandboxPort } from '../execution/attempt-sandbox.js';
 import { ResourceLeaseService } from '../execution/resource-lease-service.js';
 import { WorkspacePublicationWorker } from '../execution/workspace-publication-worker.js';
@@ -246,6 +247,13 @@ interface FocusContext {
 
 const DEFAULT_PLANNER_TIMEOUT_MS = 60_000;
 
+function createDefaultAttemptSandbox(): AttemptSandboxPort {
+  const backend = (process.env.METACLAW_EXECUTOR_BACKEND ?? 'worktree').trim().toLowerCase();
+  if (backend === 'docker' || backend === 'container') return new DockerCliAttemptSandboxAdapter();
+  if (backend === 'worktree' || backend === 'native' || backend === '') return new WorktreeAttemptSandboxAdapter();
+  throw new Error(`Unsupported METACLAW_EXECUTOR_BACKEND: ${backend}`);
+}
+
 /** Wires the session-facing services and exposes the imperative API used by TUI, CLI, gateway, and scripted runs. */
 export class MetaclawSession {
   private output: string[] = [];
@@ -329,7 +337,7 @@ export class MetaclawSession {
       taskRepo: deps.taskEngine.getTaskRepo(),
     });
     this.agentClassService = new AgentClassService({ db: deps.db });
-    this.attemptSandbox = deps.attemptSandbox ?? new DockerCliAttemptSandboxAdapter();
+    this.attemptSandbox = deps.attemptSandbox ?? createDefaultAttemptSandbox();
     this.permissionRepository = new SqlitePermissionRepository(deps.db);
     this.attemptSandboxRepository = new SqliteAttemptSandboxRepository(deps.db);
     this.workspaceRepository = new SqliteWorkspaceRepository(deps.db);

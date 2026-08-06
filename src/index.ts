@@ -108,10 +108,9 @@ async function main() {
   const memoryEngine = new MemoryEngine(prefRepo);
   const orchestration = new OrchestrationEngine(taskEngine);
 
-  // 7. Executor availability is resolved from the verified attempt image at
-  // dispatch time. Startup must keep direct reply/query/planning available
-  // when Docker is unavailable and let Kernel surface a configuration block
-  // only for work that actually requires execution.
+  // 7. Executor availability is resolved at dispatch time by the selected
+  // backend. Startup keeps direct reply/query/planning available even when
+  // the configured Executor runtime is unavailable.
 
   // 8. 初始化上下文召回器
   const sessionId = `sess_${nanoid(10)}`;

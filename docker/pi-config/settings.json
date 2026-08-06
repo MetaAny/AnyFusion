@@ -1,6 +1,7 @@
 {
   "defaultProvider": "anyint",
-  "defaultModel": "gpt-5.6-luna",
+  "defaultModel": "gpt-5.6-terra",
   "quietStartup": true,
-  "defaultProjectTrust": "always"
+  "defaultProjectTrust": "always",
+  "defaultThinkingLevel": "high"
 }

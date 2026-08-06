@@ -43,10 +43,10 @@ function htmlDecode(value: string): string {
 }
 
 function stripHtml(value: string): string {
-  return htmlDecode(value.replace(new RegExp("<script[\\\\s\\\\S]*?<\\\\/script>", "gi"), " ")
-    .replace(new RegExp("<style[\\\\s\\\\S]*?<\\\\/style>", "gi"), " ")
+  return htmlDecode(value.replace(new RegExp("<script[\\s\\S]*?<\\/script>", "gi"), " ")
+    .replace(new RegExp("<style[\\s\\S]*?<\\/style>", "gi"), " ")
     .replace(new RegExp("<[^>]*>", "g"), " ")
-    .replace(new RegExp("\\\\s+", "g"), " ")
+    .replace(new RegExp("\\s+", "g"), " ")
     .trim());
 }
 
@@ -72,7 +72,7 @@ type SearchResult = {
 
 function parseDuckDuckGo(html: string, limit: number): SearchResult[] {
   const results: SearchResult[] = [];
-  const htmlPattern = new RegExp("<a[^>]+class=[\\"'][^\\"']*result__a[^\\"']*[\\"'][^>]+href=[\\"']([^\\"']+)[\\"'][^>]*>([\\\\s\\\\S]*?)<\\\\/a>[\\\\s\\\\S]*?<a[^>]+class=[\\"'][^\\"']*result__snippet[^\\"']*[\\"'][^>]*>([\\\\s\\\\S]*?)<\\\\/a>", "g");
+  const htmlPattern = new RegExp("<a[^>]+class=[\\"'][^\\"']*result__a[^\\"']*[\\"'][^>]+href=[\\"']([^\\"']+)[\\"'][^>]*>([\\s\\S]*?)<\\/a>[\\s\\S]*?<a[^>]+class=[\\"'][^\\"']*result__snippet[^\\"']*[\\"'][^>]*>([\\s\\S]*?)<\\/a>", "g");
   for (const match of html.matchAll(htmlPattern)) {
     if (results.length >= limit) break;
     const url = normalizeDuckDuckGoUrl(match[1]);
@@ -87,7 +87,7 @@ function parseDuckDuckGo(html: string, limit: number): SearchResult[] {
 
   if (results.length > 0) return results;
 
-  const litePattern = new RegExp("<a rel=\\"nofollow\\" href=\\"([^\\"]+)\\"[^>]*>([\\\\s\\\\S]*?)<\\\\/a>[\\\\s\\\\S]*?<td[^>]*class=['\\"]result-snippet['\\"][^>]*>([\\\\s\\\\S]*?)<\\\\/td>", "g");
+  const litePattern = new RegExp("<a rel=\\"nofollow\\" href=\\"([^\\"]+)\\"[^>]*>([\\s\\S]*?)<\\/a>[\\s\\S]*?<td[^>]*class=['\\"]result-snippet['\\"][^>]*>([\\s\\S]*?)<\\/td>", "g");
   for (const match of html.matchAll(litePattern)) {
     if (results.length >= limit) break;
     const url = normalizeDuckDuckGoUrl(match[1]);
@@ -100,6 +100,66 @@ function parseDuckDuckGo(html: string, limit: number): SearchResult[] {
     });
   }
   return results;
+}
+
+function parseBing(html: string, limit: number): SearchResult[] {
+  const results: SearchResult[] = [];
+  const blockPattern = /<li[^>]+class=["'][^"']*b_algo[^"']*["'][^>]*>([\\s\\S]*?)<\\/li>/gi;
+  for (const match of html.matchAll(blockPattern)) {
+    if (results.length >= limit) break;
+    const block = match[1];
+    const result = block.match(/<h2[^>]*>[\\s\\S]*?<a[^>]+href=["']([^"']+)["'][^>]*>([\\s\\S]*?)<\\/a>[\\s\\S]*?<p[^>]*>([\\s\\S]*?)<\\/p>/i);
+    if (!result) continue;
+    const url = htmlDecode(result[1]);
+    if (!/^https?:\\/\\//iu.test(url)) continue;
+    results.push({
+      title: stripHtml(result[2]),
+      url,
+      description: stripHtml(result[3]),
+      position: results.length + 1,
+    });
+  }
+  return results;
+}
+
+async function searchPublicWeb(query: string, limit: number, signal?: AbortSignal): Promise<{
+  web: SearchResult[];
+  provider: string;
+}> {
+  const request = async (url: string): Promise<string> => {
+    try {
+      return await runCurl([
+        "-L",
+        "--silent",
+        "--show-error",
+        "--get",
+        "--data-urlencode",
+        ` + "`q=${query}`" + `,
+        "--max-time",
+        "60",
+        "-A",
+        "Mozilla/5.0 (compatible; metaclaw-pi-web-search/1.0)",
+        url,
+      ], undefined, signal);
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      return "";
+    }
+  };
+
+  const duckDuckGo = parseDuckDuckGo(
+    await request("https://html.duckduckgo.com/html/"),
+    limit,
+  );
+  if (duckDuckGo.length > 0) {
+    return { web: duckDuckGo, provider: "duckduckgo-html-curl" };
+  }
+
+  const bing = parseBing(
+    await request("https://www.bing.com/search"),
+    limit,
+  );
+  return { web: bing, provider: "bing-html-curl" };
 }
 
 const webSearchTool = defineTool({
@@ -118,20 +178,7 @@ const webSearchTool = defineTool({
   }),
   async execute(_toolCallId, params, signal) {
     const limit = Math.min(Math.max(Number(params.limit ?? 5) || 5, 1), 20);
-    const html = await runCurl([
-      "-L",
-      "--silent",
-      "--show-error",
-      "--get",
-      "--data-urlencode",
-      ` + "`q=${String(params.query)}`" + `,
-      "--max-time",
-      "60",
-      "-A",
-      "Mozilla/5.0 (compatible; metaclaw-pi-web-search/1.0)",
-      "https://html.duckduckgo.com/html/",
-    ], undefined, signal);
-    const web = parseDuckDuckGo(html, limit);
+    const { web, provider } = await searchPublicWeb(String(params.query), limit, signal);
     return {
       content: [{
         type: "text",
@@ -139,10 +186,10 @@ const webSearchTool = defineTool({
           success: web.length > 0,
           data: { web },
           error: web.length > 0 ? undefined : "No parseable search results returned.",
-          provider: "duckduckgo-html-curl",
+          provider,
         }, null, 2),
       }],
-      details: { provider: "duckduckgo-html-curl", query: params.query, limit },
+      details: { provider, query: params.query, limit },
     };
   },
 });
@@ -175,7 +222,7 @@ const webFetchTool = defineTool({
       "Mozilla/5.0 (compatible; metaclaw-pi-web-fetch/1.0)",
       rawUrl,
     ], undefined, signal);
-    const title = html.match(new RegExp("<title[^>]*>([\\\\s\\\\S]*?)<\\\\/title>", "i"))?.[1];
+    const title = html.match(new RegExp("<title[^>]*>([\\s\\S]*?)<\\/title>", "i"))?.[1];
     const text = stripHtml(html).slice(0, 12000);
     return {
       content: [{

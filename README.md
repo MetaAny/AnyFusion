@@ -38,7 +38,7 @@ It is designed for workflows where continuity, control, and accountability matte
 | **Policy-governed planning** | Natural-language planning is separated from authorization: the Planner proposes, the Control Kernel decides, and the Runtime applies only approved side effects. |
 | **Dependency-aware work graphs** | Complex objectives become explicit DAGs with acceptance criteria, typed dependencies, scoped context, and durable handoff contracts between work units. |
 | **Specialized-agent orchestration** | Capability-based routing maps each subtask to ordered agent-class candidates such as Codex, Pi, Hermes, or organization-specific vertical agents without embedding routing policy in prompts. |
-| **Isolated execution** | Every attempt runs in a disposable non-root Docker sandbox with read-only inputs and a persistent private workspace; runtime elevation is explicit, bounded, and Kernel-authorized. |
+| **Worktree execution** | Canonical Codex and Pi attempts run as short-lived child processes in persistent private Git worktrees; the existing Docker attempt backend remains an explicit compatibility option. |
 | **Verification and accountability** | Structured completion contracts capture acceptance evidence, artifacts, handoffs, attempt receipts, and audit events before results are exposed or delivered. |
 | **Operational memory and delivery** | Explicitly confirmed preferences, deterministic task search, terminal workflows, Gateway surfaces, and Feishu delivery remain connected to the same durable task state. |
 
@@ -61,7 +61,7 @@ flowchart LR
   Planning --> Workflow[Durable Kernel Workflow<br/>Inbox / ledger / application]
   Workflow --> Kernel[Control Kernel<br/>Policy and authorization]
   Kernel --> Runtime[Execution Runtime<br/>Frontier / dispatch / recovery]
-  Runtime --> Agents[Sandboxed Agent Work Units<br/>Codex / Pi / Custom]
+  Runtime --> Agents[Worktree Executor Processes<br/>Codex / Pi]
   Agents --> Verify[Verification and Delivery<br/>Evidence / artifacts / handoffs]
 
   State[(Persistent Task State<br/>memory / attempts / audit)]
@@ -77,11 +77,17 @@ Three boundaries keep the workflow governable:
 2. **The Control Kernel makes deterministic policy decisions from explicit runtime facts.**
 3. **The Runtime executes scoped decisions and reports normalized outcomes for the next decision.**
 
-Work graphs model independent branches, specialist assignments, and typed dependency delivery. The durable Kernel workflow serializes authorization and application, while up to four independent attempts inside the one active top-level Task may run concurrently. Resource partitioning, durable leases, persistent workspaces, short-lived attempt sandboxes, deterministic Git publication, crash recovery, and event-driven Executor error recovery are active.
+Work graphs model independent branches, specialist assignments, and typed dependency delivery. The durable Kernel workflow serializes authorization and application, while up to four independent attempts inside the one active top-level Task may run concurrently. Resource partitioning, durable leases, persistent workspaces, short-lived Executor processes, deterministic Git publication, crash recovery, and event-driven Executor error recovery are active.
 
 ## Quick Start
 
-AnyFusion targets Node.js 22.19+ and a Unix-like shell. On Windows, the unified Docker runtime is the supported path; WSL2 with Ubuntu remains suitable for direct development.
+AnyFusion targets Node.js 22.19+ and a Unix-like shell. On macOS and Windows,
+the supported demo runs the unified Linux Runtime with Docker Desktop. Docker
+wraps the product Runtime; it does not launch a second container for each
+Executor attempt. Canonical Codex and Pi run inside that Runtime as child
+processes whose working directory is the Subtask Git worktree. Set
+`METACLAW_EXECUTOR_BACKEND=docker` only to use the previous sibling-container
+backend explicitly. WSL2 with Ubuntu remains suitable for direct development.
 
 ```bash
 git clone https://github.com/MetaAny/AnyFusion.git
@@ -118,7 +124,7 @@ AnyFusion is not presented as Production Ready. The preview is intended to valid
 | Resource | Purpose |
 | --- | --- |
 | [Technical Overview](docs/current/technical-overview.md) | Runtime architecture, operational setup, modules, and implementation details |
-| [Runtime Security](docs/current/phase-5-runtime-security.md) | Attempt sandboxes, persistent workspaces, image profiles, Engine topology, and runtime elevation |
+| [Runtime Security](docs/current/phase-5-runtime-security.md) | Worktree Executor processes, Docker compatibility attempts, persistent workspaces, image profiles, and runtime elevation |
 | [Architecture Decisions](docs/adr/README.md) | Accepted boundaries and authoritative design decisions |
 | [Concurrency Roadmap](docs/plans/2026-07-16-planner-kernel-concurrency-convergence-roadmap.md) | Control-plane, resource-partitioning, recovery, and parallel scheduling plan |
 | [Preview Release Notes](docs/releases/v1.2.0-preview.0.md) | Current release scope, deployment status, and known limitations |

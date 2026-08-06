@@ -572,7 +572,7 @@ function runDockerSmoke(rawArgs, env) {
   const scenario = parseScenario(
     readOption(rawArgs, '--scenario') ?? env.METACLAW_SMOKE_SCENARIO ?? 'planner-session',
   );
-  const plannerOnly = scenario === 'planner-session';
+  const plannerTimeoutMs = parsePositiveInteger(env.METACLAW_PLANNER_TIMEOUT_MS, 180_000);
   const smokeRoot = mkdtempSync(join(tmpdir(), 'metaclaw-docker-smoke-'));
   const dataRoot = join(smokeRoot, 'data');
   const workspaceRoot = join(smokeRoot, 'workspace');
@@ -581,7 +581,6 @@ function runDockerSmoke(rawArgs, env) {
     mkdirSync(directory, { recursive: true });
   }
   const suffix = `${process.pid}-${Date.now()}`;
-  const network = `metaclaw-smoke-${suffix}`;
   const control = `metaclaw-smoke-control-${suffix}`;
   const runtimeImage = 'metaclaw-runtime';
   const mounts = [
@@ -604,20 +603,12 @@ function runDockerSmoke(rawArgs, env) {
       '-t', runtimeImage,
       '.',
     ], { cwd: repoRoot });
-    if (!plannerOnly) {
-      run('docker', ['build', '-f', 'docker/Dockerfile.attempt-codex', '-t', 'metaclaw-executor-codex:phase5', '.'], { cwd: repoRoot });
-      run('docker', ['build', '-f', 'docker/Dockerfile.attempt-pi', '-t', 'metaclaw-executor-pi:phase5', '.'], { cwd: repoRoot });
-      run('docker', ['network', 'create', '--internal', network], { cwd: repoRoot });
-    }
     const createArgs = [
       'create', '--name', control, '--network', 'bridge',
       '--workdir', '/workspace',
       '--mount', `type=bind,src=${workspaceRoot},dst=/workspace`,
       '--mount', `type=bind,src=${dataRoot},dst=/data`,
       '--mount', `type=bind,src=${auxiliaryRoot},dst=/smoke`,
-      ...(!plannerOnly ? [
-        '--mount', 'type=bind,src=//var/run/docker.sock,dst=/var/run/docker.sock',
-      ] : []),
       ...mounts.flatMap(([hostPath, containerPath]) => [
         '--mount', `type=bind,src=${join(repoRoot, hostPath)},dst=${containerPath},readonly`,
       ]),
@@ -631,32 +622,19 @@ function runDockerSmoke(rawArgs, env) {
       '-e', 'METACLAW_SMOKE_WORKDIR=/workspace',
       '-e', 'METACLAW_SMOKE_MANAGED_BY_HOST=true',
       '-e', 'METACLAW_HOME=/data/metaclaw',
-      ...(!plannerOnly ? [
-        '-e', `METACLAW_CONTROL_NETWORK=${network}`,
-        '-e', `METACLAW_DOCKER_HOST_PATH_MAP=${JSON.stringify({
-          '/data': dataRoot,
-          '/workspace': workspaceRoot,
-          '/smoke': auxiliaryRoot,
-        })}`,
-        '-e', 'METACLAW_CONTROL_HOST=metaclaw-control',
-      ] : []),
+      '-e', `METACLAW_PLANNER_TIMEOUT_MS=${plannerTimeoutMs}`,
+      '-e', 'METACLAW_EXECUTOR_BACKEND=worktree',
       runtimeImage,
       'node', '/app/scripts/smoke-metaclaw-real-task.mjs',
       ...rawArgs,
     ];
     run('docker', createArgs, { cwd: repoRoot });
-    if (!plannerOnly) {
-      run('docker', ['network', 'connect', '--alias', 'metaclaw-control', network, control], { cwd: repoRoot });
-    }
     const result = run('docker', ['start', '--attach', control], { cwd: repoRoot });
     process.stdout.write(result.stdout ?? '');
     process.stderr.write(result.stderr ?? '');
     succeeded = true;
   } finally {
     spawnSync('docker', ['rm', '-f', control], { cwd: repoRoot, encoding: 'utf8' });
-    if (!plannerOnly) {
-      spawnSync('docker', ['network', 'rm', network], { cwd: repoRoot, encoding: 'utf8' });
-    }
     if (succeeded) {
       rmSync(smokeRoot, { recursive: true, force: true });
     } else {
@@ -674,6 +652,7 @@ function buildHelp() {
     '  METACLAW_SMOKE_SCENARIO      Scenario to run. Defaults to planner-session (two-turn AnyFusion Planner memory).',
     '  METACLAW_SMOKE_TIMEOUT       Continuous no-output timeout in seconds.',
     '  METACLAW_SMOKE_MAX_DURATION  Legacy max_duration value in seconds.',
+    '  METACLAW_PLANNER_TIMEOUT_MS   Planner RPC timeout forwarded to the Runtime; Docker smoke defaults to 180000.',
     '  METACLAW_SMOKE_IN_DOCKER      Internal recursion guard; ordinary smoke runs create the control container automatically.',
     '',
     'Examples:',

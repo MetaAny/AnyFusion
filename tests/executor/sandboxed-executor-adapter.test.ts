@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -70,6 +70,123 @@ describe('SandboxedExecutorAdapter provider isolation', () => {
     }
   });
 
+  it('runs canonical Pi directly in the worktree without the Docker egress proxy', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'metaclaw-worktree-provider-'));
+    const envFile = join(directory, 'executor-pi.env');
+    const piHome = join(directory, 'pi-home');
+    const piAgentHome = join(piHome, '.pi', 'agent');
+    mkdirSync(piAgentHome, { recursive: true });
+    writeFileSync(envFile, [
+      'OPENAI_API_KEY=provider-secret',
+      'OPENAI_BASE_URL=https://provider.invalid/v1',
+    ].join('\n'));
+    writeFileSync(join(piAgentHome, 'models.json'), JSON.stringify({
+      providers: { anyint: { baseUrl: 'https://provider.invalid/v1' } },
+    }));
+    writeFileSync(join(piAgentHome, 'settings.json'), '{}');
+    vi.stubEnv('METACLAW_PI_EXECUTOR_ENV_FILE', envFile);
+    vi.stubEnv('METACLAW_EXECUTOR_PI_HOME', piHome);
+    const { sandbox, create } = sandboxPort('worktree');
+    let attemptHome = '';
+    let renderedModels = '';
+    create.mockImplementation(async (input: CreateAttemptSandboxInput) => {
+      attemptHome = input.environment.HOME;
+      renderedModels = readFileSync(join(attemptHome, '.pi', 'agent', 'models.json'), 'utf8');
+      return sandboxRecord('sha256:pi');
+    });
+    const adapter = new SandboxedExecutorAdapter(agentClass(), sandbox);
+
+    try {
+      const result = await adapter.execute(executorInput(directory));
+
+      expect(result.success).toBe(true);
+      const attempt = create.mock.calls[0]![0];
+      expect(attempt.egressMode).toBe('disabled');
+      expect(attempt.environment).not.toHaveProperty('HTTP_PROXY');
+      expect(attempt.environment).not.toHaveProperty('HTTPS_PROXY');
+      expect(attempt.environment.OPENAI_BASE_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/v1$/u);
+      expect(JSON.parse(renderedModels).providers.anyint.baseUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/v1$/u);
+      expect(renderedModels).not.toContain('https://provider.invalid/v1');
+      expect(attemptHome).not.toBe(piHome);
+      expect(existsSync(attemptHome)).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('renders a scoped Codex home against the attempt model gateway in worktree mode', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'metaclaw-worktree-codex-provider-'));
+    const envFile = join(directory, 'executor-codex.env');
+    const codexHome = join(directory, 'codex-home');
+    mkdirSync(codexHome, { recursive: true });
+    writeFileSync(envFile, [
+      'OPENAI_API_KEY=provider-secret',
+      'OPENAI_BASE_URL=https://provider.invalid/v1',
+    ].join('\n'));
+    writeFileSync(join(codexHome, 'config.toml'), [
+      'model = "gpt-5.6-terra"',
+      'model_provider = "anyint"',
+      '[model_providers.anyint]',
+      'base_url = "https://provider.invalid/v1"',
+      'env_key = "OPENAI_API_KEY"',
+      'wire_api = "responses"',
+    ].join('\n'));
+    vi.stubEnv('METACLAW_CODEX_EXECUTOR_ENV_FILE', envFile);
+    vi.stubEnv('METACLAW_EXECUTOR_CODEX_HOME', codexHome);
+    const { sandbox, create } = sandboxPort('worktree');
+    let attemptHome = '';
+    let renderedConfig = '';
+    create.mockImplementation(async (input: CreateAttemptSandboxInput) => {
+      attemptHome = input.environment.CODEX_HOME;
+      renderedConfig = readFileSync(join(attemptHome, 'config.toml'), 'utf8');
+      return sandboxRecord('sha256:codex');
+    });
+    const adapter = new SandboxedExecutorAdapter({
+      ...agentClass(),
+      name: 'codex-cli',
+      domains: ['coding'],
+      capabilities: ['code-editing'],
+      runtimeCommand: 'codex',
+      executionImageRef: 'metaclaw-executor-codex:phase5',
+      resolvedImageId: 'sha256:codex',
+      permissionProfileId: 'workspace-engineering',
+    }, sandbox);
+
+    try {
+      const result = await adapter.execute(executorInput(directory));
+
+      expect(result.success).toBe(true);
+      expect(renderedConfig).toMatch(/base_url = "http:\/\/127\.0\.0\.1:\d+\/v1"/u);
+      expect(renderedConfig).not.toContain('https://provider.invalid/v1');
+      expect(attemptHome).not.toBe(codexHome);
+      expect(existsSync(attemptHome)).toBe(false);
+      const args = create.mock.calls[0]![0].args;
+      expect(args).toContain('danger-full-access');
+      expect(args).not.toContain('workspace-write');
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects noncanonical AgentClasses in the worktree backend', async () => {
+    const { sandbox, create } = sandboxPort('worktree');
+    const adapter = new SandboxedExecutorAdapter({
+      ...agentClass(),
+      name: 'custom-executor',
+      runtimeCommand: 'custom-executor',
+    }, sandbox);
+
+    const result = await adapter.execute(executorInput('.'));
+
+    expect(result).toMatchObject({
+      success: false,
+      failure: { code: 'worktree_executor_not_canonical' },
+    });
+    expect(create).not.toHaveBeenCalled();
+  });
+
   it('runs the same AgentClass concurrently and aborts only the requested attempt', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'metaclaw-sandbox-concurrency-'));
     const envFile = join(directory, 'executor-pi.env');
@@ -134,14 +251,16 @@ function agentClass(): AgentClass {
   };
 }
 
-function sandboxPort(): { sandbox: AttemptSandboxPort; create: ReturnType<typeof vi.fn> } {
-  const create = vi.fn(async (_input: CreateAttemptSandboxInput) => ({
-    containerId: 'container_1', imageId: 'sha256:pi', status: 'created' as const,
-    exitCode: null, labels: {},
-  }));
+function sandboxPort(kind: 'container' | 'worktree' = 'container'): {
+  sandbox: AttemptSandboxPort;
+  create: ReturnType<typeof vi.fn>;
+} {
+  const create = vi.fn(async (_input: CreateAttemptSandboxInput) => sandboxRecord('sha256:pi'));
   return {
     create,
     sandbox: {
+      kind,
+      pathMode: kind === 'worktree' ? 'native' : 'container',
       resolveImage: vi.fn().mockResolvedValue('sha256:pi'), create,
       start: vi.fn().mockResolvedValue(undefined), wait: vi.fn().mockResolvedValue(0),
       logs: vi.fn().mockResolvedValue('completed'), pause: vi.fn().mockResolvedValue(undefined),
@@ -149,6 +268,13 @@ function sandboxPort(): { sandbox: AttemptSandboxPort; create: ReturnType<typeof
       stop: vi.fn().mockResolvedValue(undefined), remove: vi.fn().mockResolvedValue(undefined),
       listManaged: vi.fn().mockResolvedValue([]),
     },
+  };
+}
+
+function sandboxRecord(imageId: string) {
+  return {
+    containerId: 'container_1', imageId, status: 'created' as const,
+    exitCode: null, labels: {},
   };
 }
 

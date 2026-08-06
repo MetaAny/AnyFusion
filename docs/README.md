@@ -9,7 +9,7 @@ This directory contains both current technical documentation and historical plan
   validation rules.
 - [Technical Overview](current/technical-overview.md): the previous long-form README, preserved as the current deep architecture and runtime reference.
 - [中文技术总览](current/technical-overview.zh-CN.md): the previous long-form Chinese README, preserved as the Chinese deep architecture and runtime reference.
-- [Phase 5 Runtime Security And AgentClass Operations](current/phase-5-runtime-security.md): short-lived attempt containers, control/egress networks, persistent workspace retention, image pinning, and runtime elevation operations.
+- [Phase 5 Runtime Security And AgentClass Operations](current/phase-5-runtime-security.md): worktree Executor processes, Docker compatibility attempts, persistent workspace retention, image profiles, and runtime elevation operations.
 - [Repository README](../README.md): public project overview, install path, repository structure, and high-level architecture.
 - [CONTEXT](../CONTEXT.md): current PlanningAgent, ControlKernel, decision-ledger, and work-unit vocabulary.
 
@@ -53,6 +53,7 @@ replacing those semantics.
 - [Active permission review](plans/2026-08-04-active-permission-review.md): projects current-session durable permission requests to a transient Pi native Selector while preserving Kernel authorization and non-interactive natural-language resolution.
 - [Command surface and task selection cleanup](plans/2026-08-04-command-surface-and-task-selection-cleanup.md): first-batch removal of non-functional command surfaces, richer Executor/Profile facts, and title-first Task completion in AnyFusion-Pi.
 - [Pi Executor status and result projection fix](plans/2026-08-04-pi-executor-status-and-result-projection.md): adds a native animated Executor status block and passively persists each integrated Subtask publication into the Pi conversation without triggering a Planner turn or moving Kernel/Execution authority.
+- [Worktree Executor backend migration](plans/2026-08-06-worktree-executor-backend-migration.md): keeps the Runtime containerized where needed while moving trusted Executor attempts to per-Subtask Git worktrees and native Runtime processes.
 
 ## Future Roadmap
 
@@ -86,7 +87,7 @@ It is historical review context, not an active issue tracker or architecture map
 
 ## Operational Notes
 
-- [Docker + SSH runtime](current/technical-overview.md#running-in-docker-windows--containerized): the checked-in runtime builds MetaClaw and the sibling AnyFusion-Pi Planner into one Node 22.19+ image while keeping their processes, dependency trees, and provider/config boundaries independent.
+- [Docker + SSH runtime](current/technical-overview.md#running-in-docker-macos--windows--containerized): the checked-in runtime builds MetaClaw and the sibling AnyFusion-Pi Planner into one Node 22.19+ image while keeping their processes, dependency trees, and provider/config boundaries independent; canonical Executors run as Runtime child processes in Subtask worktrees.
 - The failed AnyFusion-Codex Planner wiring has been removed from active source, Docker templates, and smoke scripts. The archived migration plan and Git history remain the rollback/audit record; the original Ink source, tests, and dependencies remain a standby module and must not be deleted.
 - [Tech Debt](tech-debt/): [Pi Planner behavior parity and PlanningAgentPlan v7](tech-debt/planner-pi-migration-parity-debt.md) closed on 2026-08-04 after Linux Docker acceptance and final user verification. The post-Phase-6 first-release cleanup handoff is tracked in [redundancy and compatibility cleanup](tech-debt/post-phase6-first-release-redundancy-cleanup.md). Active command/TUI work is tracked in the [UX backlog](tech-debt/task-command-and-tui-ux-backlog.md), with visible command placeholders listed in [pending command implementations](tech-debt/pending-command-implementations.md). The closed [natural-language inference inventory](archive/tech-debt/nl-keyword-semantic-inference-debt.md) is retained as historical input to the completed P0 cleanup. The closed [Kernel decision authority record](archive/tech-debt/kernel-decision-authority-scattered-in-runtime-debt.md) documents how Phase 3–5 converged every strategic decision onto `ControlKernel`. The closed [LangGraph durable workflow evaluation](archive/tech-debt/langgraph-durable-workflow-adoption-candidates.md) records why Phase 4 retained the smaller self-owned workflow. Closed capability and workspace-partition records also remain under [archive/tech-debt/](archive/tech-debt/).
 

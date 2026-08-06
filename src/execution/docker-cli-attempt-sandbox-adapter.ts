@@ -37,6 +37,8 @@ interface DockerInspectPayload {
 }
 
 export class DockerCliAttemptSandboxAdapter implements AttemptSandboxPort {
+  readonly kind = 'container' as const;
+  readonly pathMode = 'container' as const;
   private readonly sourcePathMappings: Array<[string, string]>;
 
   constructor(

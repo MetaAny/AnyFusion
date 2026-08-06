@@ -54,7 +54,7 @@ flowchart LR
   Batch --> Supervisor[AttemptSupervisor<br/>up to four attempts]
   Supervisor --> Attempt[SubtaskAttemptRunner<br/>one attempt, one WorkUnit]
   Attempt --> Context[SubtaskExecutionContext<br/>direct handoffs and selected evidence]
-  Context --> Executors[ExecutionRuntime<br/>one disposable Docker attempt]
+  Context --> Executors[ExecutionRuntime<br/>one worktree Executor process]
   Executors --> Verify[Completion Protocol v3<br/>evidence, no-change reason,<br/>authoritative workspace delta]
   Verify --> Publication[Git publication gate<br/>stable integration order]
   Publication --> Delivery[Delivery and UI<br/>TUI progress, Feishu, files, preview links]
@@ -167,14 +167,23 @@ availability, and recovery remain explicit Kernel policy.
 
 ## Current Executors
 
-AnyFusion ships two canonical sandboxed Executor AgentClasses:
+AnyFusion ships two canonical Executor AgentClasses. The default Runtime
+executes them as child processes in the Subtask worktree. The legacy Docker
+attempt backend remains available explicitly for compatibility:
 
 | Executor | Command | Best For | Install Requirement |
 | --- | --- | --- | --- |
-| Codex CLI | `codex` | Repository edits, tests, deterministic implementation, code review with patches | Install and authenticate the OpenAI Codex CLI |
-| Pi Agent | `pi` | Research tasks, report generation, multi-step synthesis, agentic CLI workflows | Install `@earendil-works/pi-coding-agent` and authenticate Pi |
+| Codex CLI | `codex` | Repository edits, tests, deterministic implementation, code review with patches | Included and configured in the unified Runtime; install locally only for direct Linux development |
+| Pi Agent | `pi` | Research tasks, report generation, multi-step synthesis, agentic CLI workflows | Included and configured in the unified Runtime; install locally only for direct Linux development |
 
-`codex-cli` and `pi-agent` are immutable canonical AgentClasses with verified image and permission-profile bindings. No executor WorkUnit is pre-seeded. After authorization, `WorkUnitClaimService` claims or provisions a WorkUnit, and `ExecutorRegistry` resolves the AgentClass only through `SandboxedExecutorAdapter`; there is no host-process fallback or configured default executor.
+`codex-cli` and `pi-agent` are canonical AgentClasses with permission-profile
+bindings. In `METACLAW_EXECUTOR_BACKEND=worktree` mode, their trusted CLI
+commands run as child processes inside the unified Runtime and use the Subtask
+Git worktree as their working directory. In `docker` mode, the AgentClass also
+requires its immutable image pin and internal control network. No executor
+WorkUnit is pre-seeded. After authorization, `WorkUnitClaimService` claims or
+provisions a WorkUnit, and `ExecutorRegistry` resolves the AgentClass through
+the backend-aware `SandboxedExecutorAdapter`.
 
 ## Prerequisites
 
@@ -199,7 +208,10 @@ sudo apt-get install -y build-essential python3 make g++
 
 Executor prerequisites:
 
-- Build or pull the canonical Codex and Pi executor images used by the configured AgentClasses.
+- Worktree mode: the unified Runtime image contains the trusted Codex and Pi
+  CLI binaries. Direct Linux development must install the selected CLI locally.
+- Docker compatibility mode: build or pull the canonical Codex and Pi executor
+  images used by the configured AgentClasses.
 
 Feishu prerequisites, only if you use Feishu Gateway integration:
 
@@ -465,7 +477,9 @@ AnyFusion calls it as:
 pi -p "<prompt>"
 ```
 
-Pi attempts run inside the canonical `metaclaw-executor-pi:phase5` image through the same sandbox seam.
+Pi attempts use the same execution seam in either backend. Docker compatibility
+mode runs them in `metaclaw-executor-pi:phase5`; worktree mode runs the trusted
+`pi` binary in the current Subtask worktree.
 
 ## Run
 
@@ -535,11 +549,11 @@ anyfusion --gateway
 anyfusion --connect
 ```
 
-### Running in Docker (Windows / containerized)
+### Running in Docker (macOS / Windows / containerized)
 
-On Windows, the `docker/` workflow runs the Linux container as an SSH server so the native TUI receives a genuine PTY and `/workspace` remains available through shell or VS Code Remote-SSH. Deployment support is Linux-container/server only; Windows is a host for the unified Docker runtime, not a native Planner target. One BuildKit build consumes MetaClaw as the default context and the sibling AnyFusion-Pi repository as the required `anyfusion-pi` context. The final image contains one Node 22.19+ installation, a MetaClaw control process under `/app`, and an isolated Planner process under `/opt/anyfusion-planner/app`; their dependency trees remain separate. Executor attempts remain on their canonical Codex/Pi images. Docker mounts `planner-pi.env`, `executor-codex.env`, and `executor-pi.env` read-only, and `docker/entrypoint.sh` renders isolated Planner/Executor configs from the assigned base URL.
+On macOS and Windows, the `docker/` workflow runs the Linux Runtime as an SSH server so the native TUI receives a genuine PTY and `/workspace` remains available through shell or VS Code Remote-SSH. Docker Desktop is required for this supported path because the Runtime and its native Executor CLIs expect Linux. One BuildKit build consumes MetaClaw as the default context and the sibling AnyFusion-Pi repository as the required `anyfusion-pi` context. The final image contains one Node 22.19+ installation, a MetaClaw control process under `/app`, and an isolated Planner process under `/opt/anyfusion-planner/app`; their dependency trees remain separate. Canonical Executor attempts run as child processes in managed Subtask worktrees; the Docker attempt path is compatibility-only and is not started by the default launcher.
 
-The hermetic runtime image contains the MetaClaw CLI, generated v7 schema, versioned host bridge, compiled Planner MCP server, built AnyFusion-Pi application, and isolated Planner/Executor templates. `docker/Dockerfile.runtime` builds both repository contexts and copies two independent application trees into the final image. The Planner launcher and MetaClaw-injected `/app/dist/planner-mcp.js` command both use `/usr/local/bin/node`; `/opt/anyfusion-planner/node` is forbidden. The Pi executor remains in its separate Node 22 attempt image. Source changes in either repository require `docker/shell.ps1 -Rebuild`; only workspace and data volumes persist. Executor attempts are sibling containers created through the trusted Engine endpoint, with source, inputs, handoffs and `.git` read-only, a private writable `/workspace`, tmpfs `/tmp`, no Docker socket, and no real provider credential. The trusted Runtime exposes an attempt-scoped model gateway with a random scoped token. Use `docker/shell.ps1` for Docker + SSH validation, and see [Phase 5 Runtime Security](phase-5-runtime-security.md) for network, image and Engine requirements.
+The Runtime image contains the MetaClaw CLI, generated v7 schema, versioned host bridge, compiled Planner MCP server, built AnyFusion-Pi application, Codex/Pi CLIs and their attempt configuration. `docker/Dockerfile.runtime` builds both repository contexts and copies two independent application trees into the final image. The Planner launcher and MetaClaw-injected `/app/dist/planner-mcp.js` command both use `/usr/local/bin/node`; `/opt/anyfusion-planner/node` is forbidden. Worktree mode runs the trusted Executor CLI in the managed Subtask worktree and uses loopback attempt services; it does not require sibling Executor images or a Docker socket. Source changes in either repository require `docker/shell.ps1 -Rebuild`; only workspace and data volumes persist. The trusted Runtime exposes an attempt-scoped model gateway with a random scoped token. Use `docker/shell.ps1` for Docker + SSH compatibility validation.
 
 Local validation covers TypeScript lint/build, focused Planner RPC and host-protocol tests, the Docker Vitest suite, Unix-socket bridge behavior, Session validation, and unchanged Kernel/Execution/Executor regressions. Linux container smoke additionally verifies the single Node 22.19+ executable, isolated application dependency trees and processes, absence of an embedded Planner Node, Planner RPC JSONL, entrypoint config separation, and the final unified image.
 
@@ -773,7 +787,12 @@ Executors and Skills are different layers of the ecosystem.
 
 An Executor is who does the work. A Skill is the method, knowledge, or operating guide the worker uses while doing it.
 
-Executors are sandboxed AgentClass runtimes such as the canonical Codex CLI and Pi Agent images. An executor determines the model, toolchain, permissions, runtime environment, context window, file access, non-interactive command, cost profile, and reliability boundary.
+Executors are AgentClass runtimes such as the canonical Codex CLI and Pi Agent.
+They may be launched as trusted child processes in a managed worktree or as
+Docker-sandboxed attempts during compatibility operation. An executor
+determines the model, toolchain, permissions, runtime environment, context
+window, file access, non-interactive command, cost profile, and reliability
+boundary.
 
 Skills are lighter capability packages. They describe how to perform a specific class of work: how to analyze futures contracts, how to review code, how to run a research workflow, or what output format to use. A Skill can improve an executor's behavior, but it does not automatically change the executor's runtime, permissions, tools, or installation state.
 

@@ -29,13 +29,8 @@
 # entrypoint are baked into the image. Only workspace outputs and MetaClaw data
 # use named volumes; host build/config directories are never bind-mounted.
 #
-# Control-plane bootstrap (aligned with scripts/smoke-metaclaw-real-task.mjs):
-#   1. ensure Docker-internal network `metaclaw-control`
-#   2. keep the shell on bridge for outbound provider calls + published SSH
-#   3. attach the shell to `metaclaw-control` with DNS alias `metaclaw-control`
-#   4. inject METACLAW_CONTROL_* + METACLAW_DOCKER_HOST_PATH_MAP so attempt
-#      sandboxes can mount Engine-visible paths and reach model/evidence servers
-#   5. ensure canonical attempt images exist when missing
+# The default demo keeps only this Runtime container. Canonical Codex/Pi
+# Executors run as child processes in the managed Subtask worktrees.
 [CmdletBinding()]
 param(
     [switch]$Start,
@@ -72,10 +67,6 @@ $workspaceVolume = 'metaclaw-shell-workspace'
 # volume to the current schema so -Rebuild starts clean after a schema break
 # while preserving the previous volume for manual recovery.
 $dataVolume = 'metaclaw-shell-data-v30-anyfusion-planner'
-$controlNetwork = 'metaclaw-control'
-$controlHost = 'metaclaw-control'
-$codexAttemptImage = 'metaclaw-executor-codex:phase5'
-$piAttemptImage = 'metaclaw-executor-pi:phase5'
 $knownHosts  = Join-Path $repoRoot '.tmp\ssh_known_hosts'
 # Key-based passwordless login. A dedicated key pair lives under .tmp (gitignored)
 # so the global ~/.ssh is untouched. The public key is injected into the
@@ -99,8 +90,8 @@ function Test-ContainerExists {
 }
 
 # Mounts are fixed when a container is created. Detect shells created before the
-# Runtime gained Docker Engine access so the default workflow does not silently
-# restart a container that can never provision executor sandboxes.
+# current Runtime image so the default workflow does not silently reuse a stale
+# container.
 function Test-ContainerUsesCurrentImage {
     if (-not (Test-ContainerExists)) { return $false }
     $containerImage = docker inspect --format '{{.Image}}' $container 2>$null
@@ -118,81 +109,10 @@ function Test-ContainerHasLoopbackSshBinding {
     return ($bindings.Count -gt 0 -and @($bindings | Where-Object { ([string]$_).Trim() -ne $sshBindHost }).Count -eq 0)
 }
 
-function Test-ContainerHasDockerSocket {
-    if (-not (Test-ContainerExists)) { return $false }
-    $destinations = docker inspect --format '{{range .Mounts}}{{println .Destination}}{{end}}' $container 2>$null
-    return (@($destinations) -contains '/var/run/docker.sock')
-}
-
-function Test-ContainerHasControlNetwork {
-    if (-not (Test-ContainerExists)) { return $false }
-    $networks = docker inspect --format '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}' $container 2>$null
-    return (@($networks) -contains $controlNetwork)
-}
-
-function Test-ContainerHasBridgeNetwork {
-    if (-not (Test-ContainerExists)) { return $false }
-    $networks = docker inspect --format '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}' $container 2>$null
-    return (@($networks) -contains 'bridge')
-}
-
-function Test-ContainerHasControlEnv {
-    if (-not (Test-ContainerExists)) { return $false }
-    $envLines = docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' $container 2>$null
-    $hasNetwork = $false
-    $hasHost = $false
-    $hasPathMap = $false
-    foreach ($line in @($envLines)) {
-        if ($line -eq "METACLAW_CONTROL_NETWORK=$controlNetwork") { $hasNetwork = $true }
-        if ($line -eq "METACLAW_CONTROL_HOST=$controlHost") { $hasHost = $true }
-        if ($line -like 'METACLAW_DOCKER_HOST_PATH_MAP=*') { $hasPathMap = $true }
-    }
-    return ($hasNetwork -and $hasHost -and $hasPathMap)
-}
-
 function Test-ImageExists {
     param([string]$Tag)
     $code = Invoke-DockerQuiet image inspect $Tag
     return ($code -eq 0)
-}
-
-# Resolve the Engine-visible mountpoint for a named volume so sibling attempt
-# containers can bind the same host paths the control plane sees as /data or
-# /workspace. Returns an empty string when the volume has not been created yet.
-function Get-VolumeMountpoint {
-    param([string]$Name)
-    $mountpoint = docker volume inspect --format '{{.Mountpoint}}' $Name 2>$null
-    if ($LASTEXITCODE -ne 0) { return '' }
-    return [string]$mountpoint
-}
-
-# Build METACLAW_DOCKER_HOST_PATH_MAP from the shell data/workspace volumes.
-# The control plane writes workspace files under container paths; Docker Engine
-# must remount the corresponding host paths into attempt sandboxes.
-function Build-DockerHostPathMap {
-    $dataMount = Get-VolumeMountpoint $dataVolume
-    $workspaceMount = Get-VolumeMountpoint $workspaceVolume
-    if (-not $dataMount -or -not $workspaceMount) {
-        # Volumes are created on first `docker run -v`. Ensure they exist so the
-        # path map is available before the control container starts.
-        if (-not $dataMount) {
-            docker volume create $dataVolume | Out-Null
-            $dataMount = Get-VolumeMountpoint $dataVolume
-        }
-        if (-not $workspaceMount) {
-            docker volume create $workspaceVolume | Out-Null
-            $workspaceMount = Get-VolumeMountpoint $workspaceVolume
-        }
-    }
-    if (-not $dataMount -or -not $workspaceMount) {
-        Write-Error "Failed to resolve Engine mountpoints for data/workspace volumes."
-        exit 1
-    }
-    # JSON object: container-visible prefix -> Engine-host path.
-    return (@{
-        '/data' = $dataMount
-        '/workspace' = $workspaceMount
-    } | ConvertTo-Json -Compress)
 }
 
 # Ensure a dedicated ed25519 key pair exists for passwordless login to the
@@ -304,106 +224,6 @@ function Build-RuntimeImage {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
-function Ensure-ControlNetwork {
-    $internal = docker network inspect --format '{{.Internal}}' $controlNetwork 2>$null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host ("Creating Docker-internal control network '" + $controlNetwork + "' ...") -ForegroundColor Yellow
-        docker network create --internal $controlNetwork | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            Write-Error "Failed to create Docker-internal control network '$controlNetwork'."
-            exit $LASTEXITCODE
-        }
-        return
-    }
-    if (("$internal").Trim().ToLowerInvariant() -ne 'true') {
-        Write-Error "Docker network '$controlNetwork' exists but is not internal. Remove or replace it before starting MetaClaw."
-        exit 1
-    }
-}
-
-# Write control-plane env into /etc/environment for pam_env/SSH sessions.
-# docker -e alone is not enough: sshd sessions read /etc/environment, and older
-# images may not yet persist METACLAW_CONTROL_* / path-map keys.
-function Ensure-ControlEnvironmentInContainer {
-    param([string]$HostPathMap)
-    if (-not (Test-ContainerExists)) { return }
-
-    $tmpDir = Join-Path $repoRoot '.tmp'
-    New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
-    $tmpLocal = Join-Path $tmpDir 'metaclaw-control.env'
-    $tmpRemote = '/tmp/metaclaw-control.env'
-
-    # One KEY=value per line. Values may contain JSON double quotes; do not wrap.
-    $envBody = @(
-        "METACLAW_CONTROL_NETWORK=$controlNetwork"
-        "METACLAW_CONTROL_HOST=$controlHost"
-        "METACLAW_DOCKER_HOST_PATH_MAP=$HostPathMap"
-    ) -join "`n"
-    Set-Content -Path $tmpLocal -Value $envBody -Encoding ascii -NoNewline
-
-    docker cp $tmpLocal "${container}:$tmpRemote" 2>$null | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warning "Failed to stage control-plane env file into the container."
-        Remove-Item -Force $tmpLocal -ErrorAction SilentlyContinue
-        return
-    }
-
-    # Use sh (not /bin/bash) and a simple merge so Windows path conversion cannot
-    # rewrite the interpreter path. Matches other docker exec helpers in this file.
-    docker exec $container sh -c "grep -vE '^(METACLAW_CONTROL_NETWORK|METACLAW_CONTROL_HOST|METACLAW_DOCKER_HOST_PATH_MAP)=' /etc/environment > /tmp/metaclaw-environment.merged 2>/dev/null || true; cat $tmpRemote >> /tmp/metaclaw-environment.merged; cat /tmp/metaclaw-environment.merged > /etc/environment; rm -f /tmp/metaclaw-environment.merged $tmpRemote" 2>$null | Out-Null
-    $code = $LASTEXITCODE
-    Remove-Item -Force $tmpLocal -ErrorAction SilentlyContinue
-    if ($code -ne 0) {
-        Write-Warning "Failed to persist control-plane env into /etc/environment; SSH sessions may miss METACLAW_CONTROL_*."
-    }
-}
-
-# Canonical attempt images are required for Executor sandboxes. Build them when
-# missing so the daily shell path matches smoke's preflight. Force rebuild only
-# through -Rebuild (which rebuilds the unified runtime and attempt images).
-function Ensure-AttemptImages {
-    param([switch]$Force)
-    if ($Force -or -not (Test-ImageExists $codexAttemptImage)) {
-        Write-Host ("Building attempt image " + $codexAttemptImage + " ...") -ForegroundColor Yellow
-        docker build -f (Join-Path $repoRoot 'docker\Dockerfile.attempt-codex') -t $codexAttemptImage $repoRoot
-        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-    }
-    if ($Force -or -not (Test-ImageExists $piAttemptImage)) {
-        Write-Host ("Building attempt image " + $piAttemptImage + " ...") -ForegroundColor Yellow
-        docker build -f (Join-Path $repoRoot 'docker\Dockerfile.attempt-pi') -t $piAttemptImage $repoRoot
-        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-    }
-}
-
-# Attempt images are rebuilt in place under stable local tags. A persisted
-# resolved_image_id from the previous container would therefore look like image
-# drift even though this bootstrap intentionally supplied the new canonical
-# images. Clear only the two builtin pins after container start; the existing
-# Executor probe remains responsible for resolving and persisting current IDs.
-function Reset-BuiltinExecutorImagePins {
-    if (-not (Test-ContainerExists)) { return }
-    $bootstrapScript = @'
-const { existsSync } = require('node:fs');
-const Database = require('better-sqlite3');
-const dbPath = '/data/metaclaw/metaclaw.db';
-if (!existsSync(dbPath)) process.exit(0);
-const db = new Database(dbPath);
-try {
-  const table = db.prepare('SELECT 1 FROM sqlite_master WHERE type = ? AND name = ?').get('table', 'agent_classes');
-  if (table) {
-    db.prepare('UPDATE agent_classes SET resolved_image_id = NULL WHERE name IN (?, ?)').run('codex-cli', 'pi-agent');
-  }
-} finally {
-  db.close();
-}
-'@
-    docker exec -w /app $container node -e $bootstrapScript 2>$null | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error 'Failed to reset builtin Executor image pins.'
-        exit $LASTEXITCODE
-    }
-}
-
 function Start-ShellContainer {
     # Remove any stale container with the same name (silent if none exists).
     if (Test-ContainerExists) {
@@ -412,24 +232,15 @@ function Start-ShellContainer {
 
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $knownHosts) | Out-Null
 
-    Ensure-ControlNetwork
-    Ensure-AttemptImages
-    $hostPathMap = Build-DockerHostPathMap
-
     Write-Host ("Starting persistent SSH container '" + $container + "' ...") -ForegroundColor Cyan
-    # Main process: reseed the pi config template into the writable pi-agent-home
-    # (first run), then exec sshd -D so the container stays up as an SSH server.
-    #
-    # Topology mirrors smoke's dual-network control plane:
-    # - default bridge: outbound provider traffic + published SSH port
-    # - internal control network + alias: attempt sandboxes reach model/evidence
-    #   gateways as hostname `metaclaw-control`
+    # Main process: render provider config, then exec sshd -D so the container
+    # stays up as an SSH server. Executor CLIs are installed in this image and
+    # launched as child processes in their managed worktrees.
     #
     docker run -d --name $container `
       --network bridge `
       -p "${sshBindHost}:${sshPort}:22" `
       --entrypoint /bin/bash `
-      --mount 'type=bind,src=//var/run/docker.sock,dst=/var/run/docker.sock' `
       -v "${workspaceVolume}:/workspace" `
       -v "${dataVolume}:/data" `
       -v "${plannerEnvFile}:${plannerEnvContainerPath}:ro" `
@@ -440,9 +251,9 @@ function Start-ShellContainer {
       -e METACLAW_CODEX_EXECUTOR_ENV_FILE=$codexExecutorEnvContainerPath `
       -e METACLAW_PI_EXECUTOR_ENV_FILE=$piExecutorEnvContainerPath `
       -e METACLAW_HOME=/data/metaclaw `
-      -e METACLAW_CONTROL_NETWORK=$controlNetwork `
-      -e METACLAW_CONTROL_HOST=$controlHost `
-      -e "METACLAW_DOCKER_HOST_PATH_MAP=$hostPathMap" `
+      -e METACLAW_EXECUTOR_BACKEND=worktree `
+      -e METACLAW_EXECUTOR_CODEX_HOME=/var/lib/metaclaw/codex/executor `
+      -e METACLAW_EXECUTOR_PI_HOME=/root `
       -e PI_SKIP_VERSION_CHECK=1 `
       -e PI_TELEMETRY=0 `
       $runtimeImage `
@@ -453,23 +264,10 @@ function Start-ShellContainer {
         exit 1
     }
 
-    # Attach the control-plane identity used by attempt sandboxes. Smoke does
-    # the same after `docker create` so the control host is reachable by DNS
-    # name `metaclaw-control` from the internal network.
-    docker network connect --alias $controlHost $controlNetwork $container
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "Failed to connect '$container' to control network '$controlNetwork'."
-        exit 1
-    }
-
     # Re-seed the public key (if set up) so passwordless login survives rebuilds.
     Install-SshPublicKey
-    # Ensure SSH sessions see control-plane env even when the image still has an
-    # older persist-ssh-environment.sh (before the next -Rebuild).
-    Ensure-ControlEnvironmentInContainer -HostPathMap $hostPathMap
-    Reset-BuiltinExecutorImagePins
     Write-Host ("SSH container ready on 127.0.0.1:" + $sshPort + " (user=" + $sshUser + " password=" + $sshPassword + ").") -ForegroundColor Green
-    Write-Host ("Control network: " + $controlNetwork + " (alias " + $controlHost + ").") -ForegroundColor DarkGray
+    Write-Host 'Executor backend: worktree child processes (Codex/Pi).' -ForegroundColor DarkGray
     if (Test-Path $sshKeyPath) {
         Write-Host "Passwordless login active (key at .tmp\ssh_key)." -ForegroundColor Green
     }
@@ -477,8 +275,6 @@ function Start-ShellContainer {
 }
 
 function Ensure-ContainerRunning {
-    Ensure-ControlNetwork
-    Ensure-AttemptImages
     if (Test-ContainerExists) {
         if (-not (Test-ContainerUsesCurrentImage)) {
             Write-Host "Container uses an older image; recreating it from $runtimeImage..." -ForegroundColor Yellow
@@ -490,16 +286,6 @@ function Ensure-ContainerRunning {
             Start-ShellContainer
             return
         }
-        if (-not (Test-ContainerHasDockerSocket)) {
-            Write-Host "Container predates the Docker socket mount; recreating it..." -ForegroundColor Yellow
-            Start-ShellContainer
-            return
-        }
-        if (-not (Test-ContainerHasControlNetwork) -or -not (Test-ContainerHasBridgeNetwork) -or -not (Test-ContainerHasControlEnv)) {
-            Write-Host "Container predates the MetaClaw control-plane topology; recreating it..." -ForegroundColor Yellow
-            Start-ShellContainer
-            return
-        }
         $running = docker inspect -f '{{.State.Running}}' $container 2>$null
         if ($running -ne 'true') {
             Write-Host "Container exists but is stopped, starting it..." -ForegroundColor Yellow
@@ -508,13 +294,23 @@ function Ensure-ContainerRunning {
                 Write-Error "Failed to start container."
                 exit $LASTEXITCODE
             }
-            Reset-BuiltinExecutorImagePins
         }
         return
     }
     Write-Host "Container not found, starting it first..." -ForegroundColor Yellow
     if (-not (Test-ImageExists $runtimeImage)) { Build-RuntimeImage }
     Start-ShellContainer
+}
+
+# Provider env files are bind-mounted and may change while the persistent shell
+# container keeps running. Re-render Planner and Executor configs before each
+# interactive entry so a new base URL is never paired with stale credentials.
+function Refresh-ContainerProviderConfigs {
+    docker exec $container /opt/metaclaw/entrypoint.sh : 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error 'Failed to refresh provider configs from mounted env files.'
+        exit $LASTEXITCODE
+    }
 }
 
 # Wait until sshd is accepting connections on the published port (it starts a
@@ -588,7 +384,6 @@ Test-Prereqs
 
 if ($Rebuild) {
     Build-RuntimeImage -Force
-    Ensure-AttemptImages -Force
     Start-ShellContainer
     return
 }
@@ -614,5 +409,6 @@ if ($SetupSsh) { Invoke-SetupSsh; return }
 
 # Default + -Exec + -Bash all need a running container.
 Ensure-ContainerRunning
+Refresh-ContainerProviderConfigs
 
 if ($Bash) { Enter-Bash } else { Enter-Tui }
