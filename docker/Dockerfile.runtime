@@ -31,6 +31,9 @@ RUN npm run build
 
 FROM node:22.19.0-bookworm-slim AS runtime
 
+ARG DEBIAN_MIRROR=http://mirrors.aliyun.com/debian
+ARG DEBIAN_SECURITY_MIRROR=http://mirrors.aliyun.com/debian-security
+
 WORKDIR /app
 ENV NODE_ENV=production \
     CI=true \
@@ -53,7 +56,11 @@ ENV NODE_ENV=production \
     METACLAW_CODEX_EXECUTOR_ENV_FILE=/run/metaclaw/env/executor-codex.env \
     METACLAW_PI_EXECUTOR_ENV_FILE=/run/metaclaw/env/executor-pi.env
 
-RUN apt-get update \
+RUN sed -i \
+      -e "s|http://deb.debian.org/debian-security|${DEBIAN_SECURITY_MIRROR}|g" \
+      -e "s|http://deb.debian.org/debian|${DEBIAN_MIRROR}|g" \
+      /etc/apt/sources.list.d/debian.sources \
+  && apt-get update \
   && apt-get install -y --no-install-recommends bash ca-certificates curl fd-find git openssh-client openssh-server python3 ripgrep \
   && ln -sf /usr/bin/fdfind /usr/local/bin/fd \
   && rm -rf /var/lib/apt/lists/* \
