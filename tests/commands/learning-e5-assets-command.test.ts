@@ -50,7 +50,7 @@ function insertTaskMemoryCardCandidate(repo: LearningCandidateRepo) {
       '产物：docs/metaclaw-phase-e-unified-learning-and-executor-skill-evolution.md',
       '结果：success',
     ].join('\n'),
-    sourceReflectionId: 'refl_card_1',
+    sourceSkillUsageEventId: null,
     sourceTaskId: 'task_e5_1',
     safetyStatus: 'passed',
     safetyReasons: [],

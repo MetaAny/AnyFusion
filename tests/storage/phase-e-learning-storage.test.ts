@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { LearningCandidateRepo } from '../../src/storage/learning-candidate-repo.js';
-import { ReflectionEventRepo } from '../../src/storage/reflection-event-repo.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -12,27 +11,6 @@ function createTestDb() {
 }
 
 describe('Phase E learning storage', () => {
-  it('persists reflection events with sanitized evidence payloads', () => {
-    const db = createTestDb();
-    const repo = new ReflectionEventRepo(db);
-
-    repo.insert({
-      id: 'refl_1',
-      sourceType: 'task_completion',
-      sourceId: 'task_1',
-      taskId: 'task_1',
-      summary: '任务成功完成，可沉淀复用步骤',
-      evidence: { executor: 'hermes', outputSnippet: '已完成并验证' },
-      createdAt: '2026-04-27T00:00:00Z',
-    });
-
-    const row = repo.findById('refl_1');
-    expect(row).not.toBeNull();
-    expect(row?.sourceType).toBe('task_completion');
-    expect(row?.taskId).toBe('task_1');
-    expect(row?.evidence).toEqual({ executor: 'hermes', outputSnippet: '已完成并验证' });
-  });
-
   it('persists learning candidates and supports review lifecycle updates', () => {
     const db = createTestDb();
     const repo = new LearningCandidateRepo(db);
@@ -43,7 +21,7 @@ describe('Phase E learning storage', () => {
       status: 'pending',
       title: '调试 Feishu 输出截断流程',
       content: '遇到飞书输出截断时，先定位发送层 chunking，再验证端到端。',
-      sourceReflectionId: 'refl_1',
+      sourceSkillUsageEventId: 'sue_1',
       sourceTaskId: 'task_1',
       safetyStatus: 'passed',
       safetyReasons: [],
@@ -54,6 +32,7 @@ describe('Phase E learning storage', () => {
     });
 
     expect(repo.listPending()).toHaveLength(1);
+    expect(repo.existsForSkillUsageEvent('sue_1')).toBe(true);
 
     repo.updateReview('lc_1', {
       status: 'approved',

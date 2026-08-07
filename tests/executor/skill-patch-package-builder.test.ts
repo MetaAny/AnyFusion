@@ -9,7 +9,7 @@ function candidate(overrides: Partial<LearningCandidateRecord> = {}): LearningCa
     status: 'approved',
     title: 'Patch systematic-debugging missing RED confirmation step',
     content: 'Add a Pitfalls note: always confirm RED failure before modifying production code.',
-    sourceReflectionId: 'refl_patch_1',
+    sourceSkillUsageEventId: 'sue_patch_1',
     sourceTaskId: 'task_e4',
     safetyStatus: 'passed',
     safetyReasons: [],

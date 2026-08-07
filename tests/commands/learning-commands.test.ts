@@ -31,7 +31,7 @@ describe('learning review commands', () => {
       status: 'pending',
       title: '复用飞书截断调试流程',
       content: '先定位发送层 chunking，再做端到端验证。',
-      sourceReflectionId: null,
+      sourceSkillUsageEventId: null,
       sourceTaskId: 'task_1',
       safetyStatus: 'passed',
       safetyReasons: [],

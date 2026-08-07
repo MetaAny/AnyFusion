@@ -61,7 +61,7 @@ describe('Learning candidate session review UX', () => {
       status: 'pending',
       title: '复用飞书回复截断调试流程',
       content: '定位发送层限制并验证 chunking。',
-      sourceReflectionId: null,
+      sourceSkillUsageEventId: null,
       sourceTaskId: 'task_1',
       safetyStatus: 'passed',
       safetyReasons: [],

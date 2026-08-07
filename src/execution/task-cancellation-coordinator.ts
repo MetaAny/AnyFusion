@@ -6,7 +6,6 @@ import type { KernelDecision, KernelSnapshot } from '../kernel/control-kernel.js
 import type { TaskRuntimeService } from '../task/task-runtime-service.js';
 import type { SubtaskRepo } from '../storage/subtask-repo.js';
 import type { TaskEventRepo } from '../storage/task-event-repo.js';
-import { TaskEventRecorder } from '../storage/task-event-recorder.js';
 import type { WorkGraphRevisionRepo } from '../storage/work-graph-revision-repo.js';
 import type { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
 import type { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
@@ -32,7 +31,7 @@ type CancellationDecision = KernelDecision & {
  * and sandbox ordering rule needed to make that action durable.
  */
 export class TaskCancellationCoordinator {
-  private readonly taskEvents: TaskEventRecorder;
+  private readonly taskEvents: TaskEventRepo;
 
   constructor(private readonly deps: {
     db: Database.Database;
@@ -49,7 +48,7 @@ export class TaskCancellationCoordinator {
     attemptSandbox: AttemptSandboxPort;
     attemptSandboxRepository: AttemptSandboxRepositoryPort;
   }) {
-    this.taskEvents = new TaskEventRecorder(deps.taskEventRepo);
+    this.taskEvents = deps.taskEventRepo;
   }
 
   buildSnapshot(taskId: string): Extract<KernelSnapshot, { type: 'task_control' }> {
@@ -107,13 +106,13 @@ export class TaskCancellationCoordinator {
           this.deps.subtaskRepo.updateStatus(subtaskId, 'cancelled', {
             error: `Task cancelled by ${decision.id}`,
           });
-          this.taskEvents.record(
-            action.taskId,
+          this.taskEvents.record({
+            taskId: action.taskId,
             subtaskId,
-            'subtask_cancelled',
-            'Task cancellation fence',
-            { decisionId: decision.id, scope: 'task' },
-          );
+            eventType: 'subtask_cancelled',
+            message: 'Task cancellation fence',
+            payload: { decisionId: decision.id, scope: 'task' },
+          });
         }
         const cleanupAttemptIds = this.requestDependentCancellation({
           taskId: action.taskId,
@@ -123,17 +122,17 @@ export class TaskCancellationCoordinator {
           now,
         });
         this.deps.generationReplanRepo.cancelTask(action.taskId, decision.id, now);
-        this.taskEvents.record(
-          action.taskId,
-          null,
-          'task_cancelled',
-          decision.reason,
-          {
+        this.taskEvents.record({
+          taskId: action.taskId,
+          subtaskId: null,
+          eventType: 'task_cancelled',
+          message: decision.reason,
+          payload: {
             decisionId: decision.id,
             affectedSubtaskIds: affected,
             cleanupAttemptIds,
           },
-        );
+        });
         return { taskId: action.taskId, affectedSubtaskIds: affected, cleanupAttemptIds };
       }
 
@@ -161,13 +160,13 @@ export class TaskCancellationCoordinator {
         this.deps.subtaskRepo.updateStatus(subtaskId, 'cancelled', {
           error: `Subtask cancelled by ${decision.id}`,
         });
-        this.taskEvents.record(
-          action.taskId,
+        this.taskEvents.record({
+          taskId: action.taskId,
           subtaskId,
-          'subtask_cancelled',
-          'Explicit atomic Subtask cancellation',
-          { decisionId: decision.id, scope: 'subtask' },
-        );
+          eventType: 'subtask_cancelled',
+          message: 'Explicit atomic Subtask cancellation',
+          payload: { decisionId: decision.id, scope: 'subtask' },
+        });
       }
       const cleanupAttemptIds = this.requestDependentCancellation({
         taskId: action.taskId,
@@ -177,17 +176,17 @@ export class TaskCancellationCoordinator {
         now,
       });
       this.deps.generationReplanRepo.cancelTask(action.taskId, decision.id, now);
-      this.taskEvents.record(
-        action.taskId,
-        null,
-        'subtask_cancellation_batch',
-        'Atomic Subtask cancellation batch committed',
-        {
+      this.taskEvents.record({
+        taskId: action.taskId,
+        subtaskId: null,
+        eventType: 'subtask_cancellation_batch',
+        message: 'Atomic Subtask cancellation batch committed',
+        payload: {
           decisionId: decision.id,
           affectedSubtaskIds: action.subtaskIds,
           cleanupAttemptIds,
         },
-      );
+      });
       return {
         taskId: action.taskId,
         affectedSubtaskIds: action.subtaskIds,
@@ -358,18 +357,18 @@ export class TaskCancellationCoordinator {
         status: 'blocked',
         lastInterruptionReason: 'partial Subtask cancellation requires explicit acceptance',
       });
-      this.taskEvents.record(
+      this.taskEvents.record({
         taskId,
-        null,
-        'partial_result_pending_acceptance',
-        'Remaining sibling work is complete; explicit partial acceptance is required',
-        {
+        subtaskId: null,
+        eventType: 'partial_result_pending_acceptance',
+        message: 'Remaining sibling work is complete; explicit partial acceptance is required',
+        payload: {
           generationId: revision.generationId,
           cancelledSubtaskIds: subtasks
             .filter(subtask => subtask.status === 'cancelled')
             .map(subtask => subtask.id),
         },
-      );
+      });
     }
   }
 

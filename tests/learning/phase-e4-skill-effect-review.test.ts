@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ReflectionEngine } from '../../src/learning/reflection-engine.js';
+import { SkillUsageCandidateBuilder } from '../../src/learning/skill-usage-candidate-builder.js';
 import type { SkillUsageEventRecord } from '../../src/storage/skill-usage-event-repo.js';
 
 function skillEvent(overrides: Partial<SkillUsageEventRecord> = {}): SkillUsageEventRecord {
@@ -21,28 +21,24 @@ function skillEvent(overrides: Partial<SkillUsageEventRecord> = {}): SkillUsageE
   };
 }
 
-describe('ReflectionEngine skill effect review', () => {
+describe('SkillUsageCandidateBuilder skill effect review', () => {
   it('turns skill_suggested_patch events into skill_patch candidates for review', () => {
-    const result = new ReflectionEngine().reflectOnSkillUsage(skillEvent());
+    const result = new SkillUsageCandidateBuilder().build(skillEvent());
 
-    expect(result.event).toMatchObject({
-      sourceType: 'executor_skill_usage',
-      sourceId: 'sue_e4_1',
-      taskId: 'task_e4',
-    });
-    expect(result.candidate).toMatchObject({
+    expect(result).toMatchObject({
       kind: 'skill_patch',
       status: 'pending',
+      sourceSkillUsageEventId: 'sue_e4_1',
       sourceTaskId: 'task_e4',
       safetyStatus: 'passed',
     });
-    expect(result.candidate?.title).toContain('systematic-debugging');
-    expect(result.candidate?.content).toContain('suggestedPatch');
-    expect(result.candidate?.content).toContain('先运行 targeted test');
+    expect(result.title).toContain('systematic-debugging');
+    expect(result.content).toContain('suggestedPatch');
+    expect(result.content).toContain('先运行 targeted test');
   });
 
   it('turns repeated skill failures with missing steps into antipattern candidates', () => {
-    const result = new ReflectionEngine().reflectOnSkillUsage(skillEvent({
+    const result = new SkillUsageCandidateBuilder().build(skillEvent({
       id: 'sue_e4_2',
       eventType: 'skill_failed',
       message: '连续失败：跳过 RED 阶段导致后续返工',
@@ -52,18 +48,18 @@ describe('ReflectionEngine skill effect review', () => {
       },
     }));
 
-    expect(result.candidate).toMatchObject({
+    expect(result).toMatchObject({
       kind: 'antipattern',
       status: 'pending',
       sourceTaskId: 'task_e4',
     });
-    expect(result.candidate?.title).toContain('systematic-debugging');
-    expect(result.candidate?.content).toContain('跳过 RED 阶段');
-    expect(result.candidate?.content).toContain('failureCount');
+    expect(result.title).toContain('systematic-debugging');
+    expect(result.content).toContain('跳过 RED 阶段');
+    expect(result.content).toContain('failureCount');
   });
 
   it('turns successful verification payloads into verification_recipe candidates', () => {
-    const result = new ReflectionEngine().reflectOnSkillUsage(skillEvent({
+    const result = new SkillUsageCandidateBuilder().build(skillEvent({
       id: 'sue_e4_3',
       eventType: 'skill_completed',
       skillName: 'metaclaw-verification',
@@ -77,12 +73,12 @@ describe('ReflectionEngine skill effect review', () => {
       },
     }));
 
-    expect(result.candidate).toMatchObject({
+    expect(result).toMatchObject({
       kind: 'verification_recipe',
       status: 'pending',
       sourceTaskId: 'task_e4',
     });
-    expect(result.candidate?.content).toContain('verificationCommands');
-    expect(result.candidate?.content).toContain('npm run build');
+    expect(result.content).toContain('verificationCommands');
+    expect(result.content).toContain('npm run build');
   });
 });

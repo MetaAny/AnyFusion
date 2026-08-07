@@ -24,6 +24,8 @@ const SANDBOX_SAFE_PROVIDER_ENV_KEYS = [
   'PI_TELEMETRY',
 ] as const;
 
+export const EXECUTOR_RESULT_FILE_NAME = 'executor-final-response.md';
+
 interface NativeExecutorEnvironment {
   environment: Record<string, string>;
   temporaryRoot: string;
@@ -61,7 +63,7 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
       ?? (this.sandbox.kind === 'worktree' ? 'native' : 'container')) === 'native';
     const usesDockerProxy = !nativePaths && this.agentClass.permissionProfileId === 'public-web-research';
     const executionWorkspacePath = nativePaths ? binding.workspacePath : '/workspace';
-    const resultPath = join(binding.workspacePath, '.metaclaw', 'results', `${binding.attemptId}.md`);
+    const resultPath = join(binding.workspacePath, '.metaclaw', 'results', EXECUTOR_RESULT_FILE_NAME);
     const prompt = buildExecutorContextPrompt({
       ...input,
       context: {
@@ -81,7 +83,7 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
     });
     const { command, args } = this.commandAndArgs(
       prompt,
-      `${executionWorkspacePath}/.metaclaw/results/${binding.attemptId}.md`,
+      `${executionWorkspacePath}/.metaclaw/results/${EXECUTOR_RESULT_FILE_NAME}`,
       input,
       nativePaths,
     );

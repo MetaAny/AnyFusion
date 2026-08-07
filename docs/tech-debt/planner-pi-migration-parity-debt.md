@@ -100,11 +100,9 @@ Runtime 在 completion 校验前计算并持久化一次权威 delta：
 
 ## SQLite 迁移
 
-Schema v30 提供唯一事务式 29→30 迁移。迁移重建 `subtasks.delivery_kind`，
-转换所有仍可恢复的 pending Kernel event、未应用 decision/application、活动
-dispatch 和 deferred replan payload。终态 Kernel ledger 保持不可变历史事实。
-任一可恢复 payload 无法确定转换时整笔回滚并拒绝启动，不存在读取时 v6
-fallback。
+本项关闭时曾以 schema v30 的 29→30 迁移验证 Planner v7 切换。后续
+storage cleanup 已将未发布数据库硬切为 fresh-only schema v31，并删除该迁移；
+当前运行时拒绝所有旧 schema，不存在升级或读取时 fallback。
 
 ## 验收记录
 

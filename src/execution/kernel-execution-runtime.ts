@@ -12,7 +12,6 @@ import type { AgentClassService } from '../executor/agent-class-service.js';
 import type { SubtaskRepo } from '../storage/subtask-repo.js';
 import type { SubtaskHandoffRepo } from '../storage/subtask-handoff-repo.js';
 import type { TaskEventRepo } from '../storage/task-event-repo.js';
-import { TaskEventRecorder } from '../storage/task-event-recorder.js';
 import type { WorkGraphRuntimeService } from '../execution/work-graph-runtime-service.js';
 import type { KernelExecutorStatusProjector } from '../execution/kernel-executor-status-projector.js';
 import type { VerificationAndDeliveryService } from '../delivery/verification-and-delivery-service.js';
@@ -135,12 +134,12 @@ export interface KernelExecutionRuntimeDeps {
 
 /** Runtime handler set for Kernel decisions. It applies one authorized action and reports one fact. */
 export class KernelExecutionRuntime {
-  private readonly taskEvents: TaskEventRecorder;
+  private readonly taskEvents: TaskEventRepo;
   private readonly attemptSupervisor: AttemptSupervisor;
   private readonly cancellationRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(private readonly deps: KernelExecutionRuntimeDeps) {
-    this.taskEvents = new TaskEventRecorder(deps.taskEventRepo);
+    this.taskEvents = deps.taskEventRepo;
     this.attemptSupervisor = new AttemptSupervisor(
       deps.dispatchItemRepo,
       deps.maxConcurrentAttempts,
@@ -1630,6 +1629,6 @@ export class KernelExecutionRuntime {
     message: string,
     payload: Record<string, unknown>,
   ): void {
-    this.taskEvents.record(taskId, subtaskId, eventType, message, payload);
+    this.taskEvents.record({ taskId, subtaskId, eventType, message, payload });
   }
 }

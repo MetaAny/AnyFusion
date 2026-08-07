@@ -1,6 +1,5 @@
 import type Database from 'better-sqlite3';
 import { TaskEventRepo } from '../storage/task-event-repo.js';
-import { TaskEventRecorder } from '../storage/task-event-recorder.js';
 import { generateInteractionId } from '../utils/id.js';
 
 export type ExecutionEvidenceKind = 'user_input' | 'task_resource' | 'task_evidence' | 'preference' | 'assistant_ref';
@@ -162,20 +161,17 @@ export class TaskExecutionEvidenceRepo {
 /** Attempt-lifetime capability: task identity is closed over and cannot be supplied by callers. */
 export class ScopedExecutionEvidencePort implements ExecutionEvidencePort {
   private active = true;
-  private readonly events: TaskEventRecorder;
 
   constructor(
     private readonly repo: TaskExecutionEvidenceRepo,
-    taskEventRepo: TaskEventRepo,
+    private readonly events: TaskEventRepo,
     private readonly scope: {
       taskId: string;
       subtaskId: string;
       attemptId: string;
       exactEvidenceIds: Set<string>;
     },
-  ) {
-    this.events = new TaskEventRecorder(taskEventRepo);
-  }
+  ) {}
 
   revoke(): void {
     this.active = false;
@@ -225,13 +221,13 @@ export class ScopedExecutionEvidencePort implements ExecutionEvidencePort {
   }
 
   private audit(queryType: string, reference: string | null, resultCount: number): void {
-    this.events.record(
-      this.scope.taskId,
-      this.scope.subtaskId,
-      'executor_evidence_accessed',
-      queryType,
-      { attemptId: this.scope.attemptId, queryType, reference, resultCount },
-    );
+    this.events.record({
+      taskId: this.scope.taskId,
+      subtaskId: this.scope.subtaskId,
+      eventType: 'executor_evidence_accessed',
+      message: queryType,
+      payload: { attemptId: this.scope.attemptId, queryType, reference, resultCount },
+    });
   }
 }
 

@@ -20,7 +20,7 @@ interface LearningCandidateRow {
   status: LearningCandidateStatus;
   title: string;
   content: string;
-  source_reflection_id: string | null;
+  source_skill_usage_event_id: string | null;
   source_task_id: string | null;
   safety_status: LearningCandidateSafetyStatus;
   safety_reasons_json: string;
@@ -36,7 +36,7 @@ export interface LearningCandidateRecord {
   status: LearningCandidateStatus;
   title: string;
   content: string;
-  sourceReflectionId: string | null;
+  sourceSkillUsageEventId: string | null;
   sourceTaskId: string | null;
   safetyStatus: LearningCandidateSafetyStatus;
   safetyReasons: string[];
@@ -62,7 +62,7 @@ function rowToLearningCandidate(row: LearningCandidateRow): LearningCandidateRec
     status: row.status,
     title: row.title,
     content: row.content,
-    sourceReflectionId: row.source_reflection_id,
+    sourceSkillUsageEventId: row.source_skill_usage_event_id,
     sourceTaskId: row.source_task_id,
     safetyStatus: row.safety_status,
     safetyReasons: JSON.parse(row.safety_reasons_json || '[]'),
@@ -79,7 +79,7 @@ export class LearningCandidateRepo {
   insert(record: LearningCandidateInsert): void {
     this.db.prepare(`
       INSERT INTO learning_candidates (
-        id, kind, status, title, content, source_reflection_id, source_task_id,
+        id, kind, status, title, content, source_skill_usage_event_id, source_task_id,
         safety_status, safety_reasons_json, review_note, promoted_asset_id,
         created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -89,7 +89,7 @@ export class LearningCandidateRepo {
       record.status,
       record.title,
       record.content,
-      record.sourceReflectionId,
+      record.sourceSkillUsageEventId,
       record.sourceTaskId,
       record.safetyStatus,
       JSON.stringify(record.safetyReasons),
@@ -103,6 +103,14 @@ export class LearningCandidateRepo {
   findById(id: string): LearningCandidateRecord | null {
     const row = this.db.prepare('SELECT * FROM learning_candidates WHERE id = ?').get(id) as LearningCandidateRow | undefined;
     return row ? rowToLearningCandidate(row) : null;
+  }
+
+  existsForSkillUsageEvent(eventId: string): boolean {
+    return Boolean(this.db.prepare(`
+      SELECT 1 FROM learning_candidates
+      WHERE source_skill_usage_event_id = ?
+      LIMIT 1
+    `).get(eventId));
   }
 
   listPending(): LearningCandidateRecord[] {

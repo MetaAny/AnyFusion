@@ -9,7 +9,6 @@ import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
-import { SkillUsageEventRepo } from '../../src/storage/skill-usage-event-repo.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
 import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
 
@@ -60,8 +59,10 @@ describe('Session skill usage observability', () => {
 
     await session.submit('用 TDD 实现一个小功能', { awaitAsyncWork: true });
 
-    const events = new SkillUsageEventRepo(db).listByTask(taskRepo.findByStatus('done')[0].id);
-    expect(events).toEqual([]);
+    const taskId = taskRepo.findByStatus('done')[0].id;
+    expect(db.prepare(`
+      SELECT COUNT(*) AS count FROM executor_skill_usage_events WHERE task_id = ?
+    `).get(taskId)).toEqual({ count: 0 });
     expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
 
     const output = session.getSnapshot().output.join('\n');

@@ -1,5 +1,14 @@
 import type Database from 'better-sqlite3';
 import type { TaskEvent } from '../core/types.js';
+import { generateInteractionId } from '../utils/id.js';
+
+export interface TaskEventInput {
+  taskId: string;
+  subtaskId: string | null;
+  eventType: string;
+  message: string;
+  payload: Record<string, unknown>;
+}
 
 interface TaskEventRow {
   id: string;
@@ -26,7 +35,12 @@ function rowToEvent(row: TaskEventRow): TaskEvent {
 export class TaskEventRepo {
   constructor(private readonly db: Database.Database) {}
 
-  insert(event: TaskEvent): void {
+  record(input: TaskEventInput): void {
+    const event: TaskEvent = {
+      id: `te_${generateInteractionId()}`,
+      ...input,
+      createdAt: new Date().toISOString(),
+    };
     this.db.prepare(`
       INSERT INTO task_events (
         id, task_id, subtask_id, event_type, message, payload_json, created_at
@@ -54,11 +68,6 @@ export class TaskEventRepo {
       ORDER BY created_at DESC
       LIMIT ?
     `).all(taskId, limit) as TaskEventRow[];
-    return rows.map(rowToEvent);
-  }
-
-  listRecent(limit = 20): TaskEvent[] {
-    const rows = this.db.prepare('SELECT * FROM task_events ORDER BY created_at DESC LIMIT ?').all(limit) as TaskEventRow[];
     return rows.map(rowToEvent);
   }
 }
