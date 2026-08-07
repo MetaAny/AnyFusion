@@ -43,6 +43,19 @@ describe('Docker shell SQLite schema isolation', () => {
     expect(ci).toContain('node-version: 22.19.0');
   });
 
+  it('uses configurable Debian mirrors for the unified runtime image', () => {
+    const runtimeDockerfile = readFileSync(resolve('docker/Dockerfile.runtime'), 'utf-8');
+
+    expect(runtimeDockerfile).toContain(
+      'ARG DEBIAN_MIRROR=http://mirrors.aliyun.com/debian',
+    );
+    expect(runtimeDockerfile).toContain(
+      'ARG DEBIAN_SECURITY_MIRROR=http://mirrors.aliyun.com/debian-security',
+    );
+    expect(runtimeDockerfile).toContain('${DEBIAN_SECURITY_MIRROR}');
+    expect(runtimeDockerfile).toContain('${DEBIAN_MIRROR}');
+  });
+
   it('uses the Responses API with one supported model across Planner and Executors', () => {
     const plannerModels = JSON.parse(
       readFileSync(resolve('docker/planner-pi-config/models.json'), 'utf-8'),
