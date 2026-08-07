@@ -9,7 +9,7 @@ function candidate(overrides: Partial<LearningCandidateRecord> = {}): LearningCa
     status: 'approved',
     title: 'Feishu output chunking debug workflow',
     content: '1. Reproduce truncation.\n2. Inspect Feishu sender chunking.\n3. Run integration tests.',
-    sourceReflectionId: 'refl_1',
+    sourceSkillUsageEventId: 'sue_1',
     sourceTaskId: 'task_1',
     safetyStatus: 'passed',
     safetyReasons: [],

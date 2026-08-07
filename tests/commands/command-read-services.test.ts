@@ -72,14 +72,12 @@ describe('command fact queries', () => {
         `2026-07-14T10:${String(index).padStart(2, '0')}:00.000Z`,
       );
     }
-    new TaskEventRepo(db).insert({
-      id: 'task-event-latest',
+    new TaskEventRepo(db).record({
       taskId: task.id,
       subtaskId: null,
       eventType: 'dispatch_stopped',
       message: '最新任务事件',
       payload: {},
-      createdAt: '2026-07-14T11:00:00.000Z',
     });
 
     const result = await createDefaultCommandCatalog().execute(`/task history ${task.id}`, context);
@@ -181,9 +179,9 @@ describe('command fact queries', () => {
       eventType: 'claimed', state: 'claimed', message: 'claimed', payload: {},
       createdAt: '2026-07-14T10:01:00.000Z',
     });
-    new TaskEventRepo(db).insert({
-      id: 'task-event-1', taskId: task.id, subtaskId: 'subtask-1', eventType: 'subtask_done',
-      message: 'executor completed', payload: {}, createdAt: '2026-07-14T10:02:00.000Z',
+    new TaskEventRepo(db).record({
+      taskId: task.id, subtaskId: 'subtask-1', eventType: 'subtask_done',
+      message: 'executor completed', payload: {},
     });
 
     const result = await createDefaultCommandCatalog().execute(`/executor feedback ${task.id}`, context);

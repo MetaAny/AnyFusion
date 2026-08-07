@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 const projectRoot = resolve(__dirname, '../..');
 
 const learningFiles = [
-  'reflection-engine',
+  'skill-usage-candidate-builder',
   'learning-weekly-review-builder',
   'skill-governance-engine',
   'promotion-gate',

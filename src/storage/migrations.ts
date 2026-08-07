@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3';
 
-const CURRENT_SCHEMA_VERSION = 30;
+const CURRENT_SCHEMA_VERSION = 31;
 
 const CURRENT_SCHEMA_SQL = `
 CREATE TABLE tasks (
@@ -53,21 +53,6 @@ CREATE TABLE interactions (
           created_at TEXT NOT NULL
         , session_id TEXT);
 
-CREATE TABLE guidance_events (
-        id TEXT PRIMARY KEY,
-        trigger TEXT NOT NULL,
-        task_id TEXT,
-        action_type TEXT NOT NULL,
-        payload_json TEXT NOT NULL DEFAULT '{}',
-        reasons_json TEXT NOT NULL DEFAULT '[]',
-        confidence REAL DEFAULT 0,
-        requires_confirmation INTEGER DEFAULT 1,
-        accepted_at TEXT,
-        dismissed_at TEXT,
-        executed_at TEXT,
-        created_at TEXT NOT NULL
-      );
-
 CREATE TABLE session_state (
         id TEXT PRIMARY KEY,
         last_focused_task_id TEXT,
@@ -76,23 +61,13 @@ CREATE TABLE session_state (
         updated_at TEXT NOT NULL
       );
 
-CREATE TABLE reflection_events (
-        id TEXT PRIMARY KEY,
-        source_type TEXT NOT NULL,
-        source_id TEXT,
-        task_id TEXT,
-        summary TEXT NOT NULL,
-        evidence_json TEXT NOT NULL DEFAULT '{}',
-        created_at TEXT NOT NULL
-      );
-
 CREATE TABLE learning_candidates (
         id TEXT PRIMARY KEY,
         kind TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'pending',
         title TEXT NOT NULL,
         content TEXT NOT NULL,
-        source_reflection_id TEXT,
+        source_skill_usage_event_id TEXT,
         source_task_id TEXT,
         safety_status TEXT NOT NULL DEFAULT 'pending',
         safety_reasons_json TEXT NOT NULL DEFAULT '[]',
@@ -159,22 +134,6 @@ CREATE TABLE skill_effect_summaries (
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         UNIQUE(executor_name, skill_name, skill_version_key)
-      );
-
-CREATE TABLE executor_route_events (
-        id TEXT PRIMARY KEY,
-        task_id TEXT,
-        user_input TEXT NOT NULL,
-        selected_executor TEXT NOT NULL,
-        action TEXT NOT NULL,
-        candidates_json TEXT NOT NULL DEFAULT '[]',
-        primary_intent TEXT NOT NULL DEFAULT 'general',
-        matched_boundary_json TEXT NOT NULL DEFAULT '[]',
-        rejected_json TEXT NOT NULL DEFAULT '[]',
-        reason TEXT NOT NULL DEFAULT '',
-        confirmed_by_user INTEGER NOT NULL DEFAULT 0,
-        result TEXT,
-        created_at TEXT NOT NULL
       );
 
 CREATE VIRTUAL TABLE task_search_index USING fts5(
@@ -781,28 +740,18 @@ CREATE INDEX idx_interactions_session ON interactions(session_id, created_at);
 
 CREATE INDEX idx_interactions_task ON interactions(task_id, created_at);
 
-CREATE INDEX idx_guidance_events_task ON guidance_events(task_id, created_at);
-
-CREATE INDEX idx_reflection_events_task
-        ON reflection_events(task_id, created_at);
-
-CREATE INDEX idx_reflection_events_source
-        ON reflection_events(source_type, source_id);
-
 CREATE INDEX idx_learning_candidates_status
         ON learning_candidates(status, created_at);
 
 CREATE INDEX idx_learning_candidates_source_task
         ON learning_candidates(source_task_id, created_at);
 
-CREATE INDEX idx_skill_usage_events_task
-        ON executor_skill_usage_events(task_id, created_at);
+CREATE UNIQUE INDEX idx_learning_candidates_source_skill_usage
+        ON learning_candidates(source_skill_usage_event_id)
+        WHERE source_skill_usage_event_id IS NOT NULL;
 
-CREATE INDEX idx_skill_usage_events_execution
-        ON executor_skill_usage_events(execution_id, created_at);
-
-CREATE INDEX idx_skill_usage_events_skill
-        ON executor_skill_usage_events(skill_name, event_type, created_at);
+CREATE INDEX idx_skill_usage_events_created
+        ON executor_skill_usage_events(created_at);
 
 CREATE INDEX idx_skill_install_events_candidate
         ON executor_skill_install_events(candidate_id, created_at);
@@ -821,12 +770,6 @@ CREATE INDEX idx_skill_effect_summaries_skill
 
 CREATE INDEX idx_skill_effect_summaries_executor
         ON skill_effect_summaries(executor_name, used_count, updated_at);
-
-CREATE INDEX idx_executor_route_events_executor
-        ON executor_route_events(selected_executor, created_at);
-
-CREATE INDEX idx_executor_route_events_task
-        ON executor_route_events(task_id, created_at);
 
 CREATE INDEX idx_task_events_task ON task_events(task_id, created_at);
 
@@ -1022,10 +965,6 @@ export function runMigrations(db: Database.Database): void {
     if (versions.length === 1 && versions[0]?.version === CURRENT_SCHEMA_VERSION) {
       return;
     }
-    if (versions.length === 1 && versions[0]?.version === 29) {
-      migrateSchema29To30(db);
-      return;
-    }
     const found = versions.map(row => row.version).join(', ') || 'empty';
     throw new Error(
       `unsupported pre-release SQLite schema (${found}); create a fresh database for schema ${CURRENT_SCHEMA_VERSION}`,
@@ -1050,205 +989,4 @@ export function runMigrations(db: Database.Database): void {
     db.prepare('INSERT INTO schema_version (version) VALUES (?)')
       .run(CURRENT_SCHEMA_VERSION);
   })();
-}
-
-function migrateSchema29To30(db: Database.Database): void {
-  const foreignKeysEnabled = db.pragma('foreign_keys', { simple: true }) === 1;
-  const migrate = db.transaction(() => {
-    const invalidKinds = db.prepare(`
-      SELECT id, expected_output AS expectedOutput
-      FROM subtasks
-      WHERE expected_output NOT IN ('patch', 'artifact', 'analysis', 'review', 'summary')
-      ORDER BY id
-    `).all() as Array<{ id: string; expectedOutput: string }>;
-    if (invalidKinds.length > 0) {
-      throw new Error(
-        `schema 29 subtask output cannot be migrated: ${invalidKinds.map(item => `${item.id}=${item.expectedOutput}`).join(', ')}`,
-      );
-    }
-
-    migrateRecoverableJson(db);
-    db.exec(`
-      PRAGMA defer_foreign_keys = ON;
-      CREATE TABLE subtasks_v30 (
-        id TEXT PRIMARY KEY,
-        task_id TEXT NOT NULL,
-        title TEXT NOT NULL,
-        goal TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'created',
-        dependencies_json TEXT NOT NULL DEFAULT '[]',
-        context_refs_json TEXT NOT NULL DEFAULT '[]',
-        required_capabilities_json TEXT NOT NULL,
-        preferred_agent_class_list_json TEXT NOT NULL,
-        delivery_kind TEXT NOT NULL DEFAULT 'report' CHECK(delivery_kind IN ('edit', 'report')),
-        acceptance_json TEXT NOT NULL DEFAULT '[]',
-        risk_level TEXT NOT NULL DEFAULT 'medium',
-        result TEXT NOT NULL DEFAULT '',
-        artifacts_json TEXT NOT NULL DEFAULT '[]',
-        verification_json TEXT NOT NULL DEFAULT '{}',
-        error TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        graph_revision INTEGER,
-        generation_id TEXT,
-        FOREIGN KEY (task_id) REFERENCES tasks(id)
-      );
-      INSERT INTO subtasks_v30 (
-        id, task_id, title, goal, status, dependencies_json, context_refs_json,
-        required_capabilities_json, preferred_agent_class_list_json, delivery_kind,
-        acceptance_json, risk_level, result, artifacts_json, verification_json,
-        error, created_at, updated_at, graph_revision, generation_id
-      )
-      SELECT
-        id, task_id, title, goal, status, dependencies_json, context_refs_json,
-        required_capabilities_json, preferred_agent_class_list_json,
-        CASE
-          WHEN expected_output IN ('patch', 'artifact') THEN 'edit'
-          WHEN expected_output IN ('analysis', 'review', 'summary') THEN 'report'
-        END,
-        acceptance_json, risk_level, result, artifacts_json, verification_json,
-        error, created_at, updated_at, graph_revision, generation_id
-      FROM subtasks;
-      DROP TABLE subtasks;
-      ALTER TABLE subtasks_v30 RENAME TO subtasks;
-      CREATE INDEX idx_subtasks_task ON subtasks(task_id, status, created_at);
-    `);
-    const foreignKeyViolations = db.pragma('foreign_key_check') as unknown[];
-    if (foreignKeyViolations.length > 0) {
-      throw new Error('schema 29 to 30 migration produced foreign key violations');
-    }
-    const updated = db.prepare('UPDATE schema_version SET version = 30 WHERE version = 29').run();
-    if (updated.changes !== 1) throw new Error('schema version changed during 29 to 30 migration');
-  });
-  if (foreignKeysEnabled) db.pragma('foreign_keys = OFF');
-  try {
-    migrate();
-  } finally {
-    if (foreignKeysEnabled) db.pragma('foreign_keys = ON');
-  }
-}
-
-interface RecoverableJsonColumn {
-  selectSql: string;
-  updateSql: string;
-  label: string;
-}
-
-function migrateRecoverableJson(db: Database.Database): void {
-  const columns: RecoverableJsonColumn[] = [
-    {
-      label: 'kernel_events.event_json',
-      selectSql: `SELECT rowid AS rowId, event_json AS value FROM kernel_events WHERE status IN ('pending', 'processing')`,
-      updateSql: 'UPDATE kernel_events SET event_json = ? WHERE rowid = ?',
-    },
-    {
-      label: 'kernel_decisions.event_json',
-      selectSql: `SELECT decision.rowid AS rowId, decision.event_json AS value
-        FROM kernel_decisions decision
-        JOIN kernel_decision_applications application ON application.decision_id = decision.id
-        WHERE application.status <> 'applied'`,
-      updateSql: 'UPDATE kernel_decisions SET event_json = ? WHERE rowid = ?',
-    },
-    {
-      label: 'kernel_decisions.snapshot_json',
-      selectSql: `SELECT decision.rowid AS rowId, decision.snapshot_json AS value
-        FROM kernel_decisions decision
-        JOIN kernel_decision_applications application ON application.decision_id = decision.id
-        WHERE application.status <> 'applied'`,
-      updateSql: 'UPDATE kernel_decisions SET snapshot_json = ? WHERE rowid = ?',
-    },
-    {
-      label: 'kernel_decisions.decision_json',
-      selectSql: `SELECT decision.rowid AS rowId, decision.decision_json AS value
-        FROM kernel_decisions decision
-        JOIN kernel_decision_applications application ON application.decision_id = decision.id
-        WHERE application.status <> 'applied'`,
-      updateSql: 'UPDATE kernel_decisions SET decision_json = ? WHERE rowid = ?',
-    },
-    {
-      label: 'kernel_decision_applications.observation_event_json',
-      selectSql: `SELECT rowid AS rowId, observation_event_json AS value
-        FROM kernel_decision_applications
-        WHERE status <> 'applied' AND observation_event_json IS NOT NULL`,
-      updateSql: 'UPDATE kernel_decision_applications SET observation_event_json = ? WHERE rowid = ?',
-    },
-    {
-      label: 'kernel_dispatch_items.attempt_payload_json',
-      selectSql: `SELECT rowid AS rowId, attempt_payload_json AS value
-        FROM kernel_dispatch_items WHERE status NOT IN ('terminal', 'cancelled')`,
-      updateSql: 'UPDATE kernel_dispatch_items SET attempt_payload_json = ? WHERE rowid = ?',
-    },
-    {
-      label: 'generation_replan_requests.deferred_plan_json',
-      selectSql: `SELECT rowid AS rowId, deferred_plan_json AS value
-        FROM generation_replan_requests
-        WHERE status NOT IN ('resolved', 'cancelled', 'failed') AND deferred_plan_json IS NOT NULL`,
-      updateSql: 'UPDATE generation_replan_requests SET deferred_plan_json = ? WHERE rowid = ?',
-    },
-  ];
-  for (const column of columns) migrateJsonColumn(db, column);
-}
-
-function migrateJsonColumn(db: Database.Database, column: RecoverableJsonColumn): void {
-  const rows = db.prepare(column.selectSql).all() as Array<{ rowId: number; value: string }>;
-  const update = db.prepare(column.updateSql);
-  for (const row of rows) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(row.value) as unknown;
-    } catch (error) {
-      throw new Error(`${column.label} row ${row.rowId} contains invalid recoverable JSON`, { cause: error });
-    }
-    const migrated = migrateRecoverableValue(parsed, `${column.label}[${row.rowId}]`);
-    if (migrated.changed) update.run(JSON.stringify(migrated.value), row.rowId);
-  }
-}
-
-function migrateRecoverableValue(value: unknown, path: string): { value: unknown; changed: boolean } {
-  if (Array.isArray(value)) {
-    let changed = false;
-    const migrated = value.map((item, index) => {
-      const result = migrateRecoverableValue(item, `${path}[${index}]`);
-      changed ||= result.changed;
-      return result.value;
-    });
-    return { value: changed ? migrated : value, changed };
-  }
-  if (!value || typeof value !== 'object') return { value, changed: false };
-
-  const source = value as Record<string, unknown>;
-  const target: Record<string, unknown> = {};
-  let changed = false;
-  for (const [key, item] of Object.entries(source)) {
-    if (key === 'expectedOutput') continue;
-    const result = migrateRecoverableValue(item, `${path}.${key}`);
-    target[key] = result.value;
-    changed ||= result.changed;
-  }
-  if (Object.hasOwn(source, 'expectedOutput')) {
-    const deliveryKind = migrateDeliveryKind(source.expectedOutput, `${path}.expectedOutput`);
-    if (Object.hasOwn(source, 'deliveryKind') && source.deliveryKind !== deliveryKind) {
-      throw new Error(`${path} contains conflicting expectedOutput and deliveryKind values`);
-    }
-    target.deliveryKind = deliveryKind;
-    changed = true;
-  }
-  if (target.schemaVersion === 6 && isPlanningAgentPlan(target)) {
-    target.schemaVersion = 7;
-    changed = true;
-  }
-  return { value: changed ? target : value, changed };
-}
-
-function migrateDeliveryKind(value: unknown, path: string): 'edit' | 'report' {
-  if (value === 'patch' || value === 'artifact') return 'edit';
-  if (value === 'analysis' || value === 'review' || value === 'summary') return 'report';
-  throw new Error(`${path} has unsupported value ${JSON.stringify(value)}`);
-}
-
-function isPlanningAgentPlan(value: Record<string, unknown>): boolean {
-  return typeof value.id === 'string'
-    && typeof value.action === 'string'
-    && Object.hasOwn(value, 'task')
-    && Object.hasOwn(value, 'workGraph');
 }

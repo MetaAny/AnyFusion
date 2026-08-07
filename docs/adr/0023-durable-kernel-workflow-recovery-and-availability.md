@@ -57,17 +57,17 @@ LangGraph may replace only the durable workflow cursor/replay implementation aft
 
 Adoption requires the full crash matrix, no domain-framework coupling, at least 30% net removal of cursor/replay implementation, checkpoint-loss recovery, and exactly one production workflow path. Failure of any gate requires deleting the spike and dependency.
 
-### Planning v7 and schema v30 recovery amendment (2026-08-03)
+### Planning v7 and schema v31 recovery amendment (2026-08-07)
 
-SQLite schema v30 is the current baseline. The only supported upgrade is one
-transactional 29→30 migration. It rebuilds active Subtasks with
-`delivery_kind`, deterministically maps old output kinds, and upgrades every
-still-recoverable v6 Planning/Work Graph payload in pending Kernel events,
-unapplied decisions/applications, active dispatch, and unresolved deferred
-replans. Terminal Kernel ledger entries remain immutable historical facts and
-cannot re-enter current validation or execution. Any ambiguous recoverable
-payload rolls back the whole migration and refuses startup; runtime has no v6
-fallback reader.
+SQLite schema v31 is the current pre-release baseline. Because no database
+format has shipped, Runtime creates only fresh v31 databases and rejects every
+older schema. The earlier 29→30 upgrade and its recoverable-payload rewriting
+are removed; there is no migration or fallback reader. Durable Kernel and Task
+event history remains intact in v31. Low-value intermediate Skill progress is
+attempt-lifetime verifier evidence rather than durable history; only terminal
+Skill outcomes are persisted, and their detail plus effect-summary update is
+one transaction. The unused reflection, guidance and executor-route event
+tables are not created.
 
 The Phase 4 gated evaluation closed on 2026-07-21 without adoption. The replaceable drain/apply loop was materially smaller than the required MetaClaw inbox/application/outbox recovery layer, while Functional API integration would add a second SQLite cursor and replay glue. It could not produce the required 30% net removal. `DurableKernelWorkflow` is therefore the sole production workflow implementation and no LangGraph dependency or compatibility path is retained.
 

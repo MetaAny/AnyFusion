@@ -30,7 +30,7 @@ function seedWeeklyReviewData(db: Database.Database): void {
     status: 'pending',
     title: '建议沉淀 Skill：weekly-release-checklist',
     content: 'Candidate',
-    sourceReflectionId: null,
+    sourceSkillUsageEventId: null,
     sourceTaskId: 'task_1',
     safetyStatus: 'passed',
     safetyReasons: [],

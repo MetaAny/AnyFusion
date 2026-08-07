@@ -22,7 +22,7 @@ function insertPatchCandidate(repo: LearningCandidateRepo, overrides: Partial<Pa
     status: 'approved',
     title: 'Patch systematic-debugging RED confirmation step',
     content: 'Add guidance to confirm RED before production edits.',
-    sourceReflectionId: null,
+    sourceSkillUsageEventId: null,
     sourceTaskId: 'task_e4',
     safetyStatus: 'passed',
     safetyReasons: [],

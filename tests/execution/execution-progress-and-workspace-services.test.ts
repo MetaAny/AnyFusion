@@ -5,7 +5,6 @@ import { describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { ExecutionProgressService } from '../../src/execution/execution-progress-service.js';
-import { SkillUsageEventRepo } from '../../src/storage/skill-usage-event-repo.js';
 import { WorkspaceStore } from '../../src/execution/workspace-store.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 
@@ -51,7 +50,9 @@ describe('execution progress and workspace services', () => {
       },
     }, executor);
 
-    expect(new SkillUsageEventRepo(db).listByExecution('exec_1')).toHaveLength(2);
+    expect(db.prepare(`
+      SELECT COUNT(*) AS count FROM executor_skill_usage_events WHERE execution_id = ?
+    `).get('exec_1')).toEqual({ count: 0 });
     expect(tracker.evidenceText).toHaveLength(2);
     expect(tracker.evidenceText[0]).toContain('skill_event=skill_progress');
   });

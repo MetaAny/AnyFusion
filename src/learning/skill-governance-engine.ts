@@ -75,7 +75,7 @@ export class SkillGovernanceEngine {
         status: 'pending',
         title: titleFor(action, summary),
         content: contentFor(action, summary, assessment),
-        sourceReflectionId: null,
+        sourceSkillUsageEventId: null,
         sourceTaskId: null,
         safetyStatus: 'passed',
         safetyReasons: [],

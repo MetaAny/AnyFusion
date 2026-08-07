@@ -4,7 +4,7 @@ import { runMigrations } from '../../src/storage/migrations.js';
 import type { GuidanceProposal } from '../../src/core/types.js';
 
 describe('V2 schema', () => {
-  it('creates guidance tables', () => {
+  it('does not create retired event tables', () => {
     const db = new Database(':memory:');
     runMigrations(db);
 
@@ -13,7 +13,11 @@ describe('V2 schema', () => {
       .all() as { name: string }[])
       .map(row => row.name);
 
-    expect(tableNames).toContain('guidance_events');
+    expect(tableNames).not.toEqual(expect.arrayContaining([
+      'guidance_events',
+      'reflection_events',
+      'executor_route_events',
+    ]));
   });
 });
 

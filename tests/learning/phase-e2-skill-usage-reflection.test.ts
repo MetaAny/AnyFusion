@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { ReflectionEngine } from '../../src/learning/reflection-engine.js';
+import { SkillUsageCandidateBuilder } from '../../src/learning/skill-usage-candidate-builder.js';
 import type { SkillUsageEventRecord } from '../../src/storage/skill-usage-event-repo.js';
 
-describe('ReflectionEngine skill usage learning', () => {
+describe('SkillUsageCandidateBuilder', () => {
   it('turns completed skill usage events into pending learning candidates', () => {
-    const engine = new ReflectionEngine();
+    const builder = new SkillUsageCandidateBuilder();
     const event: SkillUsageEventRecord = {
       id: 'sue_1',
       taskId: 'task_1',
@@ -18,26 +18,21 @@ describe('ReflectionEngine skill usage learning', () => {
       createdAt: '2026-04-27T01:00:00Z',
     };
 
-    const result = engine.reflectOnSkillUsage(event);
+    const result = builder.build(event);
 
-    expect(result.event).toMatchObject({
-      sourceType: 'executor_skill_usage',
-      sourceId: 'sue_1',
-      taskId: 'task_1',
-    });
-    expect(result.candidate).toMatchObject({
+    expect(result).toMatchObject({
       kind: 'skill',
       status: 'pending',
-      sourceReflectionId: result.event.id,
+      sourceSkillUsageEventId: 'sue_1',
       sourceTaskId: 'task_1',
       safetyStatus: 'passed',
     });
-    expect(result.candidate?.title).toContain('test-driven-development');
-    expect(result.candidate?.content).toContain('TDD 流程完成且测试通过');
+    expect(result.title).toContain('test-driven-development');
+    expect(result.content).toContain('TDD 流程完成且测试通过');
   });
 
   it('turns failed skill usage events into workflow learning candidates without auto promotion', () => {
-    const engine = new ReflectionEngine();
+    const builder = new SkillUsageCandidateBuilder();
     const event: SkillUsageEventRecord = {
       id: 'sue_2',
       taskId: 'task_1',
@@ -51,14 +46,14 @@ describe('ReflectionEngine skill usage learning', () => {
       createdAt: '2026-04-27T01:05:00Z',
     };
 
-    const result = engine.reflectOnSkillUsage(event);
+    const result = builder.build(event);
 
-    expect(result.candidate).toMatchObject({
+    expect(result).toMatchObject({
       kind: 'workflow',
       status: 'pending',
       sourceTaskId: 'task_1',
     });
-    expect(result.candidate?.title).toContain('debugging');
-    expect(result.candidate?.content).toContain('调试流程缺少日志采集步骤');
+    expect(result.title).toContain('debugging');
+    expect(result.content).toContain('调试流程缺少日志采集步骤');
   });
 });
