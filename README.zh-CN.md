@@ -57,7 +57,7 @@ Executor 层采用 Adapter 机制，企业可以接入自己的垂类 Agent，�
 ```mermaid
 flowchart LR
   Intake[人员 / TUI / CLI / Gateway / 飞书] --> Session[MetaClaw Session<br/>Application Shell]
-  Session --> Planning[Planning Agent<br/>原生 Codex thread]
+  Session --> Planning[AnyFusion-Pi Planning Agent<br/>独立进程与会话]
   Planning --> Workflow[持久化 Kernel Workflow<br/>Inbox / Ledger / Application]
   Workflow --> Kernel[Control Kernel<br/>策略与授权]
   Kernel --> Runtime[Execution Runtime<br/>Frontier / Dispatch / Recovery]
@@ -81,16 +81,139 @@ flowchart LR
 
 ## 快速开始
 
-AnyFusion 需要 Node.js 22.19+ 和类 Unix shell。在 macOS 和 Windows 上，受支持的体验路径是 Docker Desktop 提供的统一 Linux Runtime；Docker 只承载产品 Runtime，不会为每个 Executor 再启动 sibling 容器。Codex/Pi 会在 Runtime 内作为子进程运行，并把工作目录设为对应 Subtask 的 Git worktree。只有明确设置 `METACLAW_EXECUTOR_BACKEND=docker` 时才使用旧的 sibling-container 后端。直接 Linux 开发仍可使用 WSL2 + Ubuntu。
+### macOS 原生安装（不依赖 Docker）
+
+当前 Developer Preview 可以直接在 macOS 上通过 Node.js 22.19+ 原生运行，
+不需要安装 Docker Desktop。Executor attempt 是本机子进程，每个 attempt
+使用自己独立的受管 Git worktree。
+
+Planner 目前仍维护在独立的 AnyFusion-Pi fork 中，尚未与 Runtime 一起发布为
+单一二进制文件。因此原生预览版首次安装需要构建两个仓库。请按照下面的目录
+结构将它们放在同一个父目录中。
+
+1. 安装系统依赖：
 
 ```bash
+brew install node@22 git ripgrep fd python@3.12
+export PATH="$(brew --prefix node@22)/bin:$PATH"
+node --version # 必须为 v22.19.0 或更高版本
+```
+
+2. 下载并构建 Runtime 与 Planner：
+
+```bash
+mkdir -p "$HOME/anyfusion-src"
+cd "$HOME/anyfusion-src"
+
 git clone https://github.com/MetaAny/AnyFusion.git
-cd AnyFusion
-./setup.sh
+git clone --branch codex/anyfusion-planner \
+  https://github.com/MetaAny/AnyFusion-Pi.git
+
+cd "$HOME/anyfusion-src/AnyFusion-Pi"
+npm ci --ignore-scripts
+npm run build:offline
+
+cd "$HOME/anyfusion-src/AnyFusion"
+npm ci
+npm run build
+
+# canonical worktree Executor。Planner 使用上面单独构建的 fork。
+npm install -g --ignore-scripts \
+  @openai/codex@0.144.1 \
+  @earendil-works/pi-coding-agent@0.80.2
+```
+
+3. 创建原生 provider 配置。先将下面两个占位值替换为实际配置：
+
+```bash
+export ANYFUSION_PROVIDER_KEY='替换为你的密钥'
+export ANYFUSION_PROVIDER_URL='https://你的-openai-兼容服务地址.example/v1'
+export ANYFUSION_CONFIG_HOME="$HOME/.config/anyfusion"
+
+mkdir -p \
+  "$ANYFUSION_CONFIG_HOME/planner" \
+  "$ANYFUSION_CONFIG_HOME/codex" \
+  "$ANYFUSION_CONFIG_HOME/pi-home/.pi/agent" \
+  "$HOME/.local/bin"
+
+cat > "$ANYFUSION_CONFIG_HOME/provider.env" <<EOF
+OPENAI_API_KEY=$ANYFUSION_PROVIDER_KEY
+OPENAI_BASE_URL=$ANYFUSION_PROVIDER_URL
+PI_SKIP_VERSION_CHECK=1
+PI_TELEMETRY=0
+EOF
+chmod 600 "$ANYFUSION_CONFIG_HOME/provider.env"
+
+cd "$HOME/anyfusion-src/AnyFusion"
+sed "s|__OPENAI_BASE_URL__|$ANYFUSION_PROVIDER_URL|g" \
+  docker/planner-pi-config/models.json \
+  > "$ANYFUSION_CONFIG_HOME/planner/models.json"
+cp docker/planner-pi-config/settings.json \
+  "$ANYFUSION_CONFIG_HOME/planner/settings.json"
+
+sed "s|__OPENAI_BASE_URL__|$ANYFUSION_PROVIDER_URL|g" \
+  docker/codex-config/executor/config.toml \
+  > "$ANYFUSION_CONFIG_HOME/codex/config.toml"
+
+sed "s|__OPENAI_BASE_URL__|$ANYFUSION_PROVIDER_URL|g" \
+  docker/pi-config/models.json \
+  > "$ANYFUSION_CONFIG_HOME/pi-home/.pi/agent/models.json"
+cp docker/pi-config/settings.json \
+  "$ANYFUSION_CONFIG_HOME/pi-home/.pi/agent/settings.json"
+```
+
+4. 安装原生启动器：
+
+```bash
+cat > "$HOME/.local/bin/anyfusion" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+ANYFUSION_SOURCE_ROOT="${ANYFUSION_SOURCE_ROOT:-$HOME/anyfusion-src/AnyFusion}"
+ANYFUSION_PI_SOURCE_ROOT="${ANYFUSION_PI_SOURCE_ROOT:-$HOME/anyfusion-src/AnyFusion-Pi}"
+ANYFUSION_CONFIG_HOME="${ANYFUSION_CONFIG_HOME:-$HOME/.config/anyfusion}"
+
+export METACLAW_HOME="${METACLAW_HOME:-$HOME/.local/share/anyfusion}"
+export METACLAW_EXECUTOR_BACKEND=worktree
+export METACLAW_PLANNER_COMMAND="$ANYFUSION_PI_SOURCE_ROOT/packages/coding-agent/dist/cli.js"
+export METACLAW_PLANNER_TUI_COMMAND="$METACLAW_PLANNER_COMMAND"
+export METACLAW_PLANNER_WORKDIR="$PWD"
+export METACLAW_PLANNER_HOME="$ANYFUSION_CONFIG_HOME/planner"
+export ANYFUSION_PLANNER_HOME="$METACLAW_PLANNER_HOME"
+export METACLAW_PLANNER_SESSION_DIR="$METACLAW_HOME/planner-sessions"
+export METACLAW_PLANNER_SCHEMA_PATH="$ANYFUSION_SOURCE_ROOT/dist/planning-agent-plan-v7.schema.json"
+export ANYFUSION_PLANNER_SCHEMA_PATH="$METACLAW_PLANNER_SCHEMA_PATH"
+export METACLAW_PLANNER_ENV_FILE="$ANYFUSION_CONFIG_HOME/provider.env"
+export METACLAW_CODEX_EXECUTOR_ENV_FILE="$ANYFUSION_CONFIG_HOME/provider.env"
+export METACLAW_PI_EXECUTOR_ENV_FILE="$ANYFUSION_CONFIG_HOME/provider.env"
+export METACLAW_EXECUTOR_CODEX_HOME="$ANYFUSION_CONFIG_HOME/codex"
+export METACLAW_EXECUTOR_PI_HOME="$ANYFUSION_CONFIG_HOME/pi-home"
+export METACLAW_PI_ATTEMPT_EXTENSION="$ANYFUSION_SOURCE_ROOT/dist/pi-attempt-tools.ts"
+export PI_SKIP_VERSION_CHECK=1
+export PI_TELEMETRY=0
+
+exec node "$ANYFUSION_SOURCE_ROOT/dist/index.js" "$@"
+EOF
+
+chmod +x "$HOME/.local/bin/anyfusion"
+grep -q 'HOME/.local/bin' "$HOME/.zshrc" 2>/dev/null \
+  || echo 'export PATH="$HOME/.local/bin:$(brew --prefix node@22)/bin:$PATH"' >> "$HOME/.zshrc"
+export PATH="$HOME/.local/bin:$(brew --prefix node@22)/bin:$PATH"
+```
+
+5. 进入希望 AnyFusion 操作的仓库或目录，然后启动 TUI：
+
+```bash
+cd /path/to/your/project
 anyfusion
 ```
 
-`setup.sh` 会安装依赖、构建 CLI、链接 `anyfusion` 并创建本地配置。Docker Runtime 镜像已内置 canonical Codex/Pi CLI；直接 Linux 开发时才需要自行安装对应 CLI。
+Runtime 状态保存在 `~/.local/share/anyfusion`。Executor 在受管 Subtask
+worktree 中修改文件，并继续通过现有 Git publication 链路发布结果。macOS
+原生安装不要设置 `METACLAW_EXECUTOR_BACKEND=docker`。
+
+以后拉取新代码后，分别在 AnyFusion-Pi 中运行 `npm run build:offline`，
+在 AnyFusion 中运行 `npm run build` 即可完成更新。
 
 然后直接用自然语言交给 AnyFusion 一个多步骤目标：
 

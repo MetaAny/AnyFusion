@@ -115,6 +115,39 @@ describe('SandboxedExecutorAdapter provider isolation', () => {
     }
   });
 
+  it('uses the native Pi attempt extension path when configured', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'metaclaw-worktree-pi-extension-'));
+    const envFile = join(directory, 'executor-pi.env');
+    const piHome = join(directory, 'pi-home');
+    const piAgentHome = join(piHome, '.pi', 'agent');
+    mkdirSync(piAgentHome, { recursive: true });
+    writeFileSync(envFile, [
+      'OPENAI_API_KEY=provider-secret',
+      'OPENAI_BASE_URL=https://provider.invalid/v1',
+    ].join('\n'));
+    writeFileSync(join(piAgentHome, 'models.json'), JSON.stringify({
+      providers: { anyint: { baseUrl: 'https://provider.invalid/v1' } },
+    }));
+    writeFileSync(join(piAgentHome, 'settings.json'), '{}');
+    vi.stubEnv('METACLAW_PI_EXECUTOR_ENV_FILE', envFile);
+    vi.stubEnv('METACLAW_EXECUTOR_PI_HOME', piHome);
+    vi.stubEnv('METACLAW_PI_ATTEMPT_EXTENSION', '/native/anyfusion/pi-attempt-tools.ts');
+    const { sandbox, create } = sandboxPort('worktree');
+    const adapter = new SandboxedExecutorAdapter(agentClass(), sandbox);
+
+    try {
+      const result = await adapter.execute(executorInput(directory));
+
+      expect(result.success).toBe(true);
+      const args = create.mock.calls[0]![0].args;
+      expect(args).toContain('/native/anyfusion/pi-attempt-tools.ts');
+      expect(args).not.toContain('/opt/metaclaw/pi-attempt-tools.ts');
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it('renders a scoped Codex home against the attempt model gateway in worktree mode', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'metaclaw-worktree-codex-provider-'));
     const envFile = join(directory, 'executor-codex.env');

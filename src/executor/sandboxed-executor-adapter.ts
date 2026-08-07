@@ -384,10 +384,12 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
       return { command, args };
     }
     if (this.name === 'pi-agent') {
+      const extensionPath = process.env.METACLAW_PI_ATTEMPT_EXTENSION?.trim()
+        || '/opt/metaclaw/pi-attempt-tools.ts';
       return {
         command,
         args: [
-          '--no-extensions', '--extension', '/opt/metaclaw/pi-attempt-tools.ts', '--tools',
+          '--no-extensions', '--extension', extensionPath, '--tools',
           'web_search,web_fetch,evidence_list,evidence_search,evidence_get,bash,read,write,edit,grep,find,ls',
           '-p', prompt,
         ],
