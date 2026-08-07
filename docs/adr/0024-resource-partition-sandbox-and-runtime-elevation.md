@@ -25,7 +25,7 @@ ControlKernel remains the only strategic authority. Kernel v3 may grant a bounde
 ### Worktree-first, workspace-durable execution
 
 The default execution attempt is a short-lived Codex/Pi child process launched
-inside the unified Runtime with `cwd` set to the persistent Task-generation +
+by the trusted Runtime with `cwd` set to the persistent Task-generation +
 Subtask Git worktree. The existing Docker attempt backend remains available as
 an explicit compatibility mode. Every Task generation + Subtask owns a
 persistent workspace record and immutable checkpoints. Retry and fallback may
@@ -86,7 +86,8 @@ outside SQLite. Permission interruptions and budget consumption are auditable
 Kernel facts rather than hidden Adapter prompts. Fine-grained mediation remains
 outside the product claim until an operation-specific adapter is implemented and
 tested. Planner remains focused on semantic decomposition and is involved only
-when an otherwise valid request lacks explicit authority. The default demo
-requires the unified Linux Runtime (Docker Desktop on macOS/Windows); sibling
-Executor containers are not required. Custom Executor registration remains a
+when an otherwise valid request lacks explicit authority. The default Linux
+server demo runs Runtime, Planner and canonical Executors as host processes.
+Docker remains for macOS/Windows deployment, CI image validation and the
+explicit compatibility backend. Custom Executor registration remains a
 Docker compatibility concern and is unchanged by this minimal worktree path.

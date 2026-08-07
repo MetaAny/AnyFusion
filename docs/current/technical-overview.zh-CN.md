@@ -586,11 +586,11 @@ anyfusion --gateway
 anyfusion --connect
 ```
 
-### 在 Docker 中运行（macOS / Windows / 容器化）
+### Linux 服务器裸机 launcher
 
-在 macOS 和 Windows 上，`docker/` 工作流将 Linux Runtime 作为 SSH 服务运行，为原生 TUI 提供真实 PTY，并允许通过 shell 或 VS Code Remote-SSH 浏览 `/workspace`。这条受支持路径需要 Docker Desktop，因为 Runtime 与 Executor CLI 依赖 Linux。一次 BuildKit 构建以 MetaClaw 为默认 context，并以兄弟 AnyFusion-Pi 仓库为必需的 `anyfusion-pi` context。最终镜像只包含一份 Node 22.19+，MetaClaw control process 位于 `/app`，隔离的 Planner process 位于 `/opt/anyfusion-planner/app`，两者保留独立依赖树；canonical Codex/Pi attempt 直接在该 Runtime 内作为 worktree 子进程运行。
+仓库根目录的 `anyfusion` 命令是本 Linux 服务器的默认 launcher。它构建 MetaClaw 和兄弟 AnyFusion-Pi，准备隔离的 Planner/Codex/Pi 配置目录，并将 MetaClaw 与 Planner 作为独立宿主机 Node.js 进程启动。canonical Codex/Pi attempt 复用宿主机已安装命令，在受管 Subtask worktree 中运行；本启动路径和 artifact smoke 不使用 Docker。
 
-完整 Runtime image 内置 MetaClaw CLI、v7 schema、编译后的 Planner MCP server、构建后的 AnyFusion-Pi 应用、版本化 host bridge、Codex/Pi CLI 与对应配置。`docker/Dockerfile.runtime` 构建两个仓库 context，并把两个独立应用树复制进最终镜像。Planner launcher 与 MetaClaw 注入的 `/app/dist/planner-mcp.js` 命令都使用 `/usr/local/bin/node`，禁止存在 `/opt/anyfusion-planner/node`。默认 launcher 只启动这一个 Runtime 容器，不挂 Docker socket、不构建 sibling Executor 镜像，也不创建 attempt control network。任一仓库源码变化后都使用 `docker/shell.ps1 -Rebuild`；只保留 workspace/data volume。完整要求见 [Phase 5 Runtime Security](phase-5-runtime-security.md)。
+每次 attempt 使用临时隔离的 Codex/Pi home 和 attempt-scoped model gateway token。Runtime 数据位于 `~/.local/share/anyfusion`，Agent 源配置位于 `~/.config/anyfusion`。使用 `anyfusion --no-build` 复用当前构建产物，使用 `anyfusion smoke --scenario artifact` 完成本机端到端 gate。原有 Runtime Dockerfile 和 `docker/shell.ps1` 继续用于 CI、跨平台部署和显式 compatibility backend 验证。
 
 ## 配置
 

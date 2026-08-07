@@ -81,25 +81,13 @@ flowchart LR
 
 ## 快速开始
 
-### macOS 原生安装（不依赖 Docker）
+### Linux 服务器裸机运行
 
-当前 Developer Preview 可以直接在 macOS 上通过 Node.js 22.19+ 原生运行，
-不需要安装 Docker Desktop。Executor attempt 是本机子进程，每个 attempt
-使用自己独立的受管 Git worktree。
+本服务器默认直接在宿主机运行 AnyFusion、兄弟 AnyFusion-Pi Planner、Codex
+和 Pi。Executor attempt 使用隔离的临时 Agent home 和受管 Git worktree。
+本机启动和 smoke 不需要 Docker。
 
-Planner 目前仍维护在独立的 AnyFusion-Pi fork 中，尚未与 Runtime 一起发布为
-单一二进制文件。因此原生预览版首次安装需要构建两个仓库。请按照下面的目录
-结构将它们放在同一个父目录中。
-
-1. 安装系统依赖：
-
-```bash
-brew install node@22 git ripgrep fd python@3.12
-export PATH="$(brew --prefix node@22)/bin:$PATH"
-node --version # 必须为 v22.19.0 或更高版本
-```
-
-2. 下载并构建 Runtime 与 Planner：
+1. 安装 Node.js 22.19+、npm、Git、Codex 和 Pi，并将两个仓库放在同一父目录：
 
 ```bash
 mkdir -p "$HOME/anyfusion-src"
@@ -109,119 +97,37 @@ git clone https://github.com/MetaAny/AnyFusion.git
 git clone --branch codex/anyfusion-planner \
   https://github.com/MetaAny/AnyFusion-Pi.git
 
-cd "$HOME/anyfusion-src/AnyFusion-Pi"
-npm ci --ignore-scripts
-npm run build:offline
-
 cd "$HOME/anyfusion-src/AnyFusion"
-npm ci
-npm run build
-
-# canonical worktree Executor。Planner 使用上面单独构建的 fork。
-npm install -g --ignore-scripts \
-  @openai/codex@0.144.1 \
-  @earendil-works/pi-coding-agent@0.80.2
 ```
 
-3. 创建原生 provider 配置。先将下面两个占位值替换为实际配置：
+2. 创建三个 provider 文件：
 
 ```bash
-export ANYFUSION_PROVIDER_KEY='替换为你的密钥'
-export ANYFUSION_PROVIDER_URL='https://你的-openai-兼容服务地址.example/v1'
-export ANYFUSION_CONFIG_HOME="$HOME/.config/anyfusion"
-
-mkdir -p \
-  "$ANYFUSION_CONFIG_HOME/planner" \
-  "$ANYFUSION_CONFIG_HOME/codex" \
-  "$ANYFUSION_CONFIG_HOME/pi-home/.pi/agent" \
-  "$HOME/.local/bin"
-
-cat > "$ANYFUSION_CONFIG_HOME/provider.env" <<EOF
-OPENAI_API_KEY=$ANYFUSION_PROVIDER_KEY
-OPENAI_BASE_URL=$ANYFUSION_PROVIDER_URL
-PI_SKIP_VERSION_CHECK=1
-PI_TELEMETRY=0
-EOF
-chmod 600 "$ANYFUSION_CONFIG_HOME/provider.env"
-
-cd "$HOME/anyfusion-src/AnyFusion"
-sed "s|__OPENAI_BASE_URL__|$ANYFUSION_PROVIDER_URL|g" \
-  docker/planner-pi-config/models.json \
-  > "$ANYFUSION_CONFIG_HOME/planner/models.json"
-cp docker/planner-pi-config/settings.json \
-  "$ANYFUSION_CONFIG_HOME/planner/settings.json"
-
-sed "s|__OPENAI_BASE_URL__|$ANYFUSION_PROVIDER_URL|g" \
-  docker/codex-config/executor/config.toml \
-  > "$ANYFUSION_CONFIG_HOME/codex/config.toml"
-
-sed "s|__OPENAI_BASE_URL__|$ANYFUSION_PROVIDER_URL|g" \
-  docker/pi-config/models.json \
-  > "$ANYFUSION_CONFIG_HOME/pi-home/.pi/agent/models.json"
-cp docker/pi-config/settings.json \
-  "$ANYFUSION_CONFIG_HOME/pi-home/.pi/agent/settings.json"
+cp docker/planner-pi.env.example docker/planner-pi.env
+cp docker/executor-codex.env.example docker/executor-codex.env
+cp docker/executor-pi.env.example docker/executor-pi.env
 ```
 
-4. 安装原生启动器：
+在每个文件中设置 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL`。
+
+3. 安装 launcher 并检查环境：
 
 ```bash
-cat > "$HOME/.local/bin/anyfusion" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-ANYFUSION_SOURCE_ROOT="${ANYFUSION_SOURCE_ROOT:-$HOME/anyfusion-src/AnyFusion}"
-ANYFUSION_PI_SOURCE_ROOT="${ANYFUSION_PI_SOURCE_ROOT:-$HOME/anyfusion-src/AnyFusion-Pi}"
-ANYFUSION_CONFIG_HOME="${ANYFUSION_CONFIG_HOME:-$HOME/.config/anyfusion}"
-
-export METACLAW_HOME="${METACLAW_HOME:-$HOME/.local/share/anyfusion}"
-export METACLAW_EXECUTOR_BACKEND=worktree
-export METACLAW_PLANNER_COMMAND="$ANYFUSION_PI_SOURCE_ROOT/packages/coding-agent/dist/cli.js"
-export METACLAW_PLANNER_TUI_COMMAND="$METACLAW_PLANNER_COMMAND"
-export METACLAW_PLANNER_WORKDIR="$PWD"
-export METACLAW_PLANNER_HOME="$ANYFUSION_CONFIG_HOME/planner"
-export ANYFUSION_PLANNER_HOME="$METACLAW_PLANNER_HOME"
-export METACLAW_PLANNER_SESSION_DIR="$METACLAW_HOME/planner-sessions"
-export METACLAW_PLANNER_SCHEMA_PATH="$ANYFUSION_SOURCE_ROOT/dist/planning-agent-plan-v7.schema.json"
-export ANYFUSION_PLANNER_SCHEMA_PATH="$METACLAW_PLANNER_SCHEMA_PATH"
-export METACLAW_PLANNER_ENV_FILE="$ANYFUSION_CONFIG_HOME/provider.env"
-export METACLAW_CODEX_EXECUTOR_ENV_FILE="$ANYFUSION_CONFIG_HOME/provider.env"
-export METACLAW_PI_EXECUTOR_ENV_FILE="$ANYFUSION_CONFIG_HOME/provider.env"
-export METACLAW_EXECUTOR_CODEX_HOME="$ANYFUSION_CONFIG_HOME/codex"
-export METACLAW_EXECUTOR_PI_HOME="$ANYFUSION_CONFIG_HOME/pi-home"
-export METACLAW_PI_ATTEMPT_EXTENSION="$ANYFUSION_SOURCE_ROOT/dist/pi-attempt-tools.ts"
-export PI_SKIP_VERSION_CHECK=1
-export PI_TELEMETRY=0
-
-exec node "$ANYFUSION_SOURCE_ROOT/dist/index.js" "$@"
-EOF
-
-chmod +x "$HOME/.local/bin/anyfusion"
-grep -q 'HOME/.local/bin' "$HOME/.zshrc" 2>/dev/null \
-  || echo 'export PATH="$HOME/.local/bin:$(brew --prefix node@22)/bin:$PATH"' >> "$HOME/.zshrc"
-export PATH="$HOME/.local/bin:$(brew --prefix node@22)/bin:$PATH"
+./setup.sh
+anyfusion --check
 ```
 
-5. 进入希望 AnyFusion 操作的仓库或目录，然后启动 TUI：
+4. 启动 TUI 或运行端到端 artifact gate：
 
 ```bash
-cd /path/to/your/project
 anyfusion
+anyfusion smoke --scenario artifact
 ```
 
-Runtime 状态保存在 `~/.local/share/anyfusion`。Executor 在受管 Subtask
-worktree 中修改文件，并继续通过现有 Git publication 链路发布结果。macOS
-原生安装不要设置 `METACLAW_EXECUTOR_BACKEND=docker`。
-
-以后拉取新代码后，分别在 AnyFusion-Pi 中运行 `npm run build:offline`，
-在 AnyFusion 中运行 `npm run build` 即可完成更新。
-
-然后直接用自然语言交给 AnyFusion 一个多步骤目标：
-
-```text
-分析这些合同，将法律和商务审查分配给合适的专业 Agent，并交付一份附带证据的综合风险矩阵。
-```
-
-AnyFusion 会识别请求、在需要时创建持久任务、授权工作图、分发就绪工作单元、验证完成协议，并保存相关证据与产物。如已配置真实凭证，可另行运行 `npm run smoke:anyfusion` 完成端到端验证。
+launcher 默认构建两个仓库并复用宿主机已安装的 Codex/Pi。
+`anyfusion --no-build` 可复用当前构建产物。Runtime 数据位于
+`~/.local/share/anyfusion`，隔离的 Agent 源配置位于 `~/.config/anyfusion`。
+原有 Dockerfile 继续用于 CI、跨平台部署和显式 compatibility backend。
 
 ## 项目状态
 

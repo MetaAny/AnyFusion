@@ -49,6 +49,7 @@ replacing those semantics.
 
 ## Active Delivery
 
+- [Native Linux server launcher](plans/2026-07-23-linux-host-launcher.md): runs Runtime, AnyFusion-Pi and canonical worktree Executors as isolated host processes on the current server without requiring Docker.
 - [Node 22 single runtime image migration](plans/2026-08-05-node-22-single-runtime-image-migration.md): unifies MetaClaw and AnyFusion-Pi on one Node 22.19+ image and executable while preserving separate processes and dependency trees.
 - [Active permission review](plans/2026-08-04-active-permission-review.md): projects current-session durable permission requests to a transient Pi native Selector while preserving Kernel authorization and non-interactive natural-language resolution.
 - [Command surface and task selection cleanup](plans/2026-08-04-command-surface-and-task-selection-cleanup.md): first-batch removal of non-functional command surfaces, richer Executor/Profile facts, and title-first Task completion in AnyFusion-Pi.

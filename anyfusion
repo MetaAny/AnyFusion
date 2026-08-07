@@ -1,90 +1,83 @@
 #!/usr/bin/env bash
 
-# Native Linux launcher for AnyFusion.
-# It replaces the Windows Docker/SSH workflow in docker/shell.ps1 when the
-# repository is run directly on a Linux host.
+# Native Linux launcher for the AnyFusion Runtime, Planner, and worktree Executors.
 set -Eeuo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DOCKER_DIR="$REPO_ROOT/docker"
-APP_ENTRY="$REPO_ROOT/dist/index.js"
-PLANNER_SCHEMA="$REPO_ROOT/dist/planning-agent-plan-v4.schema.json"
-PLANNER_MCP="$REPO_ROOT/dist/planner-mcp.js"
+resolve_script_path() {
+  local source_path="${BASH_SOURCE[0]}"
+  local source_dir
+  local link_target
 
-PLANNER_ENV_FILE="$DOCKER_DIR/planner-codex.env"
-CODEX_EXECUTOR_ENV_FILE="$DOCKER_DIR/executor-codex.env"
-PI_EXECUTOR_ENV_FILE="$DOCKER_DIR/executor-pi.env"
+  while [[ -L "$source_path" ]]; do
+    source_dir="$(cd -P "$(dirname "$source_path")" && pwd)"
+    link_target="$(readlink "$source_path")"
+    if [[ "$link_target" == /* ]]; then
+      source_path="$link_target"
+    else
+      source_path="$source_dir/$link_target"
+    fi
+  done
 
-METACLAW_HOME="${METACLAW_HOME:-$HOME/.metaclaw}"
-AGENT_RUNTIME_DIR="${ANYFUSION_AGENT_RUNTIME_DIR:-$METACLAW_HOME/agent-runtime}"
-PLANNER_CODEX_HOME="$AGENT_RUNTIME_DIR/codex/planner"
-EXECUTOR_CODEX_HOME="$AGENT_RUNTIME_DIR/codex/executor"
-PI_AGENT_DIR="$AGENT_RUNTIME_DIR/pi"
-
-if [[ -t 1 ]]; then
-  GREEN=$'\033[0;32m'
-  YELLOW=$'\033[1;33m'
-  RED=$'\033[0;31m'
-  RESET=$'\033[0m'
-else
-  GREEN=''
-  YELLOW=''
-  RED=''
-  RESET=''
-fi
-
-info() {
-  printf '%s[INFO]%s %s\n' "$GREEN" "$RESET" "$*"
+  source_dir="$(cd -P "$(dirname "$source_path")" && pwd)"
+  printf '%s/%s\n' "$source_dir" "$(basename "$source_path")"
 }
 
-warn() {
-  printf '%s[WARN]%s %s\n' "$YELLOW" "$RESET" "$*" >&2
+SCRIPT_PATH="$(resolve_script_path)"
+REPO_ROOT="$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd)"
+INVOKE_CWD="$PWD"
+ANYFUSION_PI_ROOT="${ANYFUSION_PI_ROOT:-$(dirname "$REPO_ROOT")/AnyFusion-Pi}"
+ANYFUSION_CONFIG_HOME="${ANYFUSION_CONFIG_HOME:-$HOME/.config/anyfusion}"
+METACLAW_HOME="${METACLAW_HOME:-$HOME/.local/share/anyfusion}"
+PLANNER_ENV_FILE="${ANYFUSION_PLANNER_ENV_FILE:-$REPO_ROOT/docker/planner-pi.env}"
+CODEX_ENV_FILE="${ANYFUSION_CODEX_EXECUTOR_ENV_FILE:-$REPO_ROOT/docker/executor-codex.env}"
+PI_ENV_FILE="${ANYFUSION_PI_EXECUTOR_ENV_FILE:-$REPO_ROOT/docker/executor-pi.env}"
+PLANNER_HOME="$ANYFUSION_CONFIG_HOME/planner"
+CODEX_HOME_DIR="$ANYFUSION_CONFIG_HOME/codex"
+PI_HOME_DIR="$ANYFUSION_CONFIG_HOME/pi-home"
+PLANNER_WRAPPER="$ANYFUSION_CONFIG_HOME/bin/anyfusion-planner"
+APP_ENTRY="$REPO_ROOT/dist/index.js"
+PLANNER_SCHEMA="$REPO_ROOT/dist/planning-agent-plan-v7.schema.json"
+PI_ATTEMPT_EXTENSION="$REPO_ROOT/dist/pi-attempt-tools.ts"
+PLANNER_CLI="$ANYFUSION_PI_ROOT/packages/coding-agent/dist/cli.js"
+
+info() {
+  printf '[INFO] %s\n' "$*"
 }
 
 fail() {
-  printf '%s[ERROR]%s %s\n' "$RED" "$RESET" "$*" >&2
+  printf '[ERROR] %s\n' "$*" >&2
   exit 1
 }
 
 show_help() {
   cat <<'EOF'
-用法:
-  ./anyfusion                     构建最新代码并启动 AnyFusion TUI
-  ./anyfusion gateway run         前台启动 Gateway
-  ./anyfusion gateway doctor      检查 Gateway 配置
-  ./anyfusion --script <文件>      运行脚本任务
-  ./anyfusion --check             仅检查并准备宿主机运行环境
-  ./anyfusion --launcher-help     显示本帮助
+Usage:
+  anyfusion                         Build both repositories and start the native TUI
+  anyfusion --script <file>         Run a scripted flow on the native Runtime
+  anyfusion smoke [smoke options]   Run the native Planner-to-Executor smoke
+  anyfusion build                   Build AnyFusion and AnyFusion-Pi
+  anyfusion --no-build [args...]    Reuse existing build outputs
+  anyfusion --check                 Validate and prepare the native server runtime
+  anyfusion --launcher-help         Show this help
 
-环境变量:
-  METACLAW_HOME                   数据目录，默认 ~/.metaclaw
-  ANYFUSION_AGENT_RUNTIME_DIR     隔离的 Codex/Pi 配置目录
+Runtime:
+  - Runtime and AnyFusion-Pi are separate host Node.js processes.
+  - Codex and Pi use the existing host-installed commands.
+  - Executor attempts use managed Git worktrees and isolated temporary homes.
+  - Docker is not required by this launcher or its smoke command.
+
+Environment:
+  ANYFUSION_PI_ROOT                 AnyFusion-Pi checkout; defaults to ../AnyFusion-Pi
+  ANYFUSION_CONFIG_HOME             Isolated Agent config root; defaults to ~/.config/anyfusion
+  METACLAW_HOME                     Runtime data root; defaults to ~/.local/share/anyfusion
+  ANYFUSION_PLANNER_ENV_FILE        Planner provider env file
+  ANYFUSION_CODEX_EXECUTOR_ENV_FILE Codex provider env file
+  ANYFUSION_PI_EXECUTOR_ENV_FILE    Pi provider env file
 EOF
 }
 
 require_command() {
-  local command_name="$1"
-  local install_hint="$2"
-  if ! command -v "$command_name" >/dev/null 2>&1; then
-    fail "缺少命令 '$command_name'。$install_hint"
-  fi
-}
-
-check_host_prerequisites() {
-  if [[ "$(uname -s)" != 'Linux' ]]; then
-    fail '此启动器仅用于 Linux 宿主机；Windows Docker 环境请继续使用 docker/shell.ps1。'
-  fi
-
-  require_command node '请安装 Node.js 20 或更高版本。'
-  require_command npm '请随 Node.js 安装 npm。'
-  require_command codex 'Planner 和默认 Codex 执行器依赖 Codex CLI。'
-  require_command pi 'Pi 执行器依赖 Pi CLI。'
-
-  local node_major
-  node_major="$(node -p 'Number(process.versions.node.split(".")[0])')"
-  if (( node_major < 20 )); then
-    fail "Node.js 版本过低：$(node --version)，需要 20 或更高版本。"
-  fi
+  command -v "$1" >/dev/null 2>&1 || fail "Missing required command: $1"
 }
 
 env_file_value() {
@@ -112,133 +105,176 @@ env_file_value() {
 validate_provider_env() {
   local label="$1"
   local env_file="$2"
-
-  if [[ ! -f "$env_file" ]]; then
-    fail "缺少 $env_file；请从对应的 .env.example 复制并填写。"
-  fi
-
-  local api_key
-  local base_url
-  api_key="$(env_file_value "$env_file" OPENAI_API_KEY)"
-  base_url="$(env_file_value "$env_file" OPENAI_BASE_URL)"
-
-  [[ -n "$api_key" ]] || fail "$label 的 OPENAI_API_KEY 为空：$env_file"
-  [[ -n "$base_url" ]] || fail "$label 的 OPENAI_BASE_URL 为空：$env_file"
-  [[ "$base_url" != *$'\n'* && "$base_url" != *$'\r'* && "$base_url" != *'"'* ]] \
-    || fail "$label 的 OPENAI_BASE_URL 含有无法写入配置文件的字符。"
+  [[ -f "$env_file" ]] || fail "Missing $env_file; copy its .example file and configure the provider."
+  [[ -n "$(env_file_value "$env_file" OPENAI_API_KEY)" ]] \
+    || fail "$label OPENAI_API_KEY is empty in $env_file"
+  [[ -n "$(env_file_value "$env_file" OPENAI_BASE_URL)" ]] \
+    || fail "$label OPENAI_BASE_URL is empty in $env_file"
 }
 
-ensure_dependencies() {
-  local npm_lock="$REPO_ROOT/node_modules/.package-lock.json"
-  if [[ ! -d "$REPO_ROOT/node_modules" || ! -f "$npm_lock" \
-    || "$REPO_ROOT/package-lock.json" -nt "$npm_lock" \
-    || "$REPO_ROOT/package.json" -nt "$npm_lock" ]]; then
-    info '安装与锁文件一致的 Node.js 依赖...'
+check_prerequisites() {
+  [[ "$(uname -s)" == 'Linux' ]] || fail 'The native launcher requires Linux.'
+  require_command node
+  require_command npm
+  require_command git
+  require_command codex
+  require_command pi
+
+  node -e '
+    const actual = process.versions.node.split(".").map(Number);
+    const minimum = [22, 19, 0];
+    for (let index = 0; index < minimum.length; index += 1) {
+      if (actual[index] > minimum[index]) process.exit(0);
+      if (actual[index] < minimum[index]) process.exit(1);
+    }
+  ' || fail "Node.js >=22.19.0 is required; found $(node --version)."
+
+  [[ -f "$ANYFUSION_PI_ROOT/package.json" ]] \
+    || fail "Missing sibling AnyFusion-Pi repository at $ANYFUSION_PI_ROOT"
+  validate_provider_env 'Planner' "$PLANNER_ENV_FILE"
+  validate_provider_env 'Codex Executor' "$CODEX_ENV_FILE"
+  validate_provider_env 'Pi Executor' "$PI_ENV_FILE"
+}
+
+dependencies_stale() {
+  local root="$1"
+  [[ ! -d "$root/node_modules" || ! -f "$root/node_modules/.package-lock.json" \
+    || "$root/package-lock.json" -nt "$root/node_modules/.package-lock.json" \
+    || "$root/package.json" -nt "$root/node_modules/.package-lock.json" ]]
+}
+
+build_sources() {
+  if dependencies_stale "$ANYFUSION_PI_ROOT"; then
+    info 'Installing AnyFusion-Pi dependencies...'
+    (cd "$ANYFUSION_PI_ROOT" && npm ci --ignore-scripts)
+  fi
+  info 'Building AnyFusion-Pi...'
+  (cd "$ANYFUSION_PI_ROOT" && npm run build:offline)
+
+  if dependencies_stale "$REPO_ROOT"; then
+    info 'Installing AnyFusion dependencies...'
     (cd "$REPO_ROOT" && npm ci)
   fi
+  info 'Building AnyFusion...'
+  (cd "$REPO_ROOT" && npm run build)
 }
 
-build_latest_source() {
-  info '构建仓库最新代码...'
-  (cd "$REPO_ROOT" && npm run build)
-
-  [[ -f "$APP_ENTRY" ]] || fail "构建未生成 $APP_ENTRY"
-  [[ -f "$PLANNER_SCHEMA" ]] || fail "构建未生成 $PLANNER_SCHEMA"
-  [[ -f "$PLANNER_MCP" ]] || fail "构建未生成 $PLANNER_MCP"
+require_build_outputs() {
+  local path
+  for path in "$APP_ENTRY" "$PLANNER_SCHEMA" "$PI_ATTEMPT_EXTENSION" "$PLANNER_CLI"; do
+    [[ -f "$path" ]] || fail "Missing build output: $path; run 'anyfusion build'."
+  done
 }
 
 render_template() {
-  local template_path="$1"
-  local output_path="$2"
+  local template="$1"
+  local output="$2"
   local base_url="$3"
-  local content
-  local docker_planner_mcp='/app/dist/planner-mcp.js'
-
-  content="$(<"$template_path")"
-  content="${content//__OPENAI_BASE_URL__/$base_url}"
-  content="${content//$docker_planner_mcp/$PLANNER_MCP}"
-  printf '%s\n' "$content" > "$output_path"
+  sed "s|__OPENAI_BASE_URL__|${base_url}|g" "$template" > "$output"
 }
 
 prepare_runtime_configuration() {
   local planner_base_url
-  local codex_executor_base_url
-  local pi_executor_base_url
-
-  validate_provider_env 'Planner Codex' "$PLANNER_ENV_FILE"
-  validate_provider_env 'Executor Codex' "$CODEX_EXECUTOR_ENV_FILE"
-  validate_provider_env 'Executor Pi' "$PI_EXECUTOR_ENV_FILE"
+  local codex_base_url
+  local pi_base_url
+  local node_path
 
   planner_base_url="$(env_file_value "$PLANNER_ENV_FILE" OPENAI_BASE_URL)"
-  codex_executor_base_url="$(env_file_value "$CODEX_EXECUTOR_ENV_FILE" OPENAI_BASE_URL)"
-  pi_executor_base_url="$(env_file_value "$PI_EXECUTOR_ENV_FILE" OPENAI_BASE_URL)"
+  codex_base_url="$(env_file_value "$CODEX_ENV_FILE" OPENAI_BASE_URL)"
+  pi_base_url="$(env_file_value "$PI_ENV_FILE" OPENAI_BASE_URL)"
+  node_path="$(command -v node)"
 
   mkdir -p \
     "$METACLAW_HOME" \
-    "$PLANNER_CODEX_HOME" \
-    "$EXECUTOR_CODEX_HOME" \
-    "$PI_AGENT_DIR"
+    "$METACLAW_HOME/planner-sessions" \
+    "$PLANNER_HOME" \
+    "$CODEX_HOME_DIR" \
+    "$PI_HOME_DIR/.pi/agent" \
+    "$(dirname "$PLANNER_WRAPPER")"
 
-  render_template \
-    "$DOCKER_DIR/codex-config/planner/config.toml" \
-    "$PLANNER_CODEX_HOME/config.toml" \
-    "$planner_base_url"
-  render_template \
-    "$DOCKER_DIR/codex-config/executor/config.toml" \
-    "$EXECUTOR_CODEX_HOME/config.toml" \
-    "$codex_executor_base_url"
-  render_template \
-    "$DOCKER_DIR/pi-config/models.json" \
-    "$PI_AGENT_DIR/models.json" \
-    "$pi_executor_base_url"
-  cp "$DOCKER_DIR/pi-config/settings.json" "$PI_AGENT_DIR/settings.json"
-
-  rm -rf "$PLANNER_CODEX_HOME/skills"
-  cp -R "$DOCKER_DIR/codex-config/planner/skills" "$PLANNER_CODEX_HOME/skills"
+  render_template "$REPO_ROOT/docker/planner-pi-config/models.json" "$PLANNER_HOME/models.json" "$planner_base_url"
+  cp "$REPO_ROOT/docker/planner-pi-config/settings.json" "$PLANNER_HOME/settings.json"
+  render_template "$REPO_ROOT/docker/codex-config/executor/config.toml" "$CODEX_HOME_DIR/config.toml" "$codex_base_url"
+  render_template "$REPO_ROOT/docker/pi-config/models.json" "$PI_HOME_DIR/.pi/agent/models.json" "$pi_base_url"
+  cp "$REPO_ROOT/docker/pi-config/settings.json" "$PI_HOME_DIR/.pi/agent/settings.json"
+  printf '#!/usr/bin/env bash\nexec %q %q "$@"\n' "$node_path" "$PLANNER_CLI" > "$PLANNER_WRAPPER"
+  chmod 700 "$PLANNER_WRAPPER"
 
   if [[ ! -f "$METACLAW_HOME/config.yaml" ]]; then
-    cp "$DOCKER_DIR/tui-config.yaml" "$METACLAW_HOME/config.yaml"
-    info "已创建默认运行配置：$METACLAW_HOME/config.yaml"
+    cp "$REPO_ROOT/docker/tui-config.yaml" "$METACLAW_HOME/config.yaml"
   fi
 
   export METACLAW_HOME
-  export METACLAW_PLANNER_ENV_FILE="$PLANNER_ENV_FILE"
-  export METACLAW_CODEX_EXECUTOR_ENV_FILE="$CODEX_EXECUTOR_ENV_FILE"
-  export METACLAW_PI_EXECUTOR_ENV_FILE="$PI_EXECUTOR_ENV_FILE"
-  export METACLAW_PLANNER_CODEX_HOME="$PLANNER_CODEX_HOME"
-  export METACLAW_EXECUTOR_CODEX_HOME="$EXECUTOR_CODEX_HOME"
+  export METACLAW_EXECUTOR_BACKEND=worktree
+  export METACLAW_PLANNER_COMMAND="$PLANNER_WRAPPER"
+  export METACLAW_PLANNER_TUI_COMMAND="$PLANNER_WRAPPER"
+  export METACLAW_PLANNER_WORKDIR="$INVOKE_CWD"
+  export METACLAW_PLANNER_HOME="$PLANNER_HOME"
+  export ANYFUSION_PLANNER_HOME="$PLANNER_HOME"
+  export METACLAW_PLANNER_SESSION_DIR="$METACLAW_HOME/planner-sessions"
   export METACLAW_PLANNER_SCHEMA_PATH="$PLANNER_SCHEMA"
-  export METACLAW_PLANNER_WORKDIR="$REPO_ROOT"
-  export PI_CODING_AGENT_DIR="$PI_AGENT_DIR"
-  export PI_SKIP_VERSION_CHECK="${PI_SKIP_VERSION_CHECK:-1}"
-  export PI_TELEMETRY="${PI_TELEMETRY:-0}"
+  export ANYFUSION_PLANNER_SCHEMA_PATH="$PLANNER_SCHEMA"
+  export METACLAW_PLANNER_ENV_FILE="$PLANNER_ENV_FILE"
+  export METACLAW_CODEX_EXECUTOR_ENV_FILE="$CODEX_ENV_FILE"
+  export METACLAW_PI_EXECUTOR_ENV_FILE="$PI_ENV_FILE"
+  export METACLAW_EXECUTOR_CODEX_HOME="$CODEX_HOME_DIR"
+  export METACLAW_EXECUTOR_PI_HOME="$PI_HOME_DIR"
+  export METACLAW_PI_ATTEMPT_EXTENSION="$PI_ATTEMPT_EXTENSION"
+  export PI_SKIP_VERSION_CHECK=1
+  export PI_TELEMETRY=0
 }
 
 main() {
-  case "${1:-}" in
-    --launcher-help)
+  local skip_build=false
+  local command="${1:-run}"
+
+  case "$command" in
+    --launcher-help|-h)
       show_help
-      return 0
+      return
+      ;;
+    --no-build)
+      skip_build=true
+      shift
+      command="${1:-run}"
       ;;
   esac
 
-  cd "$REPO_ROOT"
-  check_host_prerequisites
-  ensure_dependencies
-  build_latest_source
-  prepare_runtime_configuration
+  check_prerequisites
 
-  if [[ "${1:-}" == '--check' ]]; then
-    info 'Linux 宿主机运行环境检查通过。'
-    printf '  Repository: %s\n' "$REPO_ROOT"
-    printf '  MetaClaw home: %s\n' "$METACLAW_HOME"
-    printf '  Planner Codex home: %s\n' "$PLANNER_CODEX_HOME"
-    printf '  Executor Codex home: %s\n' "$EXECUTOR_CODEX_HOME"
-    printf '  Executor Pi home: %s\n' "$PI_AGENT_DIR"
-    return 0
+  if [[ "$command" == '--check' ]]; then
+    require_build_outputs
+    prepare_runtime_configuration
+    info 'Native AnyFusion runtime is ready.'
+    printf '  Runtime: %s\n' "$REPO_ROOT"
+    printf '  Planner: %s\n' "$ANYFUSION_PI_ROOT"
+    printf '  Codex: %s\n' "$(command -v codex)"
+    printf '  Pi: %s\n' "$(command -v pi)"
+    printf '  Data: %s\n' "$METACLAW_HOME"
+    printf '  Agent config: %s\n' "$ANYFUSION_CONFIG_HOME"
+    return
   fi
 
-  info '启动 AnyFusion...'
+  if [[ "$command" == 'build' ]]; then
+    build_sources
+    return
+  fi
+
+  if [[ "$skip_build" == false ]]; then
+    build_sources
+  fi
+  require_build_outputs
+  prepare_runtime_configuration
+
+  if [[ "$command" == 'smoke' ]]; then
+    shift
+    export METACLAW_SMOKE_NATIVE=true
+    unset METACLAW_HOME
+    cd "$REPO_ROOT"
+    exec node "$REPO_ROOT/scripts/smoke-metaclaw-real-task.mjs" "$@"
+  fi
+
+  cd "$INVOKE_CWD"
   exec node "$APP_ENTRY" "$@"
 }
 

@@ -51,6 +51,7 @@ root. Detailed ownership and dependency rules live in
 
 Main entry points:
 
+- [`anyfusion`](anyfusion) — native Linux server launcher and worktree smoke entry.
 - [`src/index.ts`](src/index.ts) — composition and mode selection.
 - [`src/session/metaclaw-session.ts`](src/session/metaclaw-session.ts) — Application Shell.
 - [`src/planning/anyfusion-planning-agent.ts`](src/planning/anyfusion-planning-agent.ts) and
@@ -92,6 +93,8 @@ Tests mirror source domains under [`tests/`](tests/). Scenarios and fixtures are
 
 - `npm install`, `npm run dev`, `npm run build`, `npm run start`
 - `npm run lint`, `npm test`, `npm run test:watch`
+- `anyfusion --check`, `anyfusion`, `anyfusion --no-build`
+- `anyfusion smoke --scenario artifact` — native host-process end-to-end gate.
 - `npm run smoke:metaclaw` — native Planner-session smoke.
 - `npm run smoke:metaclaw -- --scenario artifact` — Planner-to-Executor artifact
   gate; see [runtime security](docs/current/phase-5-runtime-security.md).
@@ -109,6 +112,12 @@ host check. Core policy, execution, or storage changes require focused tests at
 the owning seam.
 
 For the AnyFusion-Pi integration, local Docker validation covers both repositories in one Node 22.19+ runtime image, their isolated dependency trees and processes, the Unix socket bridge, stdin/stdout Planner RPC, Session-to-Kernel handoff, and unchanged core regressions. The Pi fork uses `npm run build:offline` through the required `anyfusion-pi` BuildKit context; do not add a prebuilt Planner-image fallback, embed a second Node runtime, use a host-global Pi install, or run Planner code inside the MetaClaw process.
+
+On this Linux server, `anyfusion` is the canonical startup path. Runtime and
+AnyFusion-Pi are separate host Node.js processes, canonical Executors reuse the
+installed `codex` and `pi` commands, and attempts use isolated homes plus
+managed Git worktrees. Docker is retained for CI, cross-platform deployment,
+and explicit compatibility-backend validation.
 
 ## Code, Plans, And Commits
 

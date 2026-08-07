@@ -3,7 +3,8 @@
 ## Runtime topology
 
 The default backend runs the canonical Codex/Pi CLI as a trusted child process
-inside the unified Runtime container. Its working directory is the existing
+of the Runtime. On the supported Linux server path, Runtime, Planner and
+Executors are host processes. Its working directory is the existing
 private Subtask Git worktree; capability, evidence and model-gateway services
 use loopback addresses. This is the minimal demo boundary and does not claim a
 second OS-level sandbox for the child process.
@@ -124,8 +125,8 @@ model gateway → persistent workspace/artifact → container cleanup. The defau
 smoke instead verifies native Planner-thread continuity and does not prove the
 Executor artifact path. The attempt itself never receives the Engine socket.
 
-Worktree validation additionally requires a Linux Runtime image with the trusted
-Codex/Pi CLIs installed. The focused gate verifies child-process start, loopback
+Worktree validation requires Linux and trusted Codex/Pi CLI commands. The native
+artifact gate verifies child-process start, loopback
 capability/evidence services, cancellation, checkpoint/delta capture and Git
 publication without sibling Executor containers. Docker integration remains
 compatibility coverage.

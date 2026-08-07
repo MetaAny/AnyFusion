@@ -422,7 +422,7 @@ function readPlannerInteractions(repoRoot, metaclawHome) {
 }
 
 export function runSmoke(rawArgs = process.argv.slice(2), env = process.env) {
-  if (env.METACLAW_SMOKE_IN_DOCKER !== 'true') {
+  if (env.METACLAW_SMOKE_NATIVE !== 'true' && env.METACLAW_SMOKE_IN_DOCKER !== 'true') {
     runDockerSmoke(rawArgs, env);
     return;
   }
@@ -565,7 +565,9 @@ function runDockerSmoke(rawArgs, env) {
     return;
   }
   const repoRoot = resolve(process.cwd());
-  const anyFusionPiRoot = resolve(repoRoot, '..', 'AnyFusion-Pi');
+  const anyFusionPiRoot = resolve(
+    env.ANYFUSION_PI_ROOT ?? join(repoRoot, '..', 'AnyFusion-Pi'),
+  );
   if (!existsSync(join(anyFusionPiRoot, 'package.json'))) {
     throw new Error(`Smoke requires the sibling AnyFusion-Pi repository at ${anyFusionPiRoot}`);
   }
