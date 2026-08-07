@@ -20,7 +20,7 @@ const pythonHelloFileName = 'hello.py';
 const pythonHelloSource = 'print("Hello world")';
 const pythonHelloOutput = 'Hello world';
 export const plannerMemoryMarker = 'planner-memory-sunrise';
-const scenarioNames = new Set(['planner-session', 'artifact', 'python-hello']);
+const scenarioNames = new Set(['planner-session', 'artifact', 'python-hello', 'pi-research']);
 
 export function readOption(args, name) {
   const inline = args.find(arg => arg.startsWith(`${name}=`));
@@ -118,6 +118,14 @@ export function buildScenarioScript(scenario) {
     ].join('\n');
   }
 
+  if (scenario === 'pi-research') {
+    return [
+      '请创建一个持久调研任务，不要直接回复：使用 web_search 和 web_fetch 核验 Node.js 官方首页域名、页面标题和首页对 Node.js 的描述，给出带来源引用的调研报告。不要修改工作区。',
+      '/exit',
+      '',
+    ].join('\n');
+  }
+
   return [
     `请在当前工作区新建 ${pythonHelloFileName}，内容严格为一行 ${pythonHelloSource}。使用 python3 运行该文件，并确认标准输出严格为 ${pythonHelloOutput}。`,
     '/exit',
@@ -162,6 +170,7 @@ export function readAuthoritativeTaskState(metaclawHome) {
       `).all(),
       receipts: db.prepare(`
         SELECT attempt_id AS attemptId, task_id AS taskId, subtask_id AS subtaskId,
+               agent_class_name AS agentClassName,
                terminal_state AS terminalState, error_code AS errorCode,
                error_detail AS errorDetail, completed_at AS completedAt
         FROM executor_attempt_receipts
@@ -244,6 +253,7 @@ export function verifyAuthoritativeTaskState(state) {
     throw new Error(`Smoke failed: authoritative Subtask ${unfinishedSubtask.id} is ${unfinishedSubtask.status}, not done`);
   }
 
+  const latestReceipts = [];
   for (const subtask of subtasks) {
     const latestReceipt = state.receipts.find(receipt => (
       receipt.taskId === task.id && receipt.subtaskId === subtask.id
@@ -254,6 +264,7 @@ export function verifyAuthoritativeTaskState(state) {
         `Authoritative state: ${formatAuthoritativeFailure(state)}`,
       ].join('\n'));
     }
+    latestReceipts.push(latestReceipt);
   }
 
   const publications = state.publications.filter(publication => publication.taskId === task.id);
@@ -277,6 +288,7 @@ export function verifyAuthoritativeTaskState(state) {
   return {
     taskId: task.id,
     artifacts: subtasks.flatMap(subtask => parseJsonArray(subtask.artifactsJson)),
+    executorNames: [...new Set(latestReceipts.map(receipt => String(receipt.agentClassName)))],
   };
 }
 
@@ -306,7 +318,7 @@ export function verifyArtifactScenario(input) {
     throw new Error('Smoke failed: task summary used an empty quoted artifact path');
   }
 
-  return { artifactPath, taskId: authoritative.taskId };
+  return { artifactPath, taskId: authoritative.taskId, executorNames: authoritative.executorNames };
 }
 
 export function verifyPythonHelloScenario(input) {
@@ -339,7 +351,25 @@ export function verifyPythonHelloScenario(input) {
     throw new Error(`Smoke failed: independent Python stdout was "${(result.stdout ?? '').trim()}"`);
   }
 
-  return { artifactPath: pythonFile, pythonCommand, taskId: authoritative.taskId };
+  return {
+    artifactPath: pythonFile,
+    pythonCommand,
+    taskId: authoritative.taskId,
+    executorNames: authoritative.executorNames,
+  };
+}
+
+export function verifyPiResearchScenario(input) {
+  const authoritative = verifyAuthoritativeTaskState(input.authoritativeState);
+  if (!authoritative.executorNames.includes('pi-agent')) {
+    throw new Error(
+      `Smoke failed: pi-research expected a completed pi-agent receipt, observed ${authoritative.executorNames.join(', ') || 'none'}`,
+    );
+  }
+  return {
+    taskId: authoritative.taskId,
+    executorNames: authoritative.executorNames,
+  };
 }
 
 export function verifyPlannerSessionScenario(input) {
@@ -380,6 +410,18 @@ export function run(command, args, options = {}) {
   }
 
   return result;
+}
+
+export function cleanupOwnedSmokeArtifacts(input) {
+  if (input.keepArtifacts || input.managedByHost) return;
+  for (const [path, owned] of [
+    [input.metaclawHome, input.ownsMetaclawHome],
+    [input.executorHome, input.ownsExecutorHome],
+    [input.workdir, input.ownsWorkdir],
+    [input.scriptDir, input.ownsScriptDir],
+  ]) {
+    if (owned) rmSync(path, { recursive: true, force: true });
+  }
 }
 
 function readPlannerDiagnostics(repoRoot, metaclawHome) {
@@ -446,9 +488,14 @@ export function runSmoke(rawArgs = process.argv.slice(2), env = process.env) {
     readOption(rawArgs, '--max-duration') ?? env.METACLAW_SMOKE_MAX_DURATION,
     3600,
   );
+  const keepArtifacts = env.METACLAW_SMOKE_KEEP_ARTIFACTS === 'true';
 
   const smokeRoot = env.METACLAW_SMOKE_ROOT ? resolve(env.METACLAW_SMOKE_ROOT) : tmpdir();
   mkdirSync(smokeRoot, { recursive: true });
+  const ownsMetaclawHome = !env.METACLAW_HOME;
+  const ownsExecutorHome = !env.METACLAW_SMOKE_EXECUTOR_HOME;
+  const ownsWorkdir = !env.METACLAW_SMOKE_WORKDIR;
+  const ownsScriptDir = !env.METACLAW_SMOKE_SCRIPT_DIR;
   const metaclawHome = env.METACLAW_HOME
     ? resolve(env.METACLAW_HOME)
     : mkdtempSync(join(smokeRoot, 'metaclaw-smoke-home-'));
@@ -466,7 +513,6 @@ export function runSmoke(rawArgs = process.argv.slice(2), env = process.env) {
   }
   const scriptPath = join(scriptDir, 'script.txt');
   const outputPath = join(scriptDir, 'metaclaw-output.log');
-  let succeeded = false;
 
   try {
     writeFileSync(join(metaclawHome, 'config.yaml'), buildSmokeConfig({
@@ -504,11 +550,6 @@ export function runSmoke(rawArgs = process.argv.slice(2), env = process.env) {
     });
 
     const output = `${runResult.stdout ?? ''}\n${runResult.stderr ?? ''}`;
-    if (executorCommand === 'pi' && !output.includes('pi-agent')) {
-      process.stderr.write(output);
-      throw new Error('Smoke failed: expected route/execution output to mention pi-agent');
-    }
-
     const authoritativeState = scenario === 'planner-session'
       ? null
       : readAuthoritativeTaskState(metaclawHome);
@@ -523,39 +564,50 @@ export function runSmoke(rawArgs = process.argv.slice(2), env = process.env) {
       })
       : scenario === 'artifact'
         ? verifyArtifactScenario({ output, workdir, authoritativeState })
-        : verifyPythonHelloScenario({ output, workdir, authoritativeState });
+        : scenario === 'python-hello'
+          ? verifyPythonHelloScenario({ output, workdir, authoritativeState })
+          : verifyPiResearchScenario({ authoritativeState });
 
     process.stdout.write([
       scenario === 'planner-session'
         ? 'MetaClaw native Planner session smoke passed.'
         : 'MetaClaw real task smoke passed.',
-      `Executor: ${executorCommand}`,
+      `Executor: ${verification.executorNames?.join(', ') ?? executorCommand}`,
       `Scenario: ${scenario}`,
       scenario === 'planner-session'
         ? `Native session: ${verification.nativeSessionPath}`
-        : `Artifact: ${verification.artifactPath}`,
+        : scenario === 'pi-research'
+          ? `Task: ${verification.taskId}`
+          : `Artifact: ${verification.artifactPath}`,
       `Workdir: ${workdir}`,
       '',
     ].join('\n'));
-    succeeded = true;
   } catch (error) {
     const plannerDiagnostics = readPlannerDiagnostics(repoRoot, metaclawHome);
     if (plannerDiagnostics) process.stderr.write(`Planner diagnostics: ${plannerDiagnostics}\n`);
     process.stderr.write([
-      'Smoke failed; diagnostics were preserved:',
-      `  METACLAW_HOME: ${metaclawHome}`,
+      keepArtifacts
+        ? 'Smoke failed; diagnostics were preserved:'
+        : 'Smoke failed; generated artifacts will be removed. Set METACLAW_SMOKE_KEEP_ARTIFACTS=true to preserve them:',
+      ...(keepArtifacts ? [`  METACLAW_HOME: ${metaclawHome}`] : []),
       `  Workdir: ${workdir}`,
-      `  Output: ${outputPath}`,
+      ...(keepArtifacts ? [`  Output: ${outputPath}`] : []),
       '',
     ].join('\n'));
     throw error;
   } finally {
-    if (succeeded && env.METACLAW_SMOKE_MANAGED_BY_HOST !== 'true') {
-      rmSync(metaclawHome, { recursive: true, force: true });
-      rmSync(executorHome, { recursive: true, force: true });
-      rmSync(workdir, { recursive: true, force: true });
-      rmSync(scriptDir, { recursive: true, force: true });
-    }
+    cleanupOwnedSmokeArtifacts({
+      keepArtifacts,
+      managedByHost: env.METACLAW_SMOKE_MANAGED_BY_HOST === 'true',
+      metaclawHome,
+      executorHome,
+      workdir,
+      scriptDir,
+      ownsMetaclawHome,
+      ownsExecutorHome,
+      ownsWorkdir,
+      ownsScriptDir,
+    });
   }
 }
 
@@ -596,7 +648,7 @@ function runDockerSmoke(rawArgs, env) {
     }
   }
 
-  let succeeded = false;
+  const keepArtifacts = env.METACLAW_SMOKE_KEEP_ARTIFACTS === 'true';
   try {
     run('docker', [
       'build',
@@ -634,10 +686,9 @@ function runDockerSmoke(rawArgs, env) {
     const result = run('docker', ['start', '--attach', control], { cwd: repoRoot });
     process.stdout.write(result.stdout ?? '');
     process.stderr.write(result.stderr ?? '');
-    succeeded = true;
   } finally {
     spawnSync('docker', ['rm', '-f', control], { cwd: repoRoot, encoding: 'utf8' });
-    if (succeeded) {
+    if (!keepArtifacts) {
       rmSync(smokeRoot, { recursive: true, force: true });
     } else {
       process.stderr.write(`Docker smoke diagnostics preserved at: ${smokeRoot}\n`);
@@ -647,20 +698,21 @@ function runDockerSmoke(rawArgs, env) {
 
 function buildHelp() {
   return [
-    'Usage: npm run smoke:metaclaw -- [--executor <command>] [--scenario <planner-session|artifact|python-hello>] [--timeout <seconds>] [--max-duration <seconds>]',
+    'Usage: npm run smoke:metaclaw -- [--executor <command>] [--scenario <planner-session|artifact|python-hello|pi-research>] [--timeout <seconds>] [--max-duration <seconds>]',
     '',
     'Environment variables:',
-    '  METACLAW_SMOKE_EXECUTOR      Executor command to place in the isolated config. Defaults to codex.',
+    '  METACLAW_SMOKE_EXECUTOR      Executor command to place in the isolated config. It does not override Planner routing.',
     '  METACLAW_SMOKE_SCENARIO      Scenario to run. Defaults to planner-session (two-turn AnyFusion Planner memory).',
     '  METACLAW_SMOKE_TIMEOUT       Continuous no-output timeout in seconds.',
     '  METACLAW_SMOKE_MAX_DURATION  Legacy max_duration value in seconds.',
     '  METACLAW_PLANNER_TIMEOUT_MS   Planner RPC timeout forwarded to the Runtime; Docker smoke defaults to 180000.',
+    '  METACLAW_SMOKE_KEEP_ARTIFACTS Set to true to preserve smoke data after completion or failure.',
     '  METACLAW_SMOKE_IN_DOCKER      Internal recursion guard; ordinary smoke runs create the control container automatically.',
     '',
     'Examples:',
     '  npm run smoke:metaclaw',
-    '  npm run smoke:metaclaw -- --executor pi --scenario python-hello',
-    '  METACLAW_SMOKE_EXECUTOR=pi METACLAW_SMOKE_SCENARIO=python-hello npm run smoke:metaclaw',
+    '  npm run smoke:metaclaw -- --executor pi --scenario pi-research',
+    '  METACLAW_SMOKE_EXECUTOR=pi METACLAW_SMOKE_SCENARIO=pi-research npm run smoke:metaclaw',
     '',
   ].join('\n');
 }

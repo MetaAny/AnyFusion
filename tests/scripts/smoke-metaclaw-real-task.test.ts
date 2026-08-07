@@ -24,7 +24,7 @@ async function loadSmokeScript() {
   return import('../../scripts/smoke-metaclaw-real-task.mjs');
 }
 
-function authoritativeSuccessState(artifactPath: string) {
+function authoritativeSuccessState(artifactPath: string, agentClassName = 'codex-cli') {
   return {
     acceptedProposalCount: 1,
     tasks: [{ id: 'task-1', status: 'done' }],
@@ -37,6 +37,7 @@ function authoritativeSuccessState(artifactPath: string) {
     receipts: [{
       taskId: 'task-1',
       subtaskId: 'subtask-1',
+      agentClassName,
       terminalState: 'completed',
     }],
     publications: [{ id: 'publication-1', taskId: 'task-1', status: 'integrated' }],
@@ -53,6 +54,7 @@ describe('smoke-metaclaw-real-task helpers', () => {
     expect(smoke.parseExecutorCommand('pi')).toBe('pi');
     expect(smoke.parseScenario('planner-session')).toBe('planner-session');
     expect(smoke.parseScenario('python-hello')).toBe('python-hello');
+    expect(smoke.parseScenario('pi-research')).toBe('pi-research');
     expect(smoke.parsePositiveInteger('42', 10)).toBe(42);
     expect(() => smoke.parseExecutorCommand('pi;rm')).toThrow(/Invalid smoke executor command/);
     expect(() => smoke.parseScenario('unknown')).toThrow(/Invalid smoke scenario/);
@@ -98,6 +100,36 @@ describe('smoke-metaclaw-real-task helpers', () => {
     expect(config).toContain('timeout: 901');
     expect(config).toContain('max_duration: 3601');
     expect(config).toContain('dashboard_on_start: true');
+  });
+
+  it('cleans only smoke-owned paths by default', async () => {
+    const smoke = await loadSmokeScript();
+    const metaclawHome = join(tempRoot, 'metaclaw-home');
+    const executorHome = join(tempRoot, 'executor-home');
+    const externalWorkdir = join(tempRoot, 'project');
+    const scriptDir = join(tempRoot, 'script');
+    for (const path of [metaclawHome, executorHome, externalWorkdir, scriptDir]) {
+      mkdirSync(path, { recursive: true });
+      writeFileSync(join(path, 'marker'), path);
+    }
+
+    smoke.cleanupOwnedSmokeArtifacts({
+      keepArtifacts: false,
+      managedByHost: false,
+      metaclawHome,
+      executorHome,
+      workdir: externalWorkdir,
+      scriptDir,
+      ownsMetaclawHome: true,
+      ownsExecutorHome: true,
+      ownsWorkdir: false,
+      ownsScriptDir: true,
+    });
+
+    expect(existsSync(metaclawHome)).toBe(false);
+    expect(existsSync(executorHome)).toBe(false);
+    expect(existsSync(scriptDir)).toBe(false);
+    expect(readFileSync(join(externalWorkdir, 'marker'), 'utf-8')).toBe(externalWorkdir);
   });
 
   it('verifies the authoritative Subtask artifact and its exact stdout', async () => {
@@ -169,6 +201,31 @@ describe('smoke-metaclaw-real-task helpers', () => {
     expect(turns[0]).toContain('print("Hello world")');
     expect(turns[0]).toContain('python3');
     expect(turns[1]).toBe('/exit');
+  });
+
+  it('uses a web-search-only turn for the Pi research smoke', async () => {
+    const smoke = await loadSmokeScript();
+    const turns = smoke.buildScenarioScript('pi-research').trim().split('\n');
+
+    expect(turns).toHaveLength(2);
+    expect(turns[0]).toContain('web_search');
+    expect(turns[0]).toContain('创建一个持久调研任务');
+    expect(turns[0]).toContain('不要修改工作区');
+    expect(turns[1]).toBe('/exit');
+  });
+
+  it('verifies Pi research from authoritative receipt ownership', async () => {
+    const smoke = await loadSmokeScript();
+
+    expect(smoke.verifyPiResearchScenario({
+      authoritativeState: authoritativeSuccessState('', 'pi-agent'),
+    })).toEqual({
+      taskId: 'task-1',
+      executorNames: ['pi-agent'],
+    });
+    expect(() => smoke.verifyPiResearchScenario({
+      authoritativeState: authoritativeSuccessState('', 'codex-cli'),
+    })).toThrow(/expected a completed pi-agent receipt/);
   });
 
   it('requires the second reply to recall the marker from one persisted AnyFusion-Pi session', async () => {

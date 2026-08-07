@@ -269,6 +269,8 @@ main() {
   if [[ "$command" == 'smoke' ]]; then
     shift
     export METACLAW_SMOKE_NATIVE=true
+    export METACLAW_SMOKE_REPO_ROOT="$REPO_ROOT"
+    export METACLAW_SMOKE_WORKDIR="$INVOKE_CWD"
     unset METACLAW_HOME
     cd "$REPO_ROOT"
     exec node "$REPO_ROOT/scripts/smoke-metaclaw-real-task.mjs" "$@"

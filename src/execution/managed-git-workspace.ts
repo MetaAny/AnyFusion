@@ -1,7 +1,20 @@
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { chmod, cp, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
-import { dirname, join, relative, resolve } from 'node:path';
+import {
+  chmod,
+  copyFile,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import type { WorkspaceHandle, WorkspaceIdentity, WorkspaceStore } from './workspace-store.js';
 
@@ -75,6 +88,14 @@ function safeRefSegment(value: string): string {
   return value.normalize('NFC').replace(/[^A-Za-z0-9._-]+/gu, '-').replace(/^[.-]+|[.-]+$/gu, '') || 'unnamed';
 }
 
+function isPathWithin(root: string, candidate: string): boolean {
+  const pathFromRoot = relative(root, candidate);
+  return pathFromRoot === ''
+    || (!pathFromRoot.startsWith(`..${sep}`)
+      && pathFromRoot !== '..'
+      && !isAbsolute(pathFromRoot));
+}
+
 async function git(args: string[], cwd?: string): Promise<string> {
   const result = await execFileAsync('git', withSafeDirectory(args), {
     cwd,
@@ -114,10 +135,18 @@ export class ManagedGitWorkspaceService {
   }
 
   async ensure(identity: WorkspaceIdentity, sourcePath: string): Promise<ManagedGitWorkspace> {
+    await this.store.initialize();
     const detectedSource = await this.detectSource(sourcePath);
     const sourceRoot = detectedSource?.root ?? await realpath(sourcePath);
     const sourceInfo = await stat(sourceRoot);
     if (!sourceInfo.isDirectory()) throw new Error('managed Git source must be a directory');
+    const managedStoreRoot = await realpath(this.store.rootPath);
+    if (isPathWithin(managedStoreRoot, sourceRoot)) {
+      throw new Error('managed Git source cannot be inside the runtime workspace store');
+    }
+    const managedRuntimeRoot = basename(managedStoreRoot) === 'workspace-store'
+      ? dirname(managedStoreRoot)
+      : managedStoreRoot;
     await mkdir(this.repositoriesPath, { recursive: true });
     const workspace = await this.store.ensureWorkspace(identity, 'git');
     const repositoryPath = join(
@@ -134,7 +163,7 @@ export class ManagedGitWorkspaceService {
         if (detectedSource) {
           await git(['clone', '--bare', '--no-hardlinks', detectedSource.root, repositoryPath]);
         } else {
-          await this.importPlainSource(sourceRoot, repositoryPath);
+          await this.importPlainSource(sourceRoot, repositoryPath, [managedRuntimeRoot]);
         }
       }
       const sourceCommit = detectedSource?.commit
@@ -415,18 +444,17 @@ export class ManagedGitWorkspaceService {
     };
   }
 
-  private async importPlainSource(sourceRoot: string, repositoryPath: string): Promise<void> {
-    const importRoot = await mkdtemp(join(dirname(repositoryPath), 'plain-import-'));
+  private async importPlainSource(
+    sourceRoot: string,
+    repositoryPath: string,
+    excludedRoots: readonly string[],
+  ): Promise<void> {
+    // The managed repository can be nested under the source directory (for
+    // example, when AnyFusion is launched from $HOME). Stage outside the source
+    // tree and exclude Runtime state to prevent recursive or live-file imports.
+    const importRoot = await mkdtemp(join(tmpdir(), 'anyfusion-plain-import-'));
     try {
-      await cp(sourceRoot, importRoot, {
-        recursive: true,
-        filter: source => {
-          const pathFromSource = relative(sourceRoot, source);
-          if (pathFromSource === '' && source === sourceRoot) return true;
-          const topLevel = pathFromSource.split(/[\\/]/u)[0] ?? '';
-          return !PLAIN_SOURCE_EXCLUDED_TOP_LEVEL.has(topLevel);
-        },
-      });
+      await this.copyPlainSource(sourceRoot, sourceRoot, importRoot, excludedRoots);
       await git(['init'], importRoot);
       await git(['-C', importRoot, 'config', 'user.name', 'MetaClaw Runtime']);
       await git(['-C', importRoot, 'config', 'user.email', 'runtime@metaclaw.local']);
@@ -435,6 +463,33 @@ export class ManagedGitWorkspaceService {
       await git(['clone', '--bare', '--no-hardlinks', importRoot, repositoryPath]);
     } finally {
       await rm(importRoot, { recursive: true, force: true });
+    }
+  }
+
+  private async copyPlainSource(
+    sourceRoot: string,
+    current: string,
+    destinationRoot: string,
+    excludedRoots: readonly string[],
+  ): Promise<void> {
+    for (const entry of await readdir(current, { withFileTypes: true })) {
+      const source = join(current, entry.name);
+      if (excludedRoots.some(root => isPathWithin(root, source))) continue;
+      const pathFromSource = relative(sourceRoot, source);
+      const topLevel = pathFromSource.split(/[\\/]/u)[0] ?? '';
+      if (PLAIN_SOURCE_EXCLUDED_TOP_LEVEL.has(topLevel)) continue;
+      const info = await lstat(source);
+      const destination = resolve(destinationRoot, pathFromSource);
+      if (destination !== destinationRoot && !destination.startsWith(`${destinationRoot}${sep}`)) {
+        throw new Error('plain source import escaped its staging root');
+      }
+      if (info.isDirectory()) {
+        await mkdir(destination, { recursive: true });
+        await this.copyPlainSource(sourceRoot, source, destinationRoot, excludedRoots);
+      } else if (info.isFile()) {
+        await mkdir(dirname(destination), { recursive: true });
+        await copyFile(source, destination);
+      }
     }
   }
 

@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
@@ -96,6 +97,58 @@ describe('ManagedGitWorkspaceService', () => {
       .toBe('immutable initial snapshot\n');
     expect(await git(workspace.filesPath, 'rev-parse', '--is-inside-work-tree')).toBe('true');
     await expect(readFile(join(source, '.git'), 'utf8')).rejects.toThrow();
+  });
+
+  it('imports a plain source when the managed store is nested below that source', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'metaclaw-managed-nested-store-'));
+    roots.push(root);
+    const source = join(root, 'source');
+    const runtimeRoot = join(source, '.local', 'share', 'anyfusion');
+    const store = new WorkspaceStore(join(runtimeRoot, 'workspace-store'));
+    await exec('git', ['init', source]);
+    await rm(join(source, '.git'), { recursive: true, force: true });
+    await writeFile(join(source, 'plain.txt'), 'source outside runtime store\n');
+    await mkdir(runtimeRoot, { recursive: true });
+    await writeFile(join(runtimeRoot, 'metaclaw.db'), 'runtime state must not be imported\n');
+    await store.initialize();
+
+    const workspace = await new ManagedGitWorkspaceService(store).ensure({
+      taskId: 'task-import',
+      generationId: 'generation-import',
+      subtaskId: 'subtask-import',
+    }, source);
+
+    expect(await readFile(join(workspace.filesPath, 'plain.txt'), 'utf8')).toBe('source outside runtime store\n');
+    await expect(lstat(join(workspace.filesPath, '.local', 'share', 'anyfusion'))).rejects.toThrow();
+  });
+
+  it.skipIf(process.platform === 'win32')('skips live sockets in a plain source import', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'metaclaw-managed-socket-'));
+    roots.push(root);
+    const source = join(root, 'source');
+    const store = new WorkspaceStore(join(root, 'store'));
+    await mkdir(source);
+    await writeFile(join(source, 'plain.txt'), 'ordinary file\n');
+    const socketPath = join(source, 'live.sock');
+    const server = createServer();
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once('error', rejectListen);
+      server.listen(socketPath, resolveListen);
+    });
+
+    let workspace;
+    try {
+      workspace = await new ManagedGitWorkspaceService(store).ensure({
+        taskId: 'task-socket',
+        generationId: 'generation-socket',
+        subtaskId: 'subtask-socket',
+      }, source);
+    } finally {
+      await new Promise<void>(resolveClose => server.close(() => resolveClose()));
+    }
+
+    expect(await readFile(join(workspace.filesPath, 'plain.txt'), 'utf8')).toBe('ordinary file\n');
+    await expect(lstat(join(workspace.filesPath, 'live.sock'))).rejects.toThrow();
   });
 
   it('never auto-merges a concurrently modified binary-policy path even when its bytes look textual', async () => {

@@ -37,4 +37,21 @@ describe('WorkspaceStore', () => {
     const store = new WorkspaceStore(join(temporaryRoot, 'store'));
     await expect(store.ensureWorkspace({ taskId: '..', generationId: 'g', subtaskId: 's' }, 'directory')).rejects.toThrow();
   });
+
+  test('skips the managed store when it is nested inside the source directory', async () => {
+    const source = join(temporaryRoot, 'source');
+    await mkdir(source);
+    await writeFile(join(source, 'input.txt'), 'task input');
+    const store = new WorkspaceStore(join(source, '.local', 'share', 'anyfusion', 'workspace-store'));
+    await store.initialize();
+    const workspace = await store.ensureWorkspace({ taskId: 't1', generationId: 'g1', subtaskId: 's1' }, 'directory');
+
+    await store.seedDirectory(workspace, source);
+
+    expect(await readFile(join(workspace.filesPath, 'input.txt'), 'utf8')).toBe('task input');
+    await expect(readFile(
+      join(workspace.filesPath, '.local', 'share', 'anyfusion', 'workspace-store', 'workspaces'),
+      'utf8',
+    )).rejects.toThrow();
+  });
 });
