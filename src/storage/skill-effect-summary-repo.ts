@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import type { SkillUsageEventType } from './skill-usage-event-repo.js';
+import type { PersistedSkillUsageEventType } from './skill-usage-event-repo.js';
 
 interface SkillEffectSummaryRow {
   id: string;
@@ -37,7 +37,7 @@ export interface SkillEffectUsageInput {
   executorName: string;
   skillName: string;
   skillVersion: string | null;
-  eventType: SkillUsageEventType;
+  eventType: PersistedSkillUsageEventType;
   helpful: boolean;
   patchCandidateCreated: boolean;
   failureReason: string | null;
@@ -67,23 +67,18 @@ function summaryId(input: { executorName: string; skillName: string; skillVersio
   return `ses_${Buffer.from(`${input.executorName}:${input.skillName}:${version}`).toString('base64url').slice(0, 40)}`;
 }
 
-function successIncrement(eventType: SkillUsageEventType): number {
+function successIncrement(eventType: PersistedSkillUsageEventType): number {
   return eventType === 'skill_completed' ? 1 : 0;
 }
 
-function failureIncrement(eventType: SkillUsageEventType): number {
+function failureIncrement(eventType: PersistedSkillUsageEventType): number {
   return eventType === 'skill_failed' ? 1 : 0;
-}
-
-function usedIncrement(eventType: SkillUsageEventType): number {
-  return ['skill_completed', 'skill_failed', 'skill_skipped', 'skill_suggested_patch'].includes(eventType) ? 1 : 0;
 }
 
 export class SkillEffectSummaryRepo {
   constructor(private readonly db: Database.Database) {}
 
   recordUsage(input: SkillEffectUsageInput): void {
-    const used = usedIncrement(input.eventType);
     const success = successIncrement(input.eventType);
     const failure = failureIncrement(input.eventType);
     const helpful = input.helpful ? 1 : 0;
@@ -110,7 +105,7 @@ export class SkillEffectSummaryRepo {
       input.executorName,
       input.skillName,
       input.skillVersion,
-      used,
+      1,
       success,
       failure,
       helpful,
@@ -122,14 +117,6 @@ export class SkillEffectSummaryRepo {
     );
   }
 
-  findBySkill(input: { executorName: string; skillName: string; skillVersion: string | null }): SkillEffectSummaryRecord | null {
-    const row = this.db.prepare(`
-      SELECT * FROM skill_effect_summaries
-      WHERE executor_name = ? AND skill_name = ? AND skill_version_key = COALESCE(?, '')
-    `).get(input.executorName, input.skillName, input.skillVersion) as SkillEffectSummaryRow | undefined;
-    return row ? rowToSummary(row) : null;
-  }
-
   listTop(limit = 10): SkillEffectSummaryRecord[] {
     const rows = this.db.prepare(`
       SELECT * FROM skill_effect_summaries
@@ -137,10 +124,5 @@ export class SkillEffectSummaryRepo {
       LIMIT ?
     `).all(limit) as SkillEffectSummaryRow[];
     return rows.map(rowToSummary);
-  }
-
-  count(): number {
-    const row = this.db.prepare('SELECT COUNT(*) as count FROM skill_effect_summaries').get() as { count: number };
-    return row.count;
   }
 }

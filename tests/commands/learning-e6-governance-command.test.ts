@@ -46,7 +46,7 @@ function insertGovernanceCandidate(repo: LearningCandidateRepo, kind: 'skill_dis
       '成功率：0%',
       `推荐动作：${kind === 'skill_disable' ? 'disable' : 'deprecate'}`,
     ].join('\n'),
-    sourceReflectionId: null,
+    sourceSkillUsageEventId: null,
     sourceTaskId: null,
     safetyStatus: 'passed',
     safetyReasons: [],

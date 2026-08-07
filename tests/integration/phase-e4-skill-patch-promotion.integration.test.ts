@@ -1,12 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
-import { ReflectionEngine } from '../../src/learning/reflection-engine.js';
+import { SkillUsageCandidateBuilder } from '../../src/learning/skill-usage-candidate-builder.js';
 import { promoteLearningCandidate } from '../../src/commands/learning-commands.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { LearningCandidateRepo } from '../../src/storage/learning-candidate-repo.js';
-import { ReflectionEventRepo } from '../../src/storage/reflection-event-repo.js';
 import { ExecutorSkillInstallEventRepo } from '../../src/storage/executor-skill-install-event-repo.js';
 import type { SkillUsageEventRecord } from '../../src/storage/skill-usage-event-repo.js';
 import type { CommandContext, ResolvedCommandArgs } from '../../src/commands/catalog.js';
@@ -48,11 +47,9 @@ function args(candidateId: string): ResolvedCommandArgs {
 }
 
 describe('Phase E4 skill patch promotion integration', () => {
-  it('builds a skill_patch package from reviewed safe reflections and records an unsupported update audit', async () => {
+  it('builds a skill_patch package from reviewed safe usage feedback and records an unsupported update audit', async () => {
     const db = createDb();
-    const reflection = new ReflectionEngine().reflectOnSkillUsage(createPatchEvent());
-    new ReflectionEventRepo(db).insert(reflection.event);
-    const candidate = reflection.candidate!;
+    const candidate = new SkillUsageCandidateBuilder().build(createPatchEvent());
     const candidateRepo = new LearningCandidateRepo(db);
     candidateRepo.insert(candidate);
     candidateRepo.updateReview(candidate.id, {
@@ -76,12 +73,10 @@ describe('Phase E4 skill patch promotion integration', () => {
 
   it('blocks unsafe skill_patch content before building a package', async () => {
     const db = createDb();
-    const reflection = new ReflectionEngine().reflectOnSkillUsage(createPatchEvent({
+    const candidate = new SkillUsageCandidateBuilder().build(createPatchEvent({
       message: 'Add token handling step',
       payload: { proposedPatch: 'token=sk-1234567890abcdef1234567890abcdef' },
     }));
-    new ReflectionEventRepo(db).insert(reflection.event);
-    const candidate = reflection.candidate!;
     const candidateRepo = new LearningCandidateRepo(db);
     candidateRepo.insert(candidate);
     candidateRepo.updateReview(candidate.id, {

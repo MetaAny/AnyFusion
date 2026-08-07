@@ -3,8 +3,7 @@ import { ExecutorSkillInstallEventRepo, type ExecutorSkillInstallStatus } from '
 import { TaskMemoryCardRepo, type TaskMemoryCardOutcome } from '../storage/task-memory-card-repo.js';
 import { SkillEffectSummaryRepo, type SkillEffectSummaryRecord } from '../storage/skill-effect-summary-repo.js';
 import { SkillUsageEventRepo } from '../storage/skill-usage-event-repo.js';
-import { ReflectionEventRepo } from '../storage/reflection-event-repo.js';
-import { ReflectionEngine } from '../learning/reflection-engine.js';
+import { SkillUsageCandidateBuilder } from '../learning/skill-usage-candidate-builder.js';
 import { PromotionGate } from '../learning/promotion-gate.js';
 import { buildExecutorSkillPackage } from '../executor/skill-package-builder.js';
 import { SkillGovernanceEngine, assessSkillGovernance, type SkillGovernanceAction } from '../learning/skill-governance-engine.js';
@@ -126,8 +125,7 @@ export async function generateSkillFeedback(
 ): Promise<CommandResult> {
   const repo = new LearningCandidateRepo(context.db);
   const usageEvents = new SkillUsageEventRepo(context.db).listRecent(50);
-  const reflectionRepo = new ReflectionEventRepo(context.db);
-  const engine = new ReflectionEngine();
+  const builder = new SkillUsageCandidateBuilder();
   let created = 0;
 
   for (const event of usageEvents) {
@@ -135,23 +133,9 @@ export async function generateSkillFeedback(
       continue;
     }
 
-    const reflection = engine.reflectOnSkillUsage(event);
-    if (reflectionRepo.findById(reflection.event.id)) {
-      continue;
-    }
-
-    const existingForSource = context.db.prepare(
-      'SELECT id FROM reflection_events WHERE source_type = ? AND source_id = ? LIMIT 1'
-    ).get('executor_skill_usage', event.id) as { id: string } | undefined;
-    if (existingForSource) {
-      continue;
-    }
-
-    reflectionRepo.insert(reflection.event);
-    if (reflection.candidate) {
-      repo.insert(reflection.candidate);
-      created += 1;
-    }
+    if (repo.existsForSkillUsageEvent(event.id)) continue;
+    repo.insert(builder.build(event));
+    created += 1;
   }
 
   return { type: 'text', content: `已生成 Skill Runtime Feedback：${created} 个候选` };

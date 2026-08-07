@@ -9,7 +9,6 @@ import {
 } from '../../src/commands/learning-commands.js';
 import { SkillUsageEventRepo } from '../../src/storage/skill-usage-event-repo.js';
 import { LearningCandidateRepo } from '../../src/storage/learning-candidate-repo.js';
-import { ReflectionEventRepo } from '../../src/storage/reflection-event-repo.js';
 import { ExecutorSkillInstallEventRepo } from '../../src/storage/executor-skill-install-event-repo.js';
 import type { CommandContext, ResolvedCommandArgs } from '../../src/commands/catalog.js';
 
@@ -53,14 +52,14 @@ describe('learning skill feedback loop', () => {
     const candidate = candidateRepo.listPending()[0];
     expect(candidate).toMatchObject({
       kind: 'skill_patch',
+      sourceSkillUsageEventId: 'sue_feedback_1',
       sourceTaskId: 'task_feedback_1',
       safetyStatus: 'passed',
     });
     expect(candidate.content).toContain('先写失败测试');
-    expect(new ReflectionEventRepo(db).findById(candidate.sourceReflectionId!)).toMatchObject({
-      sourceType: 'executor_skill_usage',
-      sourceId: 'sue_feedback_1',
-    });
+
+    const duplicateFeedback = await generateSkillFeedback(args(), context(db));
+    expect(duplicateFeedback.content).toContain('0 个候选');
 
     const list = await listPatchCandidates(args(), context(db));
     expect(list.content).toContain('Skill Patch Candidates');

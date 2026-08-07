@@ -204,6 +204,5 @@ describe('planner-first executor command acceptance', () => {
     expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
     expect(taskRepo.findByStatus('blocked')).toHaveLength(1);
     expect(db.prepare('SELECT status FROM subtasks ORDER BY created_at DESC LIMIT 1').get()).toEqual({ status: 'blocked' });
-    expect(db.prepare('SELECT COUNT(*) AS count FROM executor_route_events').get()).toEqual({ count: 0 });
   });
 });

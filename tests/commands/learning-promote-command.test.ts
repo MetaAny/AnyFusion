@@ -22,7 +22,7 @@ function insertCandidate(repo: LearningCandidateRepo, overrides: Partial<Paramet
     status: 'approved',
     title: 'Reusable MetaClaw verification workflow',
     content: 'Run targeted tests, lint, build, and full regression before delivery.',
-    sourceReflectionId: null,
+    sourceSkillUsageEventId: null,
     sourceTaskId: 'task_1',
     safetyStatus: 'passed',
     safetyReasons: [],

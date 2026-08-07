@@ -3,7 +3,6 @@ import type { Subtask, Task } from '../core/types.js';
 import type { WorkGraphSubtask as SubtaskProposal, WorkGraphProposal } from '../work-graph/types.js';
 import { SubtaskRepo } from '../storage/subtask-repo.js';
 import { TaskEventRepo } from '../storage/task-event-repo.js';
-import { TaskEventRecorder } from '../storage/task-event-recorder.js';
 import { createEvidenceId, TaskExecutionEvidenceRepo } from './execution-evidence-port.js';
 import { WorkGraphRevisionRepo } from '../storage/work-graph-revision-repo.js';
 
@@ -22,16 +21,12 @@ export type WorkGraphRuntimeResult =
 
 /** Runtime materialization deliberately has no planning or routing fallback. */
 export class WorkGraphRuntimeService {
-  private readonly taskEvents: TaskEventRecorder;
-
   constructor(
     private readonly subtaskRepo: SubtaskRepo,
-    taskEventRepo: TaskEventRepo,
+    private readonly taskEvents: TaskEventRepo,
     private readonly revisionRepo: WorkGraphRevisionRepo,
     private readonly evidenceRepo?: TaskExecutionEvidenceRepo,
-  ) {
-    this.taskEvents = new TaskEventRecorder(taskEventRepo);
-  }
+  ) {}
 
   apply(input: {
     task: Task;
@@ -132,9 +127,15 @@ export class WorkGraphRuntimeService {
         this.subtaskRepo.updateStatus(subtask.id, 'cancelled', {
           error: `superseded by graph revision ${revision + 1}`,
         });
-        this.taskEvents.record(taskId, subtask.id, 'subtask_superseded', `graph revision ${revision + 1}`, {
-          previousRevision: revision,
-          nextRevision: revision + 1,
+        this.taskEvents.record({
+          taskId,
+          subtaskId: subtask.id,
+          eventType: 'subtask_superseded',
+          message: `graph revision ${revision + 1}`,
+          payload: {
+            previousRevision: revision,
+            nextRevision: revision + 1,
+          },
         });
       }
     }
@@ -171,10 +172,16 @@ export class WorkGraphRuntimeService {
 
     for (const subtask of subtasks) {
       this.subtaskRepo.upsert(subtask);
-      this.taskEvents.record(taskId, subtask.id, 'subtask_planned', subtask.title, {
-        dependencies: subtask.dependencies,
-        requiredCapabilities: subtask.requiredCapabilities,
-        preferredAgentClassList: subtask.preferredAgentClassList,
+      this.taskEvents.record({
+        taskId,
+        subtaskId: subtask.id,
+        eventType: 'subtask_planned',
+        message: subtask.title,
+        payload: {
+          dependencies: subtask.dependencies,
+          requiredCapabilities: subtask.requiredCapabilities,
+          preferredAgentClassList: subtask.preferredAgentClassList,
+        },
       });
     }
     if (subtasks.some(subtask => subtask.contextRefs.some(ref => ref.kind === 'current_user_input'))) {
@@ -196,11 +203,17 @@ export class WorkGraphRuntimeService {
         side: ref.side,
       });
     }
-    this.taskEvents.record(taskId, null, 'work_graph_applied', workGraph.reason, {
-      subtaskIds: subtasks.map(subtask => subtask.id),
-      graphRevision: authorization.revision,
-      generationId: authorization.generationId,
-      authorizedDecisionId: authorization.decisionId,
+    this.taskEvents.record({
+      taskId,
+      subtaskId: null,
+      eventType: 'work_graph_applied',
+      message: workGraph.reason,
+      payload: {
+        subtaskIds: subtasks.map(subtask => subtask.id),
+        graphRevision: authorization.revision,
+        generationId: authorization.generationId,
+        authorizedDecisionId: authorization.decisionId,
+      },
     });
     return subtasks;
   }

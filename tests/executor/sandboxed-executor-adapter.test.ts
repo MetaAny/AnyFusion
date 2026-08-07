@@ -1,10 +1,13 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { AgentClass } from '../../src/core/types.js';
 import type { AttemptSandboxPort, CreateAttemptSandboxInput } from '../../src/execution/attempt-sandbox.js';
-import { SandboxedExecutorAdapter } from '../../src/executor/sandboxed-executor-adapter.js';
+import {
+  EXECUTOR_RESULT_FILE_NAME,
+  SandboxedExecutorAdapter,
+} from '../../src/executor/sandboxed-executor-adapter.js';
 
 describe('SandboxedExecutorAdapter provider isolation', () => {
   it('passes only the attempt gateway token instead of provider credentials', async () => {
@@ -173,6 +176,11 @@ describe('SandboxedExecutorAdapter provider isolation', () => {
     create.mockImplementation(async (input: CreateAttemptSandboxInput) => {
       attemptHome = input.environment.CODEX_HOME;
       renderedConfig = readFileSync(join(attemptHome, 'config.toml'), 'utf8');
+      const workspaceMount = input.mounts.find(mount => mount.target === '/workspace');
+      if (!workspaceMount) throw new Error('workspace mount missing in test');
+      const resultPath = join(workspaceMount.source, '.metaclaw', 'results', EXECUTOR_RESULT_FILE_NAME);
+      mkdirSync(dirname(resultPath), { recursive: true });
+      writeFileSync(resultPath, 'completed');
       return sandboxRecord('sha256:codex');
     });
     const adapter = new SandboxedExecutorAdapter({
@@ -187,7 +195,8 @@ describe('SandboxedExecutorAdapter provider isolation', () => {
     }, sandbox);
 
     try {
-      const result = await adapter.execute(executorInput(directory));
+      const longAttemptId = `attempt_${'x'.repeat(400)}`;
+      const result = await adapter.execute(executorInput(directory, longAttemptId));
 
       expect(result.success).toBe(true);
       expect(renderedConfig).toMatch(/base_url = "http:\/\/127\.0\.0\.1:\d+\/v1"/u);
@@ -197,6 +206,12 @@ describe('SandboxedExecutorAdapter provider isolation', () => {
       const args = create.mock.calls[0]![0].args;
       expect(args).toContain('danger-full-access');
       expect(args).not.toContain('workspace-write');
+      const outputPathIndex = args.indexOf('--output-last-message');
+      expect(outputPathIndex).toBeGreaterThanOrEqual(0);
+      const outputPath = args[outputPathIndex + 1];
+      expect(outputPath).toContain(`/.metaclaw/results/${EXECUTOR_RESULT_FILE_NAME}`);
+      expect(outputPath).not.toContain(longAttemptId);
+      expect(outputPath.length).toBeLessThan(255);
     } finally {
       vi.unstubAllEnvs();
       rmSync(directory, { recursive: true, force: true });
@@ -335,7 +350,7 @@ function executorInput(
     sandbox: {
       attemptId, taskId: 'task_1', generationId: 'generation_1', subtaskId,
       workUnitId: `work_unit_${attemptId}`, leaseToken: `lease_${attemptId}`, idempotencyKey: `attempt:${attemptId}`,
-      workspacePath: join(root, `workspace-${attemptId}`), workspaceId: `workspace_${subtaskId}`, sourcePath: join(root, 'source'),
+      workspacePath: join(root, `workspace-${subtaskId}`), workspaceId: `workspace_${subtaskId}`, sourcePath: join(root, 'source'),
       inputsPath: join(root, 'inputs'), handoffsPath: join(root, 'handoffs'), gitMetadataPath: null,
       controlNetwork: 'metaclaw-control', capabilityBinding: null,
     },
