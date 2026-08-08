@@ -37,8 +37,8 @@ It is designed for workflows where continuity, control, and accountability matte
 | **Durable task scheduling** | Persistent task and subtask lifecycles, dependency readiness, blocking, parking, resumption, cancellation, and recovery across process or session boundaries. |
 | **Policy-governed planning** | Natural-language planning is separated from authorization: the Planner proposes, the Control Kernel decides, and the Runtime applies only approved side effects. |
 | **Dependency-aware work graphs** | Complex objectives become explicit DAGs with acceptance criteria, typed dependencies, scoped context, and durable handoff contracts between work units. |
-| **Specialized-agent orchestration** | Capability-based routing maps each subtask to ordered agent-class candidates such as Codex, Pi, Hermes, or organization-specific vertical agents without embedding routing policy in prompts. |
-| **Worktree execution** | Canonical Codex and Pi attempts run as short-lived child processes in persistent private Git worktrees; the existing Docker attempt backend remains an explicit compatibility option. |
+| **Specialized-agent orchestration** | Controlled Capability routing maps each Subtask to the complete eligible set from one verified, digest-bound Executor Registry snapshot, including Codex, Pi, Hermes profiles, or organization-specific session CLIs. |
+| **Worktree execution** | Verified registry-bound CLI Executors run as short-lived child processes in persistent private Git worktrees; Docker remains an explicit binding-level compatibility option. |
 | **Verification and accountability** | Structured completion contracts capture acceptance evidence, artifacts, handoffs, attempt receipts, and audit events before results are exposed or delivered. |
 | **Operational memory and delivery** | Explicitly confirmed preferences, deterministic task search, terminal workflows, Gateway surfaces, and Feishu delivery remain connected to the same durable task state. |
 
@@ -61,7 +61,7 @@ flowchart LR
   Planning --> Workflow[Durable Kernel Workflow<br/>Inbox / ledger / application]
   Workflow --> Kernel[Control Kernel<br/>Policy and authorization]
   Kernel --> Runtime[Execution Runtime<br/>Frontier / dispatch / recovery]
-  Runtime --> Agents[Worktree Executor Processes<br/>Codex / Pi]
+  Runtime --> Agents[Verified Registry Executors<br/>Worktree / Docker compatibility]
   Agents --> Verify[Verification and Delivery<br/>Evidence / artifacts / handoffs]
 
   State[(Persistent Task State<br/>memory / attempts / audit)]
@@ -117,20 +117,28 @@ Set `OPENAI_API_KEY` and `OPENAI_BASE_URL` in each file.
 ```bash
 ./setup.sh
 anyfusion --check
+anyfusion executor list
 ```
 
-4. Start the TUI or run the end-to-end artifact gate:
+Confirm that each Executor intended for routing is `enabled / verified`. Use
+`anyfusion executor discover`, `register`, and `verify` when a binding has not
+yet been confirmed.
+
+4. Start the TUI or run an end-to-end gate:
 
 ```bash
 anyfusion
 anyfusion smoke --scenario artifact
+anyfusion smoke --executor pi --scenario pi-research --timeout 300
 ```
 
-The launcher builds both repositories and reuses the host-installed Codex/Pi
-commands. Use `anyfusion --no-build` to reuse current outputs. Runtime data is
-stored under `~/.local/share/anyfusion`; isolated Agent source configuration is
-stored under `~/.config/anyfusion`. Existing Dockerfiles remain for CI,
-cross-platform deployment, and the explicit compatibility backend.
+The launcher builds both repositories and uses only verified absolute CLI
+bindings from `$ANYFUSION_CONFIG_HOME/executors.yaml`. Use
+`anyfusion --no-build` to reuse current outputs. Runtime data is stored under
+`~/.local/share/anyfusion`; the Registry and private Executor source
+configuration are stored under `~/.config/anyfusion`. Existing Dockerfiles
+remain for CI, cross-platform deployment, and the explicit compatibility
+backend.
 
 ## Project Status
 
@@ -141,6 +149,8 @@ cross-platform deployment, and the explicit compatibility backend.
 | Deployment | Limited internal pilot use |
 | Task scope | One active top-level task with dependency-aware subtasks |
 | Dispatch | Deterministic batches with up to four concurrent isolated attempts inside the active top-level Task |
+| Persistence | Fresh-only SQLite schema 32; schema 31 and older databases are rejected without migration or automatic deletion |
+| Executor authority | Digest-bound host Registry; only enabled, verified, digest-matched bindings are routable |
 | Compatibility | CLI, configuration, and runtime contracts may evolve before a stable release |
 
 AnyFusion is not presented as Production Ready. The preview is intended to validate the task control plane, work-graph contracts, specialist routing, verification model, and operational workflow before stable compatibility commitments are made.

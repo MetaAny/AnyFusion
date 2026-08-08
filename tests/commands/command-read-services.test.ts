@@ -11,12 +11,14 @@ import { TaskEngine } from '../../src/task/task-engine.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskEventRepo } from '../../src/storage/task-event-repo.js';
 import { WorkUnitRepo } from '../../src/storage/work-unit-repo.js';
+import { createTestExecutorRegistrySnapshot } from '../../src/executor/test-executor-registry.js';
 
 function createHarness() {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   runMigrations(db);
   new AgentClassService({ db }).seedDefaults();
+  const executorSnapshot = createTestExecutorRegistrySnapshot();
   const taskEngine = new TaskEngine(new TaskRepo(db), '/tmp/metaclaw-command-read-tests');
   const runtimeInspector = {
     inspectExecutorRegistration: vi.fn(() => ({
@@ -31,7 +33,11 @@ function createHarness() {
     memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
     orchestration: new OrchestrationEngine(taskEngine),
     activeExecutions: { abortTask: vi.fn() },
-    readServices: new CommandReadServices(db, runtimeInspector),
+    readServices: new CommandReadServices(db, runtimeInspector, () => executorSnapshot),
+    executorRegistry: {
+      digest: () => executorSnapshot.configDigest,
+      list: () => executorSnapshot.tui,
+    },
     currentTaskId: null,
     config: {
       version: 1,
@@ -105,8 +111,8 @@ describe('command fact queries', () => {
 
     const result = await createDefaultCommandCatalog().execute('/executor show codex-cli', context);
 
-    expect(result.content).toContain('Executor AgentClass：codex-cli');
-    expect(result.content).toContain('配置状态: 已配置');
+    expect(result.content).toContain('Executor：codex-cli');
+    expect(result.content).toContain('配置状态: verified');
     expect(result.content).toContain('runtime binding: sandbox');
     expect(result.content).toContain('wu-running');
     expect(result.content).not.toContain('wu-idle');
@@ -124,12 +130,10 @@ describe('command fact queries', () => {
       '2026-08-04T10:00:00.000Z', '2026-08-04T10:00:00.000Z', '2026-08-04T10:00:00.000Z');
 
     const result = await createDefaultCommandCatalog().execute('/profile executor codex-cli', context);
-    expect(result.content).toContain('domains:');
     expect(result.content).toContain('capabilities:');
-    expect(result.content).toContain('strengths:');
-    expect(result.content).toContain('primary use cases:');
-    expect(result.content).toContain('execution image:');
-    expect(result.content).toContain('permission profile:');
+    expect(result.content).toContain('verification: verified');
+    expect(result.content).toContain('driver: codex');
+    expect(result.content).toContain('binary: /usr/bin/codex');
     expect(result.content).toContain('review@1.0.0 used=4 success=3 failure=1 patch=0');
 
     const missing = await createDefaultCommandCatalog().execute('/profile executor missing', context);

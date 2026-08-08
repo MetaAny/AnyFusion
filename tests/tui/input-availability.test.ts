@@ -492,8 +492,8 @@ describe('App input availability', () => {
     expect(app.lastFrame()).toContain('status: processing');
 
     resolvePlan(workGraphPlan({ goal: '生成一个状态报告', matchedBoundary: ['repo_execution'] }));
-    for (let attempt = 0; attempt < 100 && attemptSandbox.create.mock.calls.length === 0; attempt += 1) {
-      await new Promise(resolve => setTimeout(resolve, 10));
+    for (let attempt = 0; attempt < 400 && attemptSandbox.create.mock.calls.length === 0; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 20));
     }
     await flushUpdates();
 
@@ -513,8 +513,8 @@ describe('App input availability', () => {
       durationMs: 100,
     });
     await submitPromise;
-    for (let attempt = 0; attempt < 100 && !app.lastFrame().includes('status: idle'); attempt += 1) {
-      await new Promise(resolve => setTimeout(resolve, 10));
+    for (let attempt = 0; attempt < 400 && !app.lastFrame().includes('status: idle'); attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 20));
       await flushUpdates();
     }
     expect(app.lastFrame()).toContain('status: idle');

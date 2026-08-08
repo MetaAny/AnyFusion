@@ -9,6 +9,8 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import Database from 'better-sqlite3';
+import { runMigrations } from '../../src/storage/migrations.js';
 
 let tempRoot: string;
 
@@ -27,7 +29,7 @@ async function loadSmokeScript() {
 function authoritativeSuccessState(artifactPath: string, agentClassName = 'codex-cli') {
   return {
     acceptedProposalCount: 1,
-    tasks: [{ id: 'task-1', status: 'done' }],
+    tasks: [{ id: 'task-1', source: 'system_smoke', smokeRunId: 'smoke-1', status: 'done' }],
     subtasks: [{
       id: 'subtask-1',
       taskId: 'task-1',
@@ -132,6 +134,16 @@ describe('smoke-metaclaw-real-task helpers', () => {
     expect(readFileSync(join(externalWorkdir, 'marker'), 'utf-8')).toBe(externalWorkdir);
   });
 
+  it('derives the canonical task-owned workspace and repository roots for purge verification', async () => {
+    const smoke = await loadSmokeScript();
+    const metaclawHome = join(tempRoot, 'metaclaw-home');
+
+    expect(smoke.smokeTaskOwnedRuntimePaths(metaclawHome, 'task-1')).toEqual([
+      join(metaclawHome, 'workspace-store', 'workspaces', 'task-1'),
+      join(metaclawHome, 'workspace-store', 'repositories', 'task-1'),
+    ]);
+  });
+
   it('verifies the authoritative Subtask artifact and its exact stdout', async () => {
     const smoke = await loadSmokeScript();
     const workdir = join(tempRoot, 'work');
@@ -157,7 +169,7 @@ describe('smoke-metaclaw-real-task helpers', () => {
       workdir,
       authoritativeState: {
         acceptedProposalCount: 1,
-        tasks: [{ id: 'task-1', status: 'blocked' }],
+        tasks: [{ id: 'task-1', source: 'system_smoke', smokeRunId: 'smoke-1', status: 'blocked' }],
         subtasks: [{ id: 'subtask-1', taskId: 'task-1', status: 'blocked' }],
         receipts: [{
           taskId: 'task-1',
@@ -214,6 +226,24 @@ describe('smoke-metaclaw-real-task helpers', () => {
     expect(turns[1]).toBe('/exit');
   });
 
+  it('keeps the shared Executor Registry visible without overriding Runtime HOME for Pi smoke', async () => {
+    const smoke = await loadSmokeScript();
+    const childEnv = smoke.buildSmokeChildEnv({
+      metaclawHome: '/data/anyfusion',
+      anyFusionConfigHome: '/config/anyfusion',
+      repoRoot: '/repo',
+      smokeRunId: 'smoke-1',
+    });
+
+    expect(childEnv).toMatchObject({
+      METACLAW_HOME: '/data/anyfusion',
+      ANYFUSION_CONFIG_HOME: '/config/anyfusion',
+      ANYFUSION_SMOKE_RUN_ID: 'smoke-1',
+    });
+    expect(childEnv).not.toHaveProperty('HOME');
+    expect(childEnv).not.toHaveProperty('USERPROFILE');
+  });
+
   it('verifies Pi research from authoritative receipt ownership', async () => {
     const smoke = await loadSmokeScript();
 
@@ -226,6 +256,74 @@ describe('smoke-metaclaw-real-task helpers', () => {
     expect(() => smoke.verifyPiResearchScenario({
       authoritativeState: authoritativeSuccessState('', 'codex-cli'),
     })).toThrow(/expected a completed pi-agent receipt/);
+  });
+
+  it('scopes authoritative Task and accepted proposal reads to the current smoke run', async () => {
+    const smoke = await loadSmokeScript();
+    const metaclawHome = join(tempRoot, 'main-home');
+    mkdirSync(metaclawHome, { recursive: true });
+    const db = new Database(join(metaclawHome, 'metaclaw.db'));
+    runMigrations(db);
+    const now = '2026-08-08T00:00:00.000Z';
+    for (const index of [1, 2]) {
+      const taskId = `task-${index}`;
+      const eventId = `event-${index}`;
+      db.prepare(`
+        INSERT INTO tasks (
+          id, title, source, smoke_run_id, status, created_at, updated_at
+        ) VALUES (?, ?, 'system_smoke', ?, 'done', ?, ?)
+      `).run(taskId, `Task ${index}`, `smoke-${index}`, now, now);
+      db.prepare(`
+        INSERT INTO kernel_events (
+          id, schema_version, event_type, correlation_id, session_id, task_id,
+          event_json, available_at, status, created_at, updated_at
+        ) VALUES (?, 5, 'plan_proposed', ?, ?, NULL, '{}', ?, 'processed', ?, ?)
+      `).run(eventId, `correlation-${index}`, `session-${index}`, now, now, now);
+      db.prepare(`
+        INSERT INTO kernel_decisions (
+          id, schema_version, event_id, event_type, correlation_id, session_id,
+          task_id, event_json, snapshot_json, decision_json, action, reason, created_at
+        ) VALUES (
+          ?, 5, ?, 'plan_proposed', ?, ?, ?, '{}', '{}', '{}',
+          'authorize_task_plan', 'test', ?
+        )
+      `).run(
+        `decision-${index}`,
+        eventId,
+        `correlation-${index}`,
+        `session-${index}`,
+        taskId,
+        now,
+      );
+      db.prepare(`
+        INSERT INTO planner_proposal_turns (
+          session_id, turn_id, user_input, accepted_submission_id, created_at, updated_at
+        ) VALUES (?, ?, 'work', ?, ?, ?)
+      `).run(`session-${index}`, `turn-${index}`, `submission-${index}`, now, now);
+      db.prepare(`
+        INSERT INTO planner_proposal_submissions (
+          session_id, turn_id, submission_id, plan_fingerprint, plan_id,
+          event_id, status, result_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 'accepted', '{}', ?, ?)
+      `).run(
+        `session-${index}`,
+        `turn-${index}`,
+        `submission-${index}`,
+        `fingerprint-${index}`,
+        `plan-${index}`,
+        eventId,
+        now,
+        now,
+      );
+    }
+    db.close();
+
+    expect(smoke.readAuthoritativeTaskState(metaclawHome, 'smoke-2')).toMatchObject({
+      acceptedProposalCount: 1,
+      tasks: [{ id: 'task-2', smokeRunId: 'smoke-2' }],
+      subtasks: [],
+      receipts: [],
+    });
   });
 
   it('requires the second reply to recall the marker from one persisted AnyFusion-Pi session', async () => {
@@ -249,5 +347,51 @@ describe('smoke-metaclaw-real-task helpers', () => {
       interactions: [{ userInput: '刚才的测试短语是什么？', systemOutput: smoke.plannerMemoryMarker }],
       sessionFiles: ['/planner/sessions/one.jsonl', '/planner/sessions/two.jsonl'],
     })).toThrow(/exactly one persisted AnyFusion-Pi session/);
+  });
+
+  it('rotates smoke audits to twenty bounded records', async () => {
+    const smoke = await loadSmokeScript();
+    const metaclawHome = join(tempRoot, 'audit-home');
+    mkdirSync(metaclawHome, { recursive: true });
+    const db = new Database(join(metaclawHome, 'metaclaw.db'));
+    runMigrations(db);
+    db.close();
+
+    for (let index = 0; index < 25; index += 1) {
+      smoke.recordSmokeRunAudit({
+        metaclawHome,
+        runId: `smoke-${index}`,
+        scenario: 'artifact',
+        executorId: 'codex-cli',
+        result: index === 24 ? 'passed' : 'failed',
+        diagnostics: { index },
+        startedAt: `2026-08-08T00:00:${String(index).padStart(2, '0')}.000Z`,
+        completedAt: `2026-08-08T00:01:${String(index).padStart(2, '0')}.000Z`,
+      });
+    }
+
+    const readDb = new Database(join(metaclawHome, 'metaclaw.db'), { readonly: true });
+    const rows = readDb.prepare(`
+      SELECT run_id, result FROM smoke_run_audits
+      ORDER BY completed_at DESC
+    `).all();
+    readDb.close();
+    expect(rows).toHaveLength(20);
+    expect(rows[0]).toEqual({ run_id: 'smoke-24', result: 'passed' });
+    expect(rows.at(-1)).toEqual({ run_id: 'smoke-5', result: 'failed' });
+  });
+
+  it('rejects a successful user Task as authoritative smoke evidence', async () => {
+    const smoke = await loadSmokeScript();
+    const state = authoritativeSuccessState('');
+    state.tasks[0] = {
+      id: 'task-1',
+      source: 'user',
+      smokeRunId: null,
+      status: 'done',
+    };
+
+    expect(() => smoke.verifyAuthoritativeTaskState(state))
+      .toThrow(/is not owned by a system_smoke run/);
   });
 });

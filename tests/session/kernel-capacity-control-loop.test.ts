@@ -62,7 +62,7 @@ describe('Kernel capacity control loop', () => {
       .find(item => item.agentClassName === 'codex-cli')).toMatchObject({
       classHealth: 'error',
       recentAttempts: [expect.objectContaining({
-        failure: expect.objectContaining({ code: 'executor_image_probe_failed' }),
+        failure: expect.objectContaining({ code: 'executor_local_probe_failed' }),
       })],
     });
 

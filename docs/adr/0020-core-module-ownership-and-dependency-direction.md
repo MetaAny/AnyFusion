@@ -46,7 +46,7 @@ Planner 输出提案，不产生执行授权。Kernel 是战略决策的唯一�
 | --- | --- | --- | --- |
 | Planning | 自然语言语义理解、Task 绑定提案、工作图生成与 repair、Planner 上下文和审计安全边界 | 授权、Task 落态、Executor 调用、工作图持久化 | `plan(context) -> plan` |
 | Work Graph | 工作图提案/拓扑契约、纯结构验证、DAG 派生、runnable frontier、依赖关系和 handoff 引用规则 | Subtask 运行状态、AgentClass 健康策略、claim、执行、存储 | 纯验证与派生函数 |
-| Routing Catalog | canonical Routing Capability、AgentClass 静态定义、覆盖/eligible 规则、Planner-safe projection、健康投影词汇 | dispatch、fallback、进程启动、Task 状态 | 纯查询、覆盖与投影类型 |
+| Executor Registry | `executors.yaml` 配置校验、Capability/Profile/Executor 定义、digest、验证绑定、四类受控 snapshot projection、健康投影词汇 | dispatch、fallback、Task 状态、进程生命周期 | 加载/注册应用服务、不可变 snapshot 与投影类型 |
 | Control Kernel | Plan admission、dispatch、冲突、失败恢复、fallback、retry cap、熔断、抢占、capacity 和 partition 授权策略 | Repository、claim、heartbeat、Adapter 调用、原始日志解析、消息投递 | 单一 `decide(event, snapshot) -> decision` |
 | Task Domain | 持久 Task/Subtask 的运行生命周期、状态迁移不变量、当前事实和领域命令 | 工作图提案结构、下一战略动作、Executor 路由、重试/恢复政策 | 小型领域命令与查询接口 |
 | Execution Runtime | Kernel Decision 应用、工作图物化/恢复、execution context、attempt、WorkUnit、claim/release、heartbeat、调用 Executor、产生 Runtime facts | retry/fallback/replan/park 等战略判断 | Decision apply 与事实上报接口 |
@@ -73,8 +73,8 @@ observe -> build event/snapshot -> decide -> apply -> observe
 
 ```text
 Application Shell -> Planning / Control Kernel / Execution Runtime / Task queries
-Planning          -> Work Graph / Routing Catalog
-Control Kernel    -> Work Graph / Routing Catalog / Task facts / Resource facts
+Planning          -> Work Graph / Executor Registry Planner projection
+Control Kernel    -> Work Graph / Executor Registry projections / Task facts / Resource facts
 Execution Runtime -> Work Graph / Task Domain / Resource Model / Executor ports / persistence ports
 Adapters          -> their owned contracts and external systems
 Storage           -> domain value types and persistence ports
@@ -102,7 +102,11 @@ Executor Adapter 或 Runtime 负责把退出码、超时、原始异常和外部
 
 `validateWorkGraphStructure` 的逻辑 owner 是 Work Graph 模块，而不是 Planning。Planner 和 Kernel 都是消费者；Execution Runtime 只能消费已授权图及其纯派生结果。当前文件位于 `src/planning/` 是迁移期物理布局，后续第一次扩展 handoff/frontier 时应迁入独立 Work Graph 入口，不能继续增加对 Planning 内部路径的依赖。
 
-Kernel Executor Status Projection 的稳定词汇和数据契约属于 Routing Catalog；系统性健康转换、熔断和恢复解释属于 Control Kernel；读取 Runtime facts、应用投影并写 Storage 属于 Runtime/持久化 Adapter。ADR-0017 中“Kernel subsystem owns projection semantics”指逻辑控制面所有权，不授权纯 Kernel 模块直接写 Repository。当前带 Repo 的 `KernelExecutorStatusProjector` 是迁移期应用服务，不是未来 Kernel public Interface。
+Executor Registry Snapshot 及其 TUI、Planner、Kernel、Runtime 投影契约属于 Executor Registry 模块。Planning 只能消费 Planner projection；Control Kernel 只能消费候选、Capability 覆盖、digest 和健康事实；Execution Runtime 只能消费 Kernel 已授权 Executor 对应的 Runtime binding。任何消费者都不得重新读取 YAML、复制静态目录或按 Executor 名称推导命令、home、环境、worktree、evidence、结果收集和 continuation 行为。
+
+Kernel Executor Status Projection 的稳定词汇和数据契约属于 Executor Registry 控制面契约；系统性健康转换、熔断和恢复解释属于 Control Kernel；读取 Runtime facts、应用投影并写 Storage 属于 Runtime/持久化 Adapter。ADR-0017 中“Kernel subsystem owns projection semantics”指逻辑控制面所有权，不授权纯 Kernel 模块直接写 Repository。当前带 Repo 的 `KernelExecutorStatusProjector` 是迁移期应用服务，不是未来 Kernel public Interface。
+
+Executor 注册、发现、验证、启停和 reload 是 Application Service。CLI、slash command 和 AnyFusion-Pi 只能调用该服务；Pi 不得直接写 `executors.yaml`、verification 表或 Kernel 状态。配置加载失败时由 Registry Service 保留上一份有效 snapshot。Task purge 同样是 `task/` 拥有的受控 Application Service；UI/Commands 不能绕过它建立删除授权或直接删除 immutable Task facts。
 
 ### 8. 路线图阶段设计门
 
@@ -120,7 +124,7 @@ Kernel Executor Status Projection 的稳定词汇和数据契约属于 Routing C
 ## Consequences
 
 - PlanningAgent 和 Control Kernel 形成小而稳定的高杠杆 Interface；复杂策略可以在模块内部增长，而不会散到 Session/Runtime。
-- Work Graph 与 Routing Catalog 成为独立共享语义，避免 Kernel 依赖提案方内部实现，也避免 Planner/Kernel/Runtime 各自复制规则。
+- Work Graph 与 Executor Registry projection 成为独立共享语义，避免 Kernel 依赖提案方内部实现，也避免 Planner/Kernel/Runtime 各自复制规则。
 - Task Domain 只保留生命周期不变量；当前 `TaskRuntimeService` 中的调度、抢占和自动恢复策略必须在相关阶段迁入 Kernel，应用编排迁入 Runtime/Application Shell。
 - `SessionExecutionCoordinator` 的目标不是成为更大的统一服务，而是逐步变薄为 decide/apply/observe 协调器。
 - Storage schema 不再充当跨模块 Interface；持久化替换和纯模块测试更容易。
@@ -136,8 +140,8 @@ Kernel Executor Status Projection 的稳定词汇和数据契约属于 Routing C
 - 已归档 ADR-0014 的 PlanningAgent/Kernel/Runtime 主链由 ADR-0015、ADR-0020 和 ADR-0022 吸收；`direct_reply` 专用 Kernel 入口已在 Phase 3 删除，统一 `decide` seam 已落地。
 - ADR-0015 的 Planner 语义所有权、隔离 runner 和只读上下文继续有效；v2 schema、WorkUnit-only health、Runtime 战略 fallback 和 direct-reply 特例由后续 ADR 取代。
 - 已归档 ADR-0016 的静态 catalog 注入与版本规则已吸收到 ADR-0018；当前图契约由 ADR-0021/ADR-0023 定义，共享图规则的逻辑 owner 由本 ADR 明确为 Work Graph。
-- ADR-0017 的状态投影词汇和 Planner-safe 读取继续有效；持久化写入不属于纯 Kernel，当前偏好列表与 fallback 行为以 ADR-0023 和本路线图为准。
-- ADR-0018 的 canonical built-in definitions 和 Routing Capability 继续有效，并构成 Routing Catalog 模块的当前实现基础。
+- ADR-0017 的状态投影词汇和 Planner-safe 读取继续有效；`unverified` 不可路由，持久化写入不属于纯 Kernel，当前偏好列表与 fallback 行为以 ADR-0023 和本路线图为准。
+- ADR-0018 的受控 Routing Capability 与 host-level Executor Registry authority 继续有效；`executors.yaml` 及其 digest-bound snapshot 取代 canonical built-in definitions 和 `agent_classes` 静态来源。
 - 已归档 ADR-0019 记录 v3 工作图与审计迁移；当前 Planner/Kernel 认证和 Runtime 不得合成 fallback 图的规则由 ADR-0021/ADR-0023 及本 ADR 共同约束。
 
 ## Not Decided Here

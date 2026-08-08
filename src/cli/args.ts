@@ -5,9 +5,21 @@ export interface CliArgs {
   gatewayCommand?: 'setup' | 'run' | 'install' | 'start' | 'stop' | 'restart' | 'status' | 'pairing' | 'doctor';
   gatewayPairingCommand?: 'list' | 'approve' | 'revoke';
   gatewayPairingUserId?: string;
+  executorCommand?: 'discover' | 'register' | 'verify' | 'enable' | 'disable' | 'show' | 'list' | 'reload';
+  executorArgs?: string[];
 }
 
 export function parseCliArgs(argv: string[]): CliArgs {
+  if (argv[0] === 'executor') {
+    const command = argv[1];
+    if (!['discover', 'register', 'verify', 'enable', 'disable', 'show', 'list', 'reload'].includes(command ?? '')) {
+      throw new Error(`未知 executor 子命令: ${command ?? '(missing)'}`);
+    }
+    return {
+      executorCommand: command as NonNullable<CliArgs['executorCommand']>,
+      executorArgs: argv.slice(2),
+    };
+  }
   const gatewaySubcommand = parseGatewaySubcommand(argv);
   const gateway = argv.includes('--gateway') || gatewaySubcommand?.command === 'run';
   const connect = argv.includes('--connect');

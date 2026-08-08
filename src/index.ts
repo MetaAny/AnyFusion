@@ -27,9 +27,14 @@ import { formatGatewayDoctorChecks, runGatewayDoctor } from './gateway/doctor.js
 import { MetaclawSession } from './session/metaclaw-session.js';
 import { PlannerTuiBridge } from './tui-bridge/planner-tui-bridge.js';
 import { runPlannerTuiProcess } from './tui-bridge/planner-tui-process.js';
+import { runExecutorCli } from './cli/executor-cli.js';
 
 async function main() {
   const cliArgs = parseCliArgs(process.argv.slice(2));
+  const smokeRunId = process.env.ANYFUSION_SMOKE_RUN_ID?.trim() || null;
+  const newTaskMetadata = smokeRunId
+    ? { source: 'system_smoke' as const, smokeRunId }
+    : undefined;
 
   // 1. 初始化目录
   const metaclawDir = resolveMetaclawDir();
@@ -97,6 +102,15 @@ async function main() {
 
   // 3. 初始化数据库
   const db = createDatabase(resolve(metaclawDir, 'metaclaw.db'));
+  if (cliArgs.executorCommand) {
+    console.log(await runExecutorCli({
+      db,
+      command: cliArgs.executorCommand,
+      args: cliArgs.executorArgs ?? [],
+    }));
+    db.close();
+    return;
+  }
 
   // 4. 初始化 Repos
   const taskSearchIndexRepo = new TaskSearchIndexRepo(db);
@@ -136,6 +150,7 @@ async function main() {
         contextRecaller,
         notifier,
         plannerHost,
+        newTaskMetadata,
       });
       if (result.output.length > 0) {
         process.stdout.write(`${result.output.join('\n')}\n`);
@@ -160,6 +175,7 @@ async function main() {
       contextRecaller,
       notifier,
       plannerHost,
+      newTaskMetadata,
     });
     plannerTuiSession.initialize({ showDashboard: false });
     const nativeGatewayServer = new MetaclawGatewayServer({

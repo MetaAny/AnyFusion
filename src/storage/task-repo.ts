@@ -6,6 +6,8 @@ interface TaskRow {
   id: string;
   title: string;
   goal: string;
+  source: Task['source'];
+  smoke_run_id: string | null;
   status: string;
   summary: string;
   snapshot_json: string;
@@ -26,6 +28,8 @@ function rowToTask(row: TaskRow): Task {
     id: row.id,
     title: row.title,
     goal: row.goal,
+    source: row.source,
+    smokeRunId: row.smoke_run_id,
     status: row.status as TaskStatus,
     summary: row.summary,
     snapshots: JSON.parse(row.snapshot_json),
@@ -52,12 +56,12 @@ export class TaskRepo {
 
   insert(task: Task): void {
     this.db.prepare(`
-      INSERT INTO tasks (id, title, goal, status, summary, snapshot_json, resources_json, artifacts_json,
+      INSERT INTO tasks (id, title, goal, source, smoke_run_id, status, summary, snapshot_json, resources_json, artifacts_json,
         dependencies_json, priority_json, injected_prefs_json, last_scheduling_reason,
         last_interruption_reason, interruption_count, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      task.id, task.title, task.goal, task.status, task.summary,
+      task.id, task.title, task.goal, task.source, task.smokeRunId, task.status, task.summary,
       JSON.stringify(task.snapshots), JSON.stringify(task.resources),
       JSON.stringify(task.artifacts),
       JSON.stringify(task.dependencies), JSON.stringify(task.prioritySignals),
@@ -72,20 +76,31 @@ export class TaskRepo {
     return row ? rowToTask(row) : null;
   }
 
-  findByStatus(status: TaskStatus): Task[] {
-    const rows = this.db.prepare('SELECT * FROM tasks WHERE status = ? ORDER BY updated_at DESC').all(status) as TaskRow[];
+  findByStatus(status: TaskStatus, options: { includeSystemSmoke?: boolean } = {}): Task[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM tasks
+      WHERE status = ? ${options.includeSystemSmoke ? '' : "AND source <> 'system_smoke'"}
+      ORDER BY updated_at DESC
+    `).all(status) as TaskRow[];
     return rows.map(rowToTask);
   }
 
-  findActive(): Task[] {
+  findActive(options: { includeSystemSmoke?: boolean } = {}): Task[] {
     const rows = this.db.prepare(
-      `SELECT * FROM tasks WHERE status IN ('created', 'ready', 'running', 'parked', 'blocked') ORDER BY updated_at DESC`
+      `SELECT * FROM tasks
+       WHERE status IN ('created', 'ready', 'running', 'parked', 'blocked')
+       ${options.includeSystemSmoke ? '' : "AND source <> 'system_smoke'"}
+       ORDER BY updated_at DESC`
     ).all() as TaskRow[];
     return rows.map(rowToTask);
   }
 
-  findAll(): Task[] {
-    const rows = this.db.prepare('SELECT * FROM tasks ORDER BY updated_at DESC').all() as TaskRow[];
+  findAll(options: { includeSystemSmoke?: boolean } = {}): Task[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM tasks
+      ${options.includeSystemSmoke ? '' : "WHERE source <> 'system_smoke'"}
+      ORDER BY updated_at DESC
+    `).all() as TaskRow[];
     return rows.map(rowToTask);
   }
 
@@ -96,6 +111,8 @@ export class TaskRepo {
 
     if (changes.title !== undefined) { sets.push('title = ?'); values.push(changes.title); }
     if (changes.goal !== undefined) { sets.push('goal = ?'); values.push(changes.goal); }
+    if (changes.source !== undefined) { sets.push('source = ?'); values.push(changes.source); }
+    if (changes.smokeRunId !== undefined) { sets.push('smoke_run_id = ?'); values.push(changes.smokeRunId); }
     if (changes.status !== undefined) { sets.push('status = ?'); values.push(changes.status); }
     if (changes.summary !== undefined) { sets.push('summary = ?'); values.push(changes.summary); }
     if (changes.snapshots !== undefined) { sets.push('snapshot_json = ?'); values.push(JSON.stringify(changes.snapshots)); }

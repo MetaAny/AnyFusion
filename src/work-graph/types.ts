@@ -1,8 +1,3 @@
-import type {
-  BuiltinExecutorName,
-  RoutingCapabilityId,
-} from '../executor/builtin-executor-catalog.js';
-
 export type WorkGraphItemType = 'text' | 'artifact';
 
 export interface WorkGraphRequiredItem {
@@ -35,8 +30,8 @@ export interface WorkGraphSubtask {
   goal: string;
   dependencies: WorkGraphDependency[];
   contextRefs: ContextRef[];
-  requiredCapabilities: RoutingCapabilityId[];
-  preferredAgentClassList: BuiltinExecutorName[];
+  requiredCapabilities: string[];
+  preferredAgentClassList: string[];
   deliveryKind: 'edit' | 'report';
   acceptance: WorkGraphAcceptanceCriterion[];
   riskLevel: 'low' | 'medium' | 'high';

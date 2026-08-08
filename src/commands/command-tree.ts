@@ -1,5 +1,4 @@
 import type { TaskStatus } from '../core/types.js';
-import { AgentClassRepo } from '../storage/agent-class-repo.js';
 import { LearningCandidateRepo } from '../storage/learning-candidate-repo.js';
 import {
   CommandCatalog,
@@ -18,6 +17,7 @@ import {
   clearTasks,
   listTasks,
   pauseTask,
+  purgeTask,
   rebuildTaskIndex,
   resumeTask,
   searchTaskIndex,
@@ -35,8 +35,14 @@ import {
   showMemoryVaultStatus,
 } from './memory-commands.js';
 import {
+  disableExecutor,
+  discoverExecutors,
+  enableExecutor,
   listExecutors,
+  registerExecutor,
+  reloadExecutors,
   refreshExecutors,
+  verifyExecutor,
 } from './executor-commands.js';
 import {
   approveLearningCandidate,
@@ -89,7 +95,9 @@ function taskReference(
     kind: 'reference',
     description,
     candidates: context => {
-      const tasks = context.taskEngine.getTaskRepo().findAll()
+      const tasks = context.taskEngine.getTaskRepo().findAll({
+        includeSystemSmoke: context.includeSystemSmokeTasks === true,
+      })
         .filter(task => !allowed || allowed.includes(task.status))
         .sort((left, right) => {
           if (left.id === context.currentTaskId) return -1;
@@ -269,6 +277,15 @@ function taskNodes(): CommandNode[] {
         content: context.readServices.taskHistory(stringArg(args, 'taskId')),
       }),
     }),
+    action({
+      name: 'purge',
+      summary: '永久清除终态任务',
+      effect: '验证任务与资源静默后，在受控事务中删除任务详细事实并保留最小审计。',
+      usage: '/task purge <taskId> --confirm <taskId>',
+      arguments: [taskReference('要永久清除的终态任务', ['done', 'archived', 'cancelled'])],
+      options: [option('--confirm', '必须重复输入完全相同的 Task ID', text('confirmation', 'Task ID'))],
+      run: purgeTask,
+    }),
     {
       kind: 'group', name: 'index', summary: '任务检索索引', children: [
         action({
@@ -286,12 +303,44 @@ function taskNodes(): CommandNode[] {
 }
 
 function executorNodes(): CommandNode[] {
-  const executorValues = (context: CommandContext) => new AgentClassRepo(context.db).findAll().map(item => ({
-    id: item.name, label: item.name, description: `${item.kind} · ${item.domains.join(',') || 'no domains'}`,
+  const executorValues = (context: CommandContext) => (context.executorRegistry?.list() ?? []).map(item => ({
+    id: item.id, label: item.id, description: `${item.driver} · ${item.verification}`,
   }));
   const executorRef = (optional = false) => dynamicReference('executorName', 'Executor', executorValues, optional);
   return [
     action({ name: 'list', summary: '列出 Executor', effect: '读取 AgentClass 与 WorkUnit 注册信息。', usage: '/executor list', run: listExecutors }),
+    action({ name: 'discover', summary: '发现已安装 Executor', effect: '按 executors.yaml profile 探测绝对路径和版本。', usage: '/executor discover', run: discoverExecutors }),
+    action({
+      name: 'register',
+      summary: '注册并验证 Executor',
+      effect: '通过统一注册服务验证会话恢复后原子更新 executors.yaml。',
+      usage: '/executor register <executorName> (--profile <profile> | --driver cli-session) --binary <path> --home <path> --description <text> --capabilities <a,b> --use-cases <a,b>',
+      arguments: [text('executorName', '稳定 Executor ID')],
+      options: [
+        option('--profile', '已知 profile ID', text('profile', 'profile ID')),
+        option('--driver', '未知 CLI 使用 cli-session', text('driver', 'driver ID')),
+        option('--binary', '绝对二进制路径', text('binary', 'absolute path')),
+        option('--home', '私有 runtime home', text('home', 'absolute path')),
+        option('--description', 'Executor 描述', text('description', 'description')),
+        option('--capabilities', '逗号分隔能力', text('capabilities', 'capabilities')),
+        option('--use-cases', '逗号分隔主要用例', text('useCases', 'use cases')),
+        option('--env-files', '逗号分隔环境配置文件绝对路径', text('envFiles', 'environment files')),
+        option('--version-args-json', 'cli-session 版本参数 JSON 数组', text('versionArgs', 'JSON array')),
+        option('--version-pattern', 'cli-session 版本输出正则', text('versionPattern', 'regular expression')),
+        option('--initial-args-json', 'cli-session 首次调用参数 JSON 数组', text('initialArgs', 'JSON array')),
+        option('--resume-args-json', 'cli-session 恢复调用参数 JSON 数组', text('resumeArgs', 'JSON array')),
+        option('--session-id-pattern', 'cli-session session ID 提取正则', text('sessionPattern', 'regular expression')),
+        option('--final-output-pattern', 'cli-session 最终输出提取正则', text('outputPattern', 'regular expression')),
+        option('--timeout-ms', 'cli-session 超时毫秒', text('timeout', 'milliseconds')),
+        option('--terminate-signal', 'cli-session 终止信号', text('signal', 'SIGTERM or SIGINT')),
+        option('--permission-profile', '确认后的有效权限画像', text('permissionProfile', 'permission profile')),
+      ],
+      run: registerExecutor,
+    }),
+    action({ name: 'verify', summary: '验证 Executor', effect: '执行版本、隔离、首次会话和恢复 challenge。', usage: '/executor verify <executorName>', arguments: [executorRef()], run: verifyExecutor }),
+    action({ name: 'enable', summary: '启用 Executor', effect: '仅允许启用当前 digest 已验证的 Executor。', usage: '/executor enable <executorName>', arguments: [executorRef()], run: enableExecutor }),
+    action({ name: 'disable', summary: '禁用 Executor', effect: '从 Planner、Kernel 和 Runtime 可用集合移除 Executor。', usage: '/executor disable <executorName>', arguments: [executorRef()], run: disableExecutor }),
+    action({ name: 'reload', summary: '重载 Executor 配置', effect: '验证成功才替换当前 snapshot；失败保留上一份。', usage: '/executor reload', run: reloadExecutors }),
     action({
       name: 'refresh',
       summary: '重新检查 error Executor',
@@ -372,7 +421,11 @@ function learningNodes(): CommandNode[] {
 }
 
 function profileNodes(): CommandNode[] {
-  const executorValues = (context: CommandContext) => new AgentClassRepo(context.db).findAll().map(item => ({ id: item.name, label: item.name, description: item.domains.join(',') || item.kind }));
+  const executorValues = (context: CommandContext) => (context.executorRegistry?.list() ?? []).map(item => ({
+    id: item.id,
+    label: item.id,
+    description: `${item.driver} · ${item.verification}`,
+  }));
   return [
     action({ name: 'user', summary: '查看用户画像', effect: '汇总长期记忆和自动化事件。', usage: '/profile user', run: showUserProfile }),
     action({ name: 'project', summary: '查看项目画像', effect: '按项目主题汇总项目记忆。', usage: '/profile project <name>', arguments: [text('name', '项目名称')], run: showProjectProfile }),

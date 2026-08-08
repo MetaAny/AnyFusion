@@ -26,7 +26,6 @@ import {
 } from '../kernel/control-kernel.js';
 import { DurableKernelWorkflow, type KernelWorkflow, type KernelWorkflowStore } from '../kernel/kernel-workflow.js';
 import type { WorkGraphRevisionRepo } from '../storage/work-graph-revision-repo.js';
-import { deriveRecoverySafety } from '../executor/builtin-executor-catalog.js';
 import type { KernelEffectOutboxRepo } from '../storage/kernel-effect-outbox-repo.js';
 import type { ExecutorAttemptReceiptRepo } from '../storage/executor-attempt-receipt-repo.js';
 import { buildDefaultResourceClaims } from '../resource/index.js';
@@ -498,7 +497,9 @@ export class KernelExecutionRuntime {
     const recoverySubtask = recoverySubtaskId
       ? subtasks.find(subtask => subtask.id === recoverySubtaskId)
       : subtasks.find(subtask => frontier.includes(subtask.id));
-    const recoverySafety = deriveRecoverySafety(recoverySubtask?.requiredCapabilities ?? []);
+    const recoverySafety = this.deps.agentClassService.deriveRecoverySafety(
+      recoverySubtask?.requiredCapabilities ?? [],
+    );
     return {
       schemaVersion: 5,
       type: 'dispatch',

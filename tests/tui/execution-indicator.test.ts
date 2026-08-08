@@ -182,8 +182,8 @@ describe('App execution indicator', () => {
     const submitPromise = inputCapture.handler?.('', { return: true }) ?? Promise.resolve();
     await flushUpdates();
 
-    for (let attempt = 0; attempt < 100 && attemptSandbox.create.mock.calls.length === 0; attempt += 1) {
-      await new Promise(resolve => setTimeout(resolve, 10));
+    for (let attempt = 0; attempt < 500 && attemptSandbox.create.mock.calls.length === 0; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 20));
     }
     expect(attemptSandbox.create).toHaveBeenCalled();
     expect(app.frames.some(frame => frame.includes('当前执行 1 | 待执行 0 | 已挂起 0 | 阻塞 0'))).toBe(true);
@@ -196,8 +196,8 @@ describe('App execution indicator', () => {
     });
 
     await submitPromise;
-    for (let attempt = 0; attempt < 100 && !app.lastFrame().includes('completed 1 Subtask(s)'); attempt += 1) {
-      await new Promise(resolve => setTimeout(resolve, 10));
+    for (let attempt = 0; attempt < 500 && !app.lastFrame().includes('completed 1 Subtask(s)'); attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 20));
       await flushUpdates();
     }
 

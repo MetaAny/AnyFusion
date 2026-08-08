@@ -7,6 +7,7 @@ import type { OrchestrationEngine } from '../guidance/orchestration.js';
 import type { SessionPresentationService } from './session-presentation-service.js';
 import type { QueuedExecutionRequest } from './session-helpers.js';
 import type { TaskClearScope, TaskStatusQueryScope } from '../task/task-control-types.js';
+import type { Task } from '../core/types.js';
 
 interface FocusContext {
   kind: 'conversation' | 'task';
@@ -15,6 +16,10 @@ interface FocusContext {
 
 export interface SessionKernelRuntimeDeps {
   sessionId: string;
+  newTaskMetadata?: {
+    source: Task['source'];
+    smokeRunId: string | null;
+  };
   taskRuntimeService: TaskRuntimeService;
   memoryContextService: MemoryContextService;
   orchestration: OrchestrationEngine;
@@ -176,6 +181,7 @@ export class SessionKernelRuntime {
           title: (command.title ?? inline.normalizedGoal).slice(0, 50),
           goal: command.goal ?? inline.normalizedGoal,
           resources: inline.resources,
+          ...this.deps.newTaskMetadata,
         });
     if (!task) throw new Error(`task not found: ${command.taskId}`);
     if (command.priority) {

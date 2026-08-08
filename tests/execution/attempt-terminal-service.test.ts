@@ -8,10 +8,8 @@ import { KernelDispatchItemRepo } from '../../src/storage/kernel-dispatch-item-r
 import { KernelWorkflowRepo } from '../../src/storage/kernel-workflow-repo.js';
 import { SubtaskRepo } from '../../src/storage/subtask-repo.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
-import { AgentClassRepo } from '../../src/storage/agent-class-repo.js';
 import { WorkUnitRepo } from '../../src/storage/work-unit-repo.js';
 import type { Subtask } from '../../src/core/types.js';
-import { getBuiltinExecutorAgentClasses } from '../../src/executor/builtin-executor-catalog.js';
 import { WorkspacePublicationRepo } from '../../src/storage/workspace-publication-repo.js';
 
 function setup() {
@@ -52,9 +50,6 @@ function setup() {
   };
   const subtasks = new SubtaskRepo(db);
   subtasks.upsert(subtask);
-  new AgentClassRepo(db).upsert(
-    getBuiltinExecutorAgentClasses().find(item => item.name === 'codex-cli')!,
-  );
   new WorkUnitRepo(db).upsert({
     id: 'work-unit-terminal',
     agentClassName: 'codex-cli',

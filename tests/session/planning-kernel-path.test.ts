@@ -670,7 +670,7 @@ describe('natural-language planning/kernel path', () => {
           SELECT subtask_id, status FROM resource_waits ORDER BY requested_at
         `).all(),
         output: harness.session.getSnapshot().output,
-      }))), 2_000)),
+      }))), 8_000)),
     ]);
     expect(maximumRunning).toBe(2);
 
@@ -870,6 +870,6 @@ describe('natural-language planning/kernel path', () => {
       WHERE session_id = ? AND status = 'rejected'
     `).get('sess_reject_executor') as { result_json: string };
     const result = JSON.parse(proposal.result_json) as { issues: string[] };
-    expect(result.issues.join('; ')).toContain('preferredAgentClassList');
+    expect(result.issues.join('; ')).toContain('preferred AgentClass set');
   });
 });

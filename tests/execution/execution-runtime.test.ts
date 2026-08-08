@@ -4,7 +4,7 @@ import type { AgentClass, Subtask, WorkUnit } from '../../src/core/types.js';
 import { ExecutionRuntime, ExecutorRegistry } from '../../src/execution/execution-runtime.js';
 import type { AgentClassLookupPort } from '../../src/executor/agent-class-lookup-port.js';
 import type { AttemptSandboxPort, CreateAttemptSandboxInput, AttemptSandboxRecord } from '../../src/execution/attempt-sandbox.js';
-import { getBuiltinExecutorAgentClasses } from '../../src/executor/builtin-executor-catalog.js';
+import { testExecutorAgentClasses } from '../support/executor-registry.js';
 
 function createSandbox(overrides: Partial<AttemptSandboxPort> = {}): AttemptSandboxPort {
   const record: AttemptSandboxRecord = {
@@ -31,7 +31,7 @@ function createSandbox(overrides: Partial<AttemptSandboxPort> = {}): AttemptSand
 }
 
 function createAgentClass(name = 'codex-cli'): AgentClass {
-  const canonical = getBuiltinExecutorAgentClasses().find(agentClass => agentClass.name === name);
+  const canonical = testExecutorAgentClasses().find(agentClass => agentClass.name === name);
   if (canonical) return canonical;
   return {
     name,
@@ -201,20 +201,20 @@ describe('ExecutionRuntime', () => {
     expect(registry.inspect('codex-cli')).toEqual({
       configured: true,
       bindingSource: 'sandbox',
-      adapterName: 'codex-cli',
+      adapterName: 'codex',
     });
   });
 
   it('reports unbound when the AgentClass has no verified image or permission profile', () => {
-    const registry = createRegistry([createAgentClass('codex-cli')], createSandbox());
-    expect(registry.inspect('codex-cli')).toEqual({
+    const registry = createRegistry([createAgentClass('custom-unbound')], createSandbox());
+    expect(registry.inspect('custom-unbound')).toEqual({
       configured: false,
       bindingSource: 'unbound',
       adapterName: null,
     });
   });
 
-  it('resolves and caches the image id for an AgentClass with an unresolved image ref', async () => {
+  it('fails closed when a legacy AgentClass has no immutable image binding', async () => {
     const unresolved: AgentClass = {
       ...createAgentClass('codex-cli'),
       executionImageRef: 'metaclaw/test:latest',
@@ -225,15 +225,15 @@ describe('ExecutionRuntime', () => {
     const sandbox = createSandbox();
     const registry = new ExecutorRegistry({ agentClassLookup: lookup, attemptSandbox: sandbox });
 
-    await expect(registry.probe('codex-cli')).resolves.toEqual({
-      available: true,
-      failure: null,
+    await expect(registry.probe('codex-cli')).resolves.toMatchObject({
+      available: false,
+      failure: { code: 'executor_not_routable' },
     });
-    expect(sandbox.resolveImage).toHaveBeenCalledWith('metaclaw/test:latest');
-    expect(lookup.findByName('codex-cli')?.resolvedImageId).toBe('sha256:test');
+    expect(sandbox.resolveImage).not.toHaveBeenCalled();
+    expect(lookup.findByName('codex-cli')?.resolvedImageId).toBeNull();
   });
 
-  it('preserves image resolution failures for the WorkUnit probe audit', async () => {
+  it('does not probe an unresolved legacy image after the binding fails closed', async () => {
     const unresolved: AgentClass = {
       ...createAgentClass('codex-cli'),
       executionImageRef: 'metaclaw/test:latest',
@@ -250,17 +250,17 @@ describe('ExecutionRuntime', () => {
     await expect(registry.probe('codex-cli')).resolves.toMatchObject({
       available: false,
       failure: {
-        code: 'executor_image_probe_failed',
-        summary: expect.stringContaining('Cannot connect to the Docker daemon'),
+        code: 'executor_not_routable',
       },
     });
+    expect(sandbox.resolveImage).not.toHaveBeenCalled();
   });
 
   it('is unavailable when the AgentClass does not exist', async () => {
     const registry = createRegistry([], createSandbox());
     await expect(registry.probe('missing')).resolves.toMatchObject({
       available: false,
-      failure: { code: 'agent_class_not_found' },
+      failure: { code: 'executor_not_routable' },
     });
   });
 

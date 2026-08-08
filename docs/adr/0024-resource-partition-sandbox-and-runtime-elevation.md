@@ -24,14 +24,15 @@ ControlKernel remains the only strategic authority. Kernel v3 may grant a bounde
 
 ### Worktree-first, workspace-durable execution
 
-The default execution attempt is a short-lived Codex/Pi child process launched
-by the trusted Runtime with `cwd` set to the persistent Task-generation +
-Subtask Git worktree. The existing Docker attempt backend remains available as
-an explicit compatibility mode. Every Task generation + Subtask owns a
+The default execution attempt is a short-lived process selected from a
+verified Executor Registry binding and launched by the trusted Runtime with
+`cwd` set to the persistent Task-generation + Subtask Git worktree. The Docker
+attempt backend remains available only when the same binding explicitly
+supports that compatibility mode. Every Task generation + Subtask owns a
 persistent workspace record and immutable checkpoints. Retry and fallback may
 resume only the authorized workspace state. A paused process/container is
-retained only during bounded automatic Kernel/Planner review; waiting for a user
-or replan checkpoints the workspace, terminates the runtime instance and
+retained only during bounded automatic Kernel/Planner review; waiting for a
+user or replan checkpoints the workspace, terminates the runtime instance and
 releases active leases.
 
 The original repository, Task evidence and dependency inputs are read-only. The private workspace and `/tmp` are writable. Git executions use a MetaClaw-managed repository/worktree and managed Task branch; Runtime owns `.git` and controlled commits. No Phase 5 action mutates, merges or pushes the user's branch. Non-Git workspaces use filesystem checkpoints and content-addressed objects. SQLite stores metadata, not large contents.
@@ -43,11 +44,28 @@ ungoverned egress. Worktree attempts are trusted Runtime child processes and do
 not receive a Docker Engine endpoint. The trusted Runtime uses the existing
 Docker Engine adapter only when the compatibility backend is selected.
 
-Provider credentials also remain in the trusted Runtime. Each attempt receives only a random attempt-scoped token and a fixed internal model-gateway URL; the gateway binds the token to the configured provider endpoint and process lifetime. In worktree mode canonical Codex uses `danger-full-access` inside the already-trusted Runtime process, so there is no second CLI sandbox beyond the managed worktree boundary. Docker compatibility attempts keep Codex's nested `workspace-write` sandbox and non-interactive fail-closed approval policy. Because that nested Linux sandbox requires user-namespace syscalls, the Docker adapter may add `seccomp=unconfined` only for the pinned canonical Codex attempt image; non-root UID, read-only rootfs, dropped capabilities, no-new-privileges, internal networking and all mount boundaries remain mandatory. No custom image inherits this exception.
+Provider credentials also remain in the trusted Runtime. Each attempt receives
+only a random attempt-scoped token and a fixed internal model-gateway URL; the
+gateway binds the token to the configured provider endpoint and process
+lifetime. In worktree mode a verified Codex driver may use
+`danger-full-access` inside the already-trusted Runtime process, so there is no
+second CLI sandbox beyond the managed worktree boundary. Docker compatibility
+attempts keep the Codex driver's nested `workspace-write` sandbox and
+non-interactive fail-closed approval policy. Because that nested Linux sandbox
+requires user-namespace syscalls, the Docker adapter may add
+`seccomp=unconfined` only when the verified binding selects the Codex driver
+and its pinned immutable image; non-root UID, read-only rootfs, dropped
+capabilities, no-new-privileges, internal networking and all mount boundaries
+remain mandatory. Other drivers and images do not inherit this exception.
 
 ### Default profiles and permission audit
 
-Default authority is an AgentClass fact, not a Planner field. Canonical definitions own immutable execution image and permission profile bindings. Custom AgentClasses must provide a resolvable immutable image and controlled profile; missing or drifted images are configuration failures and never fall back to host execution. Permission details are excluded from the Planner-safe catalog.
+Default authority is an Executor Registry binding fact, not a Planner field.
+Each enabled Executor definition owns its confirmed permission profile,
+supported backends and any immutable compatibility image. Missing, unverified,
+stale or drifted bindings fail closed and never fall back to another backend.
+Permission and installation details are excluded from the Planner-safe
+projection.
 
 Runtime materializes a versioned explicit rule set from that profile and the current Task bindings. `permission-profile-v1` permits additional-read requests only for exact Task-registered partitions, and permits normalized public HTTP(S) target requests only for `public-web-research`. The other profiles receive no network allow rule. No profile rule approves secrets, external mutation or repository promotion.
 
@@ -70,7 +88,7 @@ Phase 5 remains serial. Partition conflicts and wait relationships are exercised
 ## Ownership And Dependencies
 
 - Resource Model owns pure identity, overlap, conflict and lease/grant invariants.
-- Routing/AgentClass catalog owns controlled default permission profiles and image bindings.
+- Executor Registry owns controlled default permission profiles, backend support and image bindings.
 - ControlKernel owns grant/deny/escalate, partition wait and recovery policy through the single `decide` seam.
 - Execution Runtime owns workspace, lease application, selected backend lifecycle, permission request/audit-budget handling, checkpoint and normalized observations.
 - Storage, Docker, Git/CAS and external providers implement ports owned by Resource/Execution.
@@ -87,7 +105,8 @@ Kernel facts rather than hidden Adapter prompts. Fine-grained mediation remains
 outside the product claim until an operation-specific adapter is implemented and
 tested. Planner remains focused on semantic decomposition and is involved only
 when an otherwise valid request lacks explicit authority. The default Linux
-server demo runs Runtime, Planner and canonical Executors as host processes.
-Docker remains for macOS/Windows deployment, CI image validation and the
-explicit compatibility backend. Custom Executor registration remains a
-Docker compatibility concern and is unchanged by this minimal worktree path.
+server path runs Runtime, Planner and verified registry-bound Executors as host
+processes. Docker remains for macOS/Windows deployment, CI image validation and
+the explicit compatibility backend. Custom Executor registration uses the same
+Registry verification and backend-support contract rather than a separate
+Docker-only path.

@@ -58,6 +58,7 @@ Usage:
   anyfusion build                   Build AnyFusion and AnyFusion-Pi
   anyfusion --no-build [args...]    Reuse existing build outputs
   anyfusion --check                 Validate and prepare the native server runtime
+  anyfusion executor <command> ...  Discover, register, verify, enable, disable, show, list, or reload Executors
   anyfusion --launcher-help         Show this help
 
 Runtime:
@@ -205,6 +206,7 @@ prepare_runtime_configuration() {
   fi
 
   export METACLAW_HOME
+  export ANYFUSION_CONFIG_HOME
   export METACLAW_EXECUTOR_BACKEND=worktree
   export METACLAW_PLANNER_COMMAND="$PLANNER_WRAPPER"
   export METACLAW_PLANNER_TUI_COMMAND="$PLANNER_WRAPPER"
@@ -271,7 +273,6 @@ main() {
     export METACLAW_SMOKE_NATIVE=true
     export METACLAW_SMOKE_REPO_ROOT="$REPO_ROOT"
     export METACLAW_SMOKE_WORKDIR="$INVOKE_CWD"
-    unset METACLAW_HOME
     cd "$REPO_ROOT"
     exec node "$REPO_ROOT/scripts/smoke-metaclaw-real-task.mjs" "$@"
   fi

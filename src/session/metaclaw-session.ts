@@ -25,7 +25,7 @@ import { ExecutionRuntime, ExecutorRegistry } from '../execution/execution-runti
 import { ExecutorRecoveryRefreshService } from '../execution/executor-recovery-refresh-service.js';
 import { VerificationAndDeliveryService } from '../delivery/verification-and-delivery-service.js';
 import { AgentClassService } from '../executor/agent-class-service.js';
-import { ExecutorAdminService } from '../executor/executor-admin-service.js';
+import { seedDefaultWorkUnits } from '../executor/agent-class-seeder.js';
 import { ExecutionProgressService } from '../execution/execution-progress-service.js';
 import { WorkUnitClaimService } from '../execution/work-unit-claim-service.js';
 import { WorkspaceStore } from '../execution/workspace-store.js';
@@ -95,6 +95,15 @@ import { generateInteractionId } from '../utils/id.js';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import { KernelEffectOutboxRepo } from '../storage/kernel-effect-outbox-repo.js';
 import { ExecutorAttemptReceiptRepo } from '../storage/executor-attempt-receipt-repo.js';
+import { ExecutorVerificationRepo } from '../storage/executor-verification-repo.js';
+import { ExecutorRegistryService } from '../executor/executor-registry-service.js';
+import { TaskPurgeService } from '../task/task-purge-service.js';
+import {
+  ExecutorRegistrationService,
+  profileRegistrationDefaults,
+} from '../executor/executor-registration-service.js';
+import type { TuiExecutorRegistryEntry } from '../executor/executor-registry-types.js';
+import { SmokeRunAuditRepo, type SmokeRunAudit } from '../storage/smoke-run-audit-repo.js';
 
 export interface PlannerHostRegistrar {
   registerSession(sessionId: string, session: MetaclawSession): () => void;
@@ -113,6 +122,10 @@ export interface MetaclawSessionDeps {
   sourceRoot?: string;
   attemptSandbox?: AttemptSandboxPort;
   plannerHost?: PlannerHostRegistrar;
+  newTaskMetadata?: {
+    source: Task['source'];
+    smokeRunId: string | null;
+  };
 }
 
 function boundedKernelRequestText(value: string): string {
@@ -189,7 +202,13 @@ export interface PlannerTuiSnapshot {
       preferredAgentClassList: string[];
     }>;
   }>;
-  executorStatuses: KernelExecutorStatusProjection[];
+  executorStatuses: Array<TuiExecutorRegistryEntry & {
+    classHealth: KernelExecutorStatusProjection['classHealth'];
+    recentAttempts: KernelExecutorStatusProjection['recentAttempts'];
+    recentRecoveryChecks: KernelExecutorStatusProjection['recentRecoveryChecks'];
+    updatedAt: string | null;
+  }>;
+  smokeRunAudits: SmokeRunAudit[];
 }
 
 /** A durable, presentation-only result projected from an integrated workspace publication. */
@@ -296,7 +315,8 @@ export class MetaclawSession {
   private readonly persistenceService: SessionPersistenceService;
   private readonly presentation: SessionPresentationService;
   private readonly agentClassService: AgentClassService;
-  private readonly executorAdminService: ExecutorAdminService;
+  private readonly executorRegistryService: ExecutorRegistryService;
+  private readonly executorRegistrationService: ExecutorRegistrationService;
   private readonly executionProgressService: ExecutionProgressService;
   private readonly planningContextBuilder: PlanningContextBuilder;
   private readonly planningAgent: PlanningAgent;
@@ -335,8 +355,19 @@ export class MetaclawSession {
     this.taskRuntimeService = new TaskRuntimeService({
       taskEngine: deps.taskEngine,
       taskRepo: deps.taskEngine.getTaskRepo(),
+      includeSystemSmoke: deps.newTaskMetadata?.source === 'system_smoke',
     });
-    this.agentClassService = new AgentClassService({ db: deps.db });
+    this.kernelExecutorStatusRepo = new KernelExecutorStatusRepo(deps.db);
+    this.executorRegistryService = new ExecutorRegistryService({
+      verificationRepo: new ExecutorVerificationRepo(deps.db),
+      statusRepo: this.kernelExecutorStatusRepo,
+    });
+    this.executorRegistrationService = new ExecutorRegistrationService({
+      registry: this.executorRegistryService,
+      verificationRepo: new ExecutorVerificationRepo(deps.db),
+      statusRepo: this.kernelExecutorStatusRepo,
+    });
+    this.agentClassService = new AgentClassService({ registry: this.executorRegistryService });
     this.attemptSandbox = deps.attemptSandbox ?? createDefaultAttemptSandbox();
     this.permissionRepository = new SqlitePermissionRepository(deps.db);
     this.attemptSandboxRepository = new SqliteAttemptSandboxRepository(deps.db);
@@ -348,19 +379,20 @@ export class MetaclawSession {
     );
     const executorRegistry = new ExecutorRegistry({
       agentClassLookup: this.agentClassService,
+      snapshot: () => this.executorRegistryService.current(),
       attemptSandbox: this.attemptSandbox,
       attemptSandboxRepository: this.attemptSandboxRepository,
       controlNetwork: process.env.METACLAW_CONTROL_NETWORK ?? 'metaclaw-control',
     });
     this.executionRuntime = new ExecutionRuntime(executorRegistry);
-    this.commandReadServices = new CommandReadServices(deps.db, this.executionRuntime);
+    this.commandReadServices = new CommandReadServices(
+      deps.db,
+      this.executionRuntime,
+      () => this.executorRegistryService.current(),
+    );
     this.verificationAndDeliveryService = new VerificationAndDeliveryService();
     this.persistenceService = new SessionPersistenceService(deps.db);
     this.presentation = new SessionPresentationService();
-    this.executorAdminService = new ExecutorAdminService({
-      agentClassService: this.agentClassService,
-      presentation: this.presentation,
-    });
     this.executionProgressService = new ExecutionProgressService(deps.db);
     this.subtaskRepo = new SubtaskRepo(deps.db);
     this.taskEventRepo = new TaskEventRepo(deps.db);
@@ -374,7 +406,6 @@ export class MetaclawSession {
       this.workGraphRevisionRepo,
       this.taskExecutionEvidenceRepo,
     );
-    this.kernelExecutorStatusRepo = new KernelExecutorStatusRepo(deps.db);
     const kernelExecutorStatusProjector = new KernelExecutorStatusProjector(this.kernelExecutorStatusRepo);
     this.workUnitClaimService = new WorkUnitClaimService(
       new WorkUnitRepo(deps.db),
@@ -406,6 +437,7 @@ export class MetaclawSession {
       sessionId: deps.sessionId,
       requestSource: 'session',
       getTimeoutMs: () => this.getPlannerTimeoutMs(),
+      getExecutorCatalog: () => this.executorRegistryService.current().planner,
     });
     this.planningAgent = deps.planningAgent ?? createDefaultPlanningAgent({
       audit: new PlannerRunRepo(deps.db),
@@ -416,8 +448,8 @@ export class MetaclawSession {
     this.commandCatalog = createDefaultCommandCatalog();
     this.inputController = new InputController({
       appendUserInput: (input: string) => this.appendUserInput(input),
-      hasPendingExecutorRegisterWizard: () => this.executorAdminService.hasPendingWizard(),
-      handlePendingExecutorRegisterWizard: (input: string) => this.handlePendingExecutorRegisterWizardInput(input),
+      hasPendingExecutorRegisterWizard: () => false,
+      handlePendingExecutorRegisterWizard: () => Promise.resolve(false),
       handleCommand: (input: string) => this.handleCommand(input),
       handleNaturalLanguageInput: (input: string) => this.handleNaturalLanguageInput(input),
       waitForAsyncWork: () => this.waitForAsyncWork(),
@@ -532,6 +564,7 @@ export class MetaclawSession {
     });
     this.sessionKernelRuntime = new SessionKernelRuntime({
       sessionId: deps.sessionId,
+      newTaskMetadata: deps.newTaskMetadata,
       taskRuntimeService: this.taskRuntimeService,
       memoryContextService: this.memoryContextService,
       orchestration: deps.orchestration,
@@ -642,7 +675,8 @@ export class MetaclawSession {
           preferredAgentClassList: [...subtask.preferredAgentClassList],
         })),
       })),
-      executorStatuses: this.kernelExecutorStatusRepo.list(),
+      executorStatuses: this.buildTuiExecutorStatuses(),
+      smokeRunAudits: new SmokeRunAuditRepo(this.deps.db).list(),
     };
   }
 
@@ -670,6 +704,20 @@ export class MetaclawSession {
         integrationCommit: publication.integrationCommit,
         completedAt: publication.updatedAt,
         reportTruncated: false,
+      };
+    });
+  }
+
+  private buildTuiExecutorStatuses(): PlannerTuiSnapshot['executorStatuses'] {
+    const health = new Map(this.kernelExecutorStatusRepo.list().map(item => [item.agentClassName, item]));
+    return this.executorRegistryService.current().tui.map(entry => {
+      const status = health.get(entry.id);
+      return {
+        ...entry,
+        classHealth: status?.classHealth ?? 'unverified',
+        recentAttempts: status?.recentAttempts ?? [],
+        recentRecoveryChecks: status?.recentRecoveryChecks ?? [],
+        updatedAt: status?.updatedAt ?? null,
       };
     });
   }
@@ -1307,7 +1355,7 @@ export class MetaclawSession {
   }
 
   private seedAgentRuntime(): void {
-    this.agentClassService.seedDefaults();
+    seedDefaultWorkUnits(new WorkUnitRepo(this.deps.db));
   }
 
   private async runPlanningAgent(context: PlanningContext): Promise<PlanningAgentPlan> {
@@ -1730,10 +1778,6 @@ export class MetaclawSession {
       await this.executorRecoveryRefreshService.refresh({ trigger: 'executor_changed' });
     }
 
-    if (result.type === 'directive' && result.directive.kind === 'start-executor-register-wizard') {
-      this.appendOutput(...this.executorAdminService.startWizard());
-    }
-
     if (result.type === 'exit') {
       this.persistSessionState({ lastSessionId: this.deps.sessionId });
       return true;
@@ -1944,19 +1988,76 @@ export class MetaclawSession {
         trigger: 'manual',
         agentClassNames,
       }),
+      purgeTask: input => new TaskPurgeService(this.deps.db).purge({
+        ...input,
+        expectedSmokeRunId: this.deps.newTaskMetadata?.source === 'system_smoke'
+          ? this.deps.newTaskMetadata.smokeRunId ?? undefined
+          : input.expectedSmokeRunId,
+      }),
+      executorRegistry: {
+        digest: () => this.executorRegistryService.current().configDigest,
+        list: () => this.executorRegistryService.current().tui,
+        discover: () => this.executorRegistrationService.discover(),
+        verify: executorId => this.executorRegistrationService.verify(executorId),
+        setEnabled: (executorId, enabled) => this.executorRegistrationService.setEnabled(executorId, enabled),
+        reload: () => this.executorRegistryService.reload(),
+        register: async input => {
+          const profile = input.profileId
+            ? this.executorRegistryService.current().profiles.get(input.profileId)
+            : null;
+          if (input.profileId && !profile) throw new Error(`Unknown Executor profile: ${input.profileId}`);
+          if (!profile && input.driver !== 'cli-session') {
+            throw new Error('Unknown CLI registration requires the cli-session driver');
+          }
+          const defaults = profile
+            ? profileRegistrationDefaults(profile, input.binaryPath, input.runtimeHome)
+            : null;
+          const environmentFile = input.environmentFiles.length === 0 && profile?.driver === 'codex'
+            ? process.env.METACLAW_CODEX_EXECUTOR_ENV_FILE
+            : input.environmentFiles.length === 0 && profile?.driver === 'pi'
+              ? process.env.METACLAW_PI_EXECUTOR_ENV_FILE
+              : undefined;
+          return this.executorRegistrationService.register({
+            id: input.id,
+            profileId: defaults?.profileId ?? null,
+            description: input.description,
+            capabilities: input.capabilities,
+            primaryUseCases: input.primaryUseCases,
+            enabled: true,
+            binding: {
+              binaryPath: input.binaryPath,
+              versionArgs: defaults?.binding.versionArgs ?? input.versionArgs ?? [],
+              versionPattern: defaults?.binding.versionPattern ?? input.versionPattern ?? '',
+              driver: defaults?.binding.driver ?? input.driver,
+              runtimeHome: input.runtimeHome,
+              environmentFiles: input.environmentFiles.length > 0
+                ? input.environmentFiles.map(path => resolve(path))
+                : environmentFile ? [resolve(environmentFile)] : [],
+              inheritEnvironment: ['PATH'],
+              effectivePermissionProfile: defaults?.binding.effectivePermissionProfile
+                ?? input.permissionProfile
+                ?? 'restricted-custom',
+              backendSupport: defaults?.binding.backendSupport ?? ['worktree'],
+              dockerImageRef: defaults?.binding.dockerImageRef ?? null,
+              dockerImageId: defaults?.binding.dockerImageId ?? null,
+              sessionProtocol: defaults?.binding.sessionProtocol ?? input.sessionProtocol ?? null,
+            },
+            strengths: [],
+            weaknesses: [],
+            riskLevel: 'medium',
+            domains: [],
+            inputTypes: ['text'],
+            outputTypes: ['markdown'],
+            avoidUseCases: [],
+            affinity: {},
+          });
+        },
+      },
+      includeSystemSmokeTasks: this.deps.newTaskMetadata?.source === 'system_smoke',
       currentTaskId: this.getCurrentTaskId(),
       db: this.deps.db,
       config: this.deps.config,
     };
-  }
-
-  private async handlePendingExecutorRegisterWizardInput(userInput: string): Promise<boolean> {
-    const result = await this.executorAdminService.handlePendingWizardInput(userInput);
-    this.appendOutput(...result.lines);
-    if (result.handled) {
-      await this.executorRecoveryRefreshService.refresh({ trigger: 'executor_changed' });
-    }
-    return result.handled;
   }
 
   private async handleNaturalLanguageInput(userInput: string): Promise<void> {

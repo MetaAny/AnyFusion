@@ -218,7 +218,7 @@ describe('SandboxedExecutorAdapter provider isolation', () => {
     }
   });
 
-  it('rejects noncanonical AgentClasses in the worktree backend', async () => {
+  it('allows a registered generic CLI binding in the worktree backend', async () => {
     const { sandbox, create } = sandboxPort('worktree');
     const adapter = new SandboxedExecutorAdapter({
       ...agentClass(),
@@ -228,11 +228,8 @@ describe('SandboxedExecutorAdapter provider isolation', () => {
 
     const result = await adapter.execute(executorInput('.'));
 
-    expect(result).toMatchObject({
-      success: false,
-      failure: { code: 'worktree_executor_not_canonical' },
-    });
-    expect(create).not.toHaveBeenCalled();
+    expect(result.success).toBe(true);
+    expect(create).toHaveBeenCalledOnce();
   });
 
   it('runs the same AgentClass concurrently and aborts only the requested attempt', async () => {

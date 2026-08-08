@@ -37,8 +37,8 @@ AnyFusion 是位于人员、企业协作入口与 Agent Runtime 之间的本地�
 | **持久化任务调度** | Task 与 Subtask 生命周期、依赖就绪、阻塞、挂起、恢复、取消和故障恢复均被持久记录，可跨进程和会话继续运行。 |
 | **策略治理的规划链路** | 自然语言规划与执行授权严格分离：Planner 提案，Control Kernel 决策，Runtime 只执行已授权的副作用。 |
 | **依赖感知工作图** | 复杂目标被表达为显式 DAG，包含验收标准、类型化依赖、受限上下文，以及工作单元之间可持久化的 handoff contract。 |
-| **多垂类 Agent 编排** | 基于能力的路由将 Subtask 映射到有序 AgentClass 候选，包括 Codex、Pi、Hermes 或企业自定义垂类 Agent，而不是把调度策略散落在 Prompt 中。 |
-| **Worktree 执行边界** | canonical Codex/Pi 在统一 Runtime 中作为子进程运行，每个 attempt 使用自己的持久 Git worktree；旧 Docker attempt 后端仅作为显式兼容选项保留。 |
+| **多垂类 Agent 编排** | 受控 Capability 路由把 Subtask 映射到同一份 verified、digest-bound Executor Registry snapshot 的完整候选集，包括 Codex、Pi、Hermes Profile 或企业自定义 session CLI。 |
+| **Worktree 执行边界** | 已验证的 Registry CLI binding 在统一 Runtime 中作为短生命周期子进程运行，每个 attempt 使用自己的持久 Git worktree；Docker 仅作为 binding 显式声明的兼容选项。 |
 | **验收、证据与审计** | 结构化完成协议在结果暴露或交付前记录验收证据、产物、handoff、attempt receipt 与审计事件。 |
 | **业务记忆与多端交付** | 已确认偏好、任务历史、语义检索、终端工作流、Gateway 和飞书交付均连接至同一份持久任务状态。 |
 
@@ -61,7 +61,7 @@ flowchart LR
   Planning --> Workflow[持久化 Kernel Workflow<br/>Inbox / Ledger / Application]
   Workflow --> Kernel[Control Kernel<br/>策略与授权]
   Kernel --> Runtime[Execution Runtime<br/>Frontier / Dispatch / Recovery]
-  Runtime --> Agents[Worktree Executor 进程<br/>Codex / Pi]
+  Runtime --> Agents[已验证 Registry Executor<br/>Worktree / Docker 兼容模式]
   Agents --> Verify[验收与交付<br/>证据 / 产物 / Handoff]
 
   State[(持久任务状态<br/>记忆 / Attempt / 审计)]
@@ -115,19 +115,26 @@ cp docker/executor-pi.env.example docker/executor-pi.env
 ```bash
 ./setup.sh
 anyfusion --check
+anyfusion executor list
 ```
 
-4. 启动 TUI 或运行端到端 artifact gate：
+确认需要参与路由的 Executor 都显示为 `enabled / verified`。尚未确认 binding
+时，使用 `anyfusion executor discover`、`register` 和 `verify`。
+
+4. 启动 TUI 或运行端到端 gate：
 
 ```bash
 anyfusion
 anyfusion smoke --scenario artifact
+anyfusion smoke --executor pi --scenario pi-research --timeout 300
 ```
 
-launcher 默认构建两个仓库并复用宿主机已安装的 Codex/Pi。
+launcher 默认构建两个仓库，并且只使用
+`$ANYFUSION_CONFIG_HOME/executors.yaml` 中已验证的绝对 CLI binding。
 `anyfusion --no-build` 可复用当前构建产物。Runtime 数据位于
-`~/.local/share/anyfusion`，隔离的 Agent 源配置位于 `~/.config/anyfusion`。
-原有 Dockerfile 继续用于 CI、跨平台部署和显式 compatibility backend。
+`~/.local/share/anyfusion`，Registry 和 Executor 私有源配置位于
+`~/.config/anyfusion`。原有 Dockerfile 继续用于 CI、跨平台部署和显式
+compatibility backend。
 
 ## 项目状态
 
@@ -138,6 +145,8 @@ launcher 默认构建两个仓库并复用宿主机已安装的 Codex/Pi。
 | 部署状态 | 已部署至内部服务器进行小范围试用 |
 | 任务范围 | 一个活跃顶层任务，内部支持具备依赖关系的多个 Subtask |
 | 调度方式 | 单一活跃顶层 Task 内按确定性 batch 并行运行最多四个隔离 attempt |
+| 持久化 | fresh-only SQLite schema 32；schema 31 及更旧数据库无迁移直接拒绝 |
+| Executor 权威源 | digest-bound 主机 Registry；只有 enabled、verified、digest-matched binding 可路由 |
 | 兼容性 | CLI、配置和 Runtime contract 在稳定版前可能继续演进 |
 
 AnyFusion 当前不会被描述为 Production Ready。Preview 阶段用于验证任务控制平面、工作图契约、专业 Agent 路由、验收模型与实际运行流程，再逐步形成稳定兼容性承诺。

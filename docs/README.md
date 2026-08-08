@@ -9,7 +9,7 @@ This directory contains both current technical documentation and historical plan
   validation rules.
 - [Technical Overview](current/technical-overview.md): the previous long-form README, preserved as the current deep architecture and runtime reference.
 - [中文技术总览](current/technical-overview.zh-CN.md): the previous long-form Chinese README, preserved as the Chinese deep architecture and runtime reference.
-- [Phase 5 Runtime Security And AgentClass Operations](current/phase-5-runtime-security.md): worktree Executor processes, Docker compatibility attempts, persistent workspace retention, image profiles, and runtime elevation operations.
+- [Phase 5 Runtime Security And Executor Registry Operations](current/phase-5-runtime-security.md): verified worktree Executor processes, Docker compatibility attempts, persistent workspace retention, registry bindings, and runtime elevation operations.
 - [Repository README](../README.md): public project overview, install path, repository structure, and high-level architecture.
 - [CONTEXT](../CONTEXT.md): current PlanningAgent, ControlKernel, decision-ledger, and work-unit vocabulary.
 
@@ -42,7 +42,8 @@ replacing those semantics.
 
 ## Completed Roadmap
 
-- [Storage write-path cleanup](plans/2026-08-07-storage-write-path-cleanup.md): removed unused persistence, consolidated Task and Skill writes, retained only terminal Skill detail, and hard-cut the unreleased database to fresh schema v31.
+- [Unified Executor Registry and schema 32](plans/2026-08-07-unified-executor-registry-and-schema-32.md): replaced static/persisted Executor definitions with one digest-bound host Registry, added registration and verification, hard-cut storage to fresh schema v32, added controlled Task purge, and passed real Codex artifact plus Pi research smoke.
+- [Storage write-path cleanup](plans/2026-08-07-storage-write-path-cleanup.md): removed unused persistence, consolidated Task and Skill writes, retained only terminal Skill detail, and established the intermediate fresh schema v31 baseline later superseded by schema v32.
 - [AnyFusion Pi Planner and native TUI migration](plans/2026-07-31-pi-planner-tui-migration.md): completed unified interactive/RPC Planner runtime, fixed AnyFusion-managed models, read-only Task dashboard, native command completion, and strict Planner/Kernel/Executor process separation.
 - [Planner、Kernel 与并发调度收敛路线图](plans/2026-07-16-planner-kernel-concurrency-convergence-roadmap.md): completed convergence from capability-aware work graphs and executor scope through the Kernel control plane, resource partitions, single-Task DAG concurrency, Git publication and reliable asynchronous cancellation/recovery.
 - [Phase 6 final reliability closure](archive/plans/2026-07-28-phase-6-single-task-reliability-closure.md): SQLite v27 cancellation/replan facts, durable Task/Subtask cleanup, explicit partial acceptance and the strict completion gate.
@@ -50,7 +51,7 @@ replacing those semantics.
 
 ## Active Delivery
 
-- [Native Linux server launcher](plans/2026-07-23-linux-host-launcher.md): runs Runtime, AnyFusion-Pi and canonical worktree Executors as isolated host processes on the current server without requiring Docker.
+- [Native Linux server launcher](plans/2026-07-23-linux-host-launcher.md): runs Runtime, AnyFusion-Pi and verified registry-bound worktree Executors as isolated host processes on the current server without requiring Docker.
 - [Node 22 single runtime image migration](plans/2026-08-05-node-22-single-runtime-image-migration.md): unifies MetaClaw and AnyFusion-Pi on one Node 22.19+ image and executable while preserving separate processes and dependency trees.
 - [Active permission review](plans/2026-08-04-active-permission-review.md): projects current-session durable permission requests to a transient Pi native Selector while preserving Kernel authorization and non-interactive natural-language resolution.
 - [Command surface and task selection cleanup](plans/2026-08-04-command-surface-and-task-selection-cleanup.md): first-batch removal of non-functional command surfaces, richer Executor/Profile facts, and title-first Task completion in AnyFusion-Pi.

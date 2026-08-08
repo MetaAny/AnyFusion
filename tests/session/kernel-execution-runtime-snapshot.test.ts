@@ -57,6 +57,9 @@ describe('KernelExecutionRuntime dispatch snapshots', () => {
         findCleanupTaskId: vi.fn().mockReturnValue(null),
         completionBlockedReasons: vi.fn().mockReturnValue([]),
       },
+      agentClassService: {
+        deriveRecoverySafety: vi.fn().mockReturnValue('external_non_idempotent'),
+      },
       maxConcurrentAttempts: 4,
       taskEventRepo: {},
     } as never);

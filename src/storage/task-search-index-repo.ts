@@ -221,6 +221,8 @@ export class TaskSearchIndexRepo {
         id: string;
         title: string;
         goal: string;
+        source: Task['source'];
+        smoke_run_id: string | null;
         status: string;
         summary: string;
         snapshot_json: string;
@@ -237,10 +239,13 @@ export class TaskSearchIndexRepo {
       }>;
 
       for (const row of tasks) {
+        if (row.source === 'system_smoke') continue;
         this.indexTask({
           id: row.id,
           title: row.title,
           goal: row.goal,
+          source: row.source,
+          smokeRunId: row.smoke_run_id,
           status: row.status as Task['status'],
           summary: row.summary,
           snapshots: JSON.parse(row.snapshot_json || '[]'),

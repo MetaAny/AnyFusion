@@ -1,29 +1,44 @@
 # ADR-0018: Supported Routing Contracts and Unified Executor Definitions
 
-- Status: Accepted; historical v3 deferral superseded by ADR-0021 and ADR-0023; module ownership clarified by ADR-0020
+- Status: Accepted; registry authority amended 2026-08-08; module ownership clarified by ADR-0020
 - Date: 2026-07-16
-- Scope: static built-in Executor capability definitions only
+- Scope: host-level Executor definitions, capabilities, profiles, bindings, verification and controlled projections
 
 ## Context
 
-MetaClaw already injects a static Planner-safe `executorCatalog` and exposes dynamic class health through `list_executor_status`, but the static routing profile, Seeder defaults and Adapter bindings are still maintained separately. Executors also retain overlapping native tools: for example, Pi has workspace read/write and shell tools even though repository engineering should normally prefer Codex.
+MetaClaw needs one authority for which Executors exist, what controlled work they may deliver, how they are discovered and invoked, and whether their installation has been verified. Persisted `agent_classes`, hard-coded built-in catalogs and Runtime branches keyed by names previously allowed those facts to drift. They also made third-party registration and safe session recovery impossible without adding another routing source.
 
 ## Decision
 
 A `Routing Capability` is a supported routing contract used to optimize AgentClass choice; it is not an exhaustive inventory of an Executor's tools, permissions or theoretical abilities. An Executor may retain overlapping native tools without advertising the corresponding capability as a primary routing contract. `primaryUseCases` and `avoidUseCases` guide preference rather than physically enabling or disabling tools.
 
-Built-in Executor definitions become the single static source for the controlled capability registry, `codex-cli` and `pi-agent` routing profiles, Planner-safe affordances, AgentClass seed defaults, Adapter bindings and capability evidence declarations. Planner receives a projection of that source at startup. Dynamic health and recent outcomes remain a separate Kernel Executor Status Projection queried through `list_executor_status`.
+`$ANYFUSION_CONFIG_HOME/executors.yaml` is the sole static source for controlled capability definitions, discovery profiles, Executor descriptions, enablement and installation bindings. Its top level is exactly `schemaVersion`, `capabilities`, `profiles` and `executors`.
 
-The static catalog is versioned and carries definition provenance. Planner and Kernel consume projections derived from the same definitions for one authorization flow. Static projections never contain credentials, runtime commands, WorkUnit claims, heartbeat, health or live capacity. Known untouched seeded rows may be upgraded with a newer built-in definition; user-modified or custom rows must not be silently overwritten, and custom free-form capabilities do not become controlled Routing Capabilities.
+Each Capability has a stable ID, delivery contract, required affordances, recovery-safety level and minimum permission profile. Each Profile has discovery commands, one driver, default description and suggested capabilities. Each Executor has a stable ID, non-empty description, at least one controlled Capability, at least one primary use case, enablement and an installation binding. Strengths, weaknesses, risk, domains, input/output types, avoid-use cases and affinity are optional routing metadata.
 
-For each Subtask, Planner produces one ordered Preferred AgentClass List: the first item is preferred and the remaining items form the fallback chain. The Kernel rechecks the planned list against registered classes and current status before execution, while Runtime attempts the approved order according to existing behavior. (2026-07-27: the deferred automatic cross-class fallback policy was delivered in Phase 4 — ADR-0023 gives `ControlKernel` sole authority to select the next AgentClass after a runtime failure.)
+An installation binding declares an absolute binary path, version probe, driver, absolute private runtime home, environment-file references, inherited environment variable names, confirmed effective permission profile and supported backends. Docker support additionally requires an immutable image reference and `sha256:` image ID. Configuration never stores credential values. The generic `cli-session` driver additionally declares initial arguments, resume arguments, session-ID extraction, optional final-output extraction, timeout and termination signal. Codex, Pi and Hermes use dedicated drivers; unknown CLIs may use `cli-session`.
 
-PlanningAgentPlan and Work Graph wire versions, capability-driven candidate derivation, merge rules, parallel Subtasks and asynchronous scheduling are not decided by this ADR. ADR-0021 and ADR-0023 govern the current graph and durable-workflow contracts, while this ADR remains authoritative for static catalog definitions, startup projection and version/provenance rules. The remaining accepted catalog content from ADR-0016 is incorporated here; ADR-0016 is historical.
+Loading produces one immutable `ExecutorRegistrySnapshot` identified by a SHA-256 `configDigest`. It exposes four controlled projections:
+
+- TUI: registration, configuration, verification, error and disabled state without credentials.
+- Planner: controlled capability contracts and routing descriptions for only enabled, verified, digest-matched Executors.
+- Kernel: candidate IDs, capability coverage, snapshot digest and health facts without process implementation.
+- Runtime: driver, absolute binary path, private home, environment sources, permissions, backend binding and session contract.
+
+All four projections are created from the same loaded version and Executor set. A failed reload retains the prior valid snapshot. Manual YAML changes take effect only after explicit reload or restart. Any configuration digest change makes existing verification stale.
+
+Registration, discovery and verification are one application service shared by CLI, slash commands and AnyFusion-Pi. Known profiles discover Codex, Pi and Hermes paths and versions but require user confirmation. Verification runs in a temporary Git workspace and isolated runtime home, checks version and output bounds, sends a random first challenge, extracts the session ID, resumes the same session with a second challenge, and validates cwd/home isolation, timeout, termination and normalized failure. Only a successful verification may atomically replace YAML, store the `executor_id + config_digest` verification fact, enable the Executor and refresh the snapshot.
+
+Planner schema represents Capability and Executor IDs as format-constrained strings. Semantic validation against the current Planner projection rejects invented names, unknown capabilities, disabled, unverified, stale or capability-incomplete Executors. For each Subtask, Planner produces one ordered Preferred AgentClass List from that projection. Kernel independently rechecks the same snapshot digest, membership, coverage and health before execution. `ControlKernel` remains the sole authority for retry, fallback and recovery.
+
+Runtime dispatches through the registry-selected driver contract rather than branching on Executor names. A driver declares backend support, session-resume support, evidence affordance, result collector and private-home materializer. Attempt identity and result-file identity remain separate contracts. ADR-0021 and ADR-0023 continue to govern Work Graph and durable workflow semantics.
 
 ## Consequences
 
-- Pi keeps its native file and shell tools while research remains its preferred supported route.
-- Static capability facts cannot drift independently across Planner projection, Seeder and Adapter binding.
+- Static capability facts, installation bindings and enablement cannot drift across TUI, Planner, Kernel and Runtime.
+- No `agent_classes` table or hard-coded built-in catalog is an Executor definition authority.
+- `unverified` and stale Executors are visible administratively but cannot be routed.
+- Codex, Pi, Hermes and validated generic CLI Executors share the same registration and invocation source.
 - `list_executor_status` remains authoritative for dynamic class health, not for static capability definitions.
-- The current Work Graph contract supersedes the former `candidateAgentClasses` wire-format allowance: executable nodes use controlled requirements and ordered `preferredAgentClassList` values.
-- Custom Executor rows are preserved, but their free-form capability strings do not automatically become controlled built-in Routing Capabilities.
+- The current Work Graph contract uses controlled requirements and ordered `preferredAgentClassList` values validated against the current snapshot.
+- A malformed manual edit cannot replace the last valid runtime snapshot.

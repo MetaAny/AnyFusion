@@ -100,5 +100,6 @@ describe('native AnyFusion Linux launcher', () => {
     );
     expect(readFileSync(resolve('anyfusion'), 'utf8')).not.toContain('docker run');
     expect(readFileSync(resolve('anyfusion'), 'utf8')).not.toContain('docker build');
+    expect(readFileSync(resolve('anyfusion'), 'utf8')).toContain('export ANYFUSION_CONFIG_HOME');
   });
 });

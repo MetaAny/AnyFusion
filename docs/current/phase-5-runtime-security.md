@@ -1,13 +1,16 @@
-# Phase 5 Runtime Security And AgentClass Operations
+# Phase 5 Runtime Security And Executor Registry Operations
 
 ## Runtime topology
 
-The default backend runs the canonical Codex/Pi CLI as a trusted child process
-of the Runtime. On the supported Linux server path, Runtime, Planner and
-Executors are host processes. Its working directory is the existing
-private Subtask Git worktree; capability, evidence and model-gateway services
-use loopback addresses. This is the minimal demo boundary and does not claim a
-second OS-level sandbox for the child process.
+The default backend runs the driver from a verified Executor Registry binding
+as a trusted child process of the Runtime. On the supported Linux server path,
+Runtime, Planner and Executors are host processes. The child working directory
+is the existing private Subtask Git worktree. Its driver materializes a separate
+attempt-private runtime home and exposes only declared environment-file sources
+and inherited variable names. Capability, evidence and model-gateway services
+use loopback addresses when the binding's driver supports them. This is the
+minimal worktree boundary and does not claim a second OS-level sandbox for the
+child process.
 
 The compatibility backend runs every attempt in a new Docker container. In that mode, the control plane,
 `metaclaw-egress` proxy and attempt containers share the Docker-internal
@@ -37,7 +40,7 @@ docker network connect metaclaw-egress-public metaclaw-egress
 
 The Squid policy permits only public HTTP/HTTPS destinations and rejects loopback, link-local, RFC1918, carrier-grade NAT and IPv6 unique-local ranges after DNS resolution. No proxy port is published to the host. `workspace-engineering` and `restricted-custom` attempts do not receive proxy variables and remain on the internal network only.
 
-## Canonical Docker compatibility images
+## Registry-bound Docker compatibility images
 
 Build both immutable attempt images after building the application bundles:
 
@@ -51,46 +54,62 @@ On PowerShell:
 .\scripts\build-attempt-images.ps1
 ```
 
-In Docker compatibility mode, MetaClaw resolves each canonical image tag to a
-Docker image ID. Custom AgentClasses must be registered with an image reference,
-its current immutable `sha256:` image ID, a valid permission profile, and the
-command/arguments inside the image. Worktree mode is restricted to the two
-canonical built-ins and does not add a custom registration path. A changed
-Docker tag fails closed until the class is explicitly updated.
+In Docker compatibility mode, each Executor binding declares both an image
+reference and its current immutable `sha256:` image ID. A missing ID, changed
+tag or unsupported backend fails closed. Worktree and Docker are explicit
+binding capabilities; neither is an implicit fallback for a failed binding.
+Codex, Pi and Hermes use dedicated drivers. Unknown CLIs use `cli-session` only
+after their complete initial/resume/session-output/timeout/termination contract
+passes verification.
 
-Example:
+`$ANYFUSION_CONFIG_HOME/executors.yaml` is the sole static authority. It stores
+absolute binary and source-home paths, environment-file references, inherited
+variable names and confirmed permission profiles, but never credential values.
+Loading creates one immutable `configDigest`-bound snapshot. A digest change
+makes previous verification stale; malformed reload retains the previous valid
+snapshot.
 
-```text
-/executor register research-bot \
-  --image registry.example/research-bot:1.2.3 \
-  --image-id sha256:<64-hex-digest> \
-  --permission-profile restricted-custom \
-  --command research-bot --args "run --prompt {prompt}"
-```
+Initial installation verification is stronger than the dynamic recovery
+`probe()`. It creates a temporary Git workspace and independent runtime home,
+checks the absolute binary and version pattern, sends a random first challenge,
+extracts the session ID, resumes the same session with a second challenge, and
+validates cwd/home isolation, output limits, timeout, termination and normalized
+failure. Only `enabled + verified + digest matched` Executors are routable.
 
-Historical custom classes without the Docker image/profile triplet remain visible
-for audit but cannot execute. Worktree execution is an explicit trusted backend,
-not a host-process fallback for arbitrary custom classes.
-
-Executor availability uses a structured `probe()` rather than a boolean command
-check. For Docker classes, the recovery probe verifies the local Engine,
-immutable image, `metaclaw-control` network, runtime command, and configuration
-in layers. For worktree classes, it verifies the trusted runtime/profile and
-provider configuration without an Engine or Docker-network probe.
-Authentication/provider-network failures may add the Adapter's minimal remote
-validation. A successful recovery check may only move that checked class from
-`error` to `healthy`. Healthy/unverified classes are not periodically polled,
-disabled classes never auto-recover, and a shared infrastructure result is not
-projected onto classes that were not checked.
+For a routable Docker Executor, dynamic recovery verifies the local Engine,
+immutable image, `metaclaw-control` network, driver command and configuration in
+layers. For a routable worktree Executor, it verifies the selected driver,
+private-home materialization, permission profile and provider configuration
+without an Engine probe. Authentication/provider-network failures may add the
+Adapter's minimal remote validation. A successful recovery check may only move
+that checked class from `error` to `healthy`; disabled classes never
+auto-recover, and shared infrastructure results are not projected onto
+unchecked Executors.
 
 ## Mount and persistence contract
 
-- Worktree mode starts the child with `cwd` set to `/data/metaclaw/workspace-store/workspaces/<task>/<generation>/<subtask>` and does not mount a second workspace. Canonical Codex uses `danger-full-access` in this mode so its tools operate directly in that worktree without a nested CLI sandbox.
+- Worktree mode starts the child with `cwd` set to the managed
+  `<task>/<generation>/<subtask>` Git worktree and does not mount a second
+  workspace. The registry driver, not the Executor ID, selects arguments,
+  session continuation, evidence affordance, result collector and private-home
+  materializer.
 - Docker mode exposes `/workspace` as the only writable bind-mounted tree; `/source`, `/inputs`, `/handoffs` and a Git worktree's `/workspace/.git` are read-only mounts, with a read-only root filesystem, UID/GID 1000, dropped Linux capabilities and `no-new-privileges`.
-- Canonical Codex Docker attempts also run their own `workspace-write` sandbox with fail-closed non-interactive approval. Only the pinned canonical Codex image receives `seccomp=unconfined` so that nested user namespaces work; every other Docker restriction remains active, and custom images cannot request this exception.
+- A dedicated Codex Docker driver may run its own `workspace-write` sandbox
+  with fail-closed non-interactive approval. Any compatibility image exception
+  must remain tied to the verified driver/image binding; generic images cannot
+  request it.
 - Workspaces persist under `${METACLAW_HOME}/workspace-store/workspaces/<task>/<generation>/<subtask>`; only the child process or compatibility container is disposable.
 - Checkpoints are immutable manifests. File bodies live in the SHA-256 CAS; SQLite stores URI, hash, size and reference metadata.
 - Cancelled or archived Task workspaces receive a seven-day cleanup deadline. CAS objects are removed only after the last checkpoint reference disappears. Files explicitly exported outside the managed workspace/CAS roots are not removed.
+
+Task purge is the only immediate permanent cleanup path. It accepts only
+`done`, `archived` or `cancelled` Tasks after dispatch, publication, sandbox,
+lease and WorkUnit resources are quiescent. In one transaction it writes a
+minimal `task_purge_audits` row, creates a scoped authorization, deletes
+Task-scoped graph/execution/publication/search/memory/CAS references, and removes
+the authorization. Immutable receipt, handoff and merge-attempt triggers still
+block ordinary SQL deletion. A transaction failure rolls back both audit and
+deletion; filesystem cleanup runs only after commit.
 
 ## Runtime permission and audit flow
 
@@ -117,16 +136,33 @@ npm run smoke:metaclaw
 npm run smoke:metaclaw -- --scenario artifact
 ```
 
-The Docker integration and artifact smoke require the canonical attempt images
-and a trusted local Docker Engine. Their test bodies run inside a trusted
+The Docker integration and artifact smoke require the registry-bound attempt
+images and a trusted local Docker Engine. Their test bodies run inside a trusted
 control-plane container; the host only performs Docker orchestration. The
 artifact smoke verifies Planner → Kernel → disposable Executor attempt → scoped
-model gateway → persistent workspace/artifact → container cleanup. The default
+model gateway → persistent workspace/artifact → controlled cleanup. The default
 smoke instead verifies native Planner-thread continuity and does not prove the
 Executor artifact path. The attempt itself never receives the Engine socket.
 
-Worktree validation requires Linux and trusted Codex/Pi CLI commands. The native
-artifact gate verifies child-process start, loopback
-capability/evidence services, cancellation, checkpoint/delta capture and Git
-publication without sibling Executor containers. Docker integration remains
+Worktree validation requires Linux and verified host CLI bindings. The native
+artifact gate uses the current main database, current workspace and current
+`executors.yaml`. Every smoke Task is created with `source = system_smoke` and a
+unique `smoke_run_id`, so it is hidden from normal Task lists, search and memory
+generation. In `finally`, the smoke runner formally cancels any nonterminal
+owned Task, waits for resource quiescence, invokes `/task purge`, removes
+worktree/artifact/temporary-home residue, checks foreign keys, and records a
+bounded smoke audit. Only the latest 20 smoke audits, minimal purge audits,
+Executor verification and current health facts remain. Smoke cleanup rejects
+arbitrary user Task IDs and requires the exact matching `smoke_run_id`.
+
+Credentialed real smoke must not run until the current host registry, database
+and provider configuration are confirmed safe. Docker integration remains
 compatibility coverage.
+
+The 2026-08-08 host acceptance completed that safety confirmation for the
+current Codex and Pi bindings. It passed a real Codex artifact smoke and a real
+Pi public-web research smoke, then formally purged both Tasks with no
+Task-scoped database, workspace, artifact, CAS, lease, sandbox or WorkUnit
+residue. Hermes remains unregistered and was not part of the acceptance. See
+the [schema 32 completion plan](../plans/2026-08-07-unified-executor-registry-and-schema-32.md)
+for exact run IDs and close-out evidence.

@@ -39,13 +39,22 @@ export class TaskEngine {
   /**
    * 创建任务
    */
-  create(input: { id?: string; title: string; goal: string; resources?: string[] }): Task {
+  create(input: {
+    id?: string;
+    title: string;
+    goal: string;
+    resources?: string[];
+    source?: Task['source'];
+    smokeRunId?: string | null;
+  }): Task {
     const now = new Date().toISOString();
     const taskId = input.id?.trim() ? input.id : generateTaskId();
     const task: Task = {
       id: taskId,
       title: input.title,
       goal: input.goal,
+      source: input.source ?? 'user',
+      smokeRunId: input.smokeRunId ?? null,
       status: 'created',
       summary: '',
       snapshots: [],

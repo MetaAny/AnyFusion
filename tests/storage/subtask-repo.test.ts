@@ -19,6 +19,8 @@ describe('SubtaskRepo', () => {
       id: 'task_1',
       title: 'Task',
       goal: 'Do work',
+      source: 'user',
+      smokeRunId: null,
       status: 'running',
       summary: '',
       snapshots: [],

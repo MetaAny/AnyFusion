@@ -9,8 +9,7 @@ import { WorkUnitRepo } from '../../src/storage/work-unit-repo.js';
 import { WorkUnitClaimService } from '../../src/execution/work-unit-claim-service.js';
 import { SubtaskAttemptRunner } from '../../src/execution/subtask-attempt-runner.js';
 import { COMPLETION_MARKER_V3 } from '../../src/execution/completion-protocol.js';
-import { getBuiltinExecutorAgentClasses } from '../../src/executor/builtin-executor-catalog.js';
-import { AgentClassRepo } from '../../src/storage/agent-class-repo.js';
+import { testExecutorAgentClasses } from '../support/executor-registry.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { TaskRuntimeService } from '../../src/task/task-runtime-service.js';
@@ -56,9 +55,6 @@ function setup(rawResponse: string) {
     orchestration: new OrchestrationEngine(taskEngine),
   });
   const subtaskRepo = new SubtaskRepo(db);
-  new AgentClassRepo(db).upsert(
-    getBuiltinExecutorAgentClasses().find(item => item.name === 'codex-cli')!,
-  );
   const a = node('task_phase2_a');
   const b = node('task_phase2_b', [{
     fromSubtaskId: a.id,
@@ -97,7 +93,11 @@ function setup(rawResponse: string) {
     subtaskRepo,
     workUnitClaimService: new WorkUnitClaimService(workUnitRepo),
     executionRuntime: executionRuntime as never,
-    agentClassService: { listAgentClasses: () => getBuiltinExecutorAgentClasses() } as never,
+    agentClassService: {
+      listAgentClasses: () => testExecutorAgentClasses(),
+      deriveRecoverySafety: () => 'workspace_reconcilable',
+      supportsExecutionEvidence: () => true,
+    } as never,
     workspaceStore,
     attemptSandbox,
     resourceLeaseService: new ResourceLeaseService(new SqliteResourceLeaseRepository(db)),
@@ -606,9 +606,6 @@ describe('SubtaskAttemptRunner', () => {
 
   it('wires public network rules only for the public-web-research AgentClass profile', async () => {
     const setupResult = setup(validResponse());
-    new AgentClassRepo(setupResult.db).upsert(
-      getBuiltinExecutorAgentClasses().find(item => item.name === 'pi-agent')!,
-    );
     setupResult.workUnitRepo.upsert({
       id: 'executor-pi', agentClassName: 'pi-agent', agentClassKind: 'executor', state: 'idle',
       claimedTaskId: null, claimedSubtaskId: null, claimedAttemptId: null,

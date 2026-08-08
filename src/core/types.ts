@@ -55,6 +55,8 @@ export interface Task {
   id: string;
   title: string;
   goal: string;
+  source: 'user' | 'system_smoke';
+  smokeRunId: string | null;
   status: TaskStatus;
   summary: string;
   snapshots: TaskSnapshot[];

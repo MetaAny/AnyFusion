@@ -29,7 +29,6 @@ import { ExecutionEvidenceToolServer } from './execution-evidence-tool-server.js
 import type { KernelFailure } from '../core/kernel-failure.js';
 import type { Subtask } from '../core/types.js';
 import { ExecutorAttemptRuntimeRepo, type ExecutorAttemptRuntimeRecord } from '../storage/executor-attempt-runtime-repo.js';
-import { deriveRecoverySafety } from '../executor/builtin-executor-catalog.js';
 import type {
   KernelAttemptKind,
   KernelAttemptPayload,
@@ -381,10 +380,10 @@ export class SubtaskAttemptRunner {
         sourceAttemptId: input.sourceAttemptId ?? null,
         workspaceRoot: workspace.filesPath,
         workspaceBaseline: { ...workspaceBaseline },
-        recoverySafety: deriveRecoverySafety(subtask.requiredCapabilities),
+        recoverySafety: this.deps.agentClassService.deriveRecoverySafety(subtask.requiredCapabilities),
         now: startedAt,
       });
-      const evidenceToolsAvailable = input.agentClassName === 'codex-cli' || input.agentClassName === 'pi-agent';
+      const evidenceToolsAvailable = this.deps.agentClassService.supportsExecutionEvidence(input.agentClassName);
       const attemptControlHost = this.deps.attemptSandbox.pathMode === 'native'
         ? '127.0.0.1'
         : process.env.METACLAW_CONTROL_HOST ?? 'metaclaw-control';

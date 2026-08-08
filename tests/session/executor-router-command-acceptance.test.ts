@@ -8,6 +8,7 @@ import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
+import type { MetaclawSessionDeps } from '../../src/session/metaclaw-session.js';
 import type { Config } from '../../src/core/types.js';
 import type { PlanningAgent } from '../../src/planning/planning-agent.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
@@ -35,6 +36,7 @@ function createSession(input: {
   attemptSandbox: FakeAttemptSandbox;
   sessionId: string;
   planningAgent?: PlanningAgent;
+  newTaskMetadata?: MetaclawSessionDeps['newTaskMetadata'];
 }) {
   return new MetaclawSession({
     taskEngine: input.taskEngine,
@@ -46,11 +48,12 @@ function createSession(input: {
     sessionId: input.sessionId,
     contextRecaller: new ContextRecaller(input.db),
     planningAgent: input.planningAgent,
+    newTaskMetadata: input.newTaskMetadata,
   });
 }
 
 describe('planner-first executor command acceptance', () => {
-  it('does not expose the executor registration wizard in the conversation command surface', async () => {
+  it('exposes the unified registration command and returns usage for an incomplete wizard handoff', async () => {
     const db = createDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-executor-wizard');
@@ -61,11 +64,12 @@ describe('planner-first executor command acceptance', () => {
     session.initialize();
     await session.submit('/executor register wizard');
     const output = session.getSnapshot().output.join('\n');
-    expect(output).toContain('未知命令节点: register');
-    expect(db.prepare('SELECT name FROM agent_classes WHERE name = ?').get('research-bot')).toBeUndefined();
+    expect(output).toContain('Usage: /executor register <id>');
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'agent_classes'").get())
+      .toBeUndefined();
   });
 
-  it('does not expose one-line AgentClass registration in the conversation command surface', async () => {
+  it('rejects legacy AgentClass registration options instead of accepting a compatibility path', async () => {
     const db = createDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-executor-oneline');
@@ -77,8 +81,9 @@ describe('planner-first executor command acceptance', () => {
     await session.submit(`/executor register research-bot --image registry.example/research-bot:1.0.0 --image-id sha256:${'a'.repeat(64)} --permission-profile restricted-custom --command research-bot --args "run --prompt {prompt}" --check "research-bot --version" --domains research --capabilities report_generation`);
 
     const output = session.getSnapshot().output.join('\n');
-    expect(output).toContain('未知命令节点: register');
-    expect(db.prepare('SELECT name FROM agent_classes WHERE name = ?').get('research-bot')).toBeUndefined();
+    expect(output).toContain('未知选项: --image');
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'agent_classes'").get())
+      .toBeUndefined();
   });
 
   it('persists planner subtasks and work unit claims before execution', async () => {
@@ -101,8 +106,8 @@ describe('planner-first executor command acceptance', () => {
     session.initialize();
     await session.submit('请实现一个 TypeScript 单元测试并修复代码', { awaitAsyncWork: true });
 
-    const agentClasses = db.prepare('SELECT name FROM agent_classes ORDER BY name ASC').all() as Array<{ name: string }>;
-    expect(agentClasses.map(row => row.name)).toEqual(expect.arrayContaining(['codex-cli', 'planner']));
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'agent_classes'").get())
+      .toBeUndefined();
 
     const subtasks = db.prepare('SELECT status, delivery_kind FROM subtasks ORDER BY created_at ASC').all() as Array<{
       status: string;
@@ -139,7 +144,7 @@ describe('planner-first executor command acceptance', () => {
     await session.submit('请调研这个方案并进行自动化分析，输出报告', { awaitAsyncWork: true });
 
     expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
-    expect(attemptSandbox.create.mock.calls[0]![0].command).toBe('codex');
+    expect(attemptSandbox.create.mock.calls[0]![0].command).toBe('/usr/bin/codex');
     expect(db.prepare(`
       SELECT agent_class_name, state FROM work_units
       WHERE agent_class_kind = 'executor'
@@ -173,7 +178,7 @@ describe('planner-first executor command acceptance', () => {
     expect(output).toContain('【Executor: codex-cli｜派发准备】\n→ Executor: codex-cli 将处理该任务');
     expect(output).not.toContain('【Executor: pi-agent｜派发准备】');
     expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
-    expect(attemptSandbox.create.mock.calls[0]![0].command).toBe('codex');
+    expect(attemptSandbox.create.mock.calls[0]![0].command).toBe('/usr/bin/codex');
   });
 
   it('blocks failed executor subtasks for planner recovery instead of platform fallback', async () => {
@@ -204,5 +209,28 @@ describe('planner-first executor command acceptance', () => {
     expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
     expect(taskRepo.findByStatus('blocked')).toHaveLength(1);
     expect(db.prepare('SELECT status FROM subtasks ORDER BY created_at DESC LIMIT 1').get()).toEqual({ status: 'blocked' });
+  });
+
+  it('persists explicit smoke ownership metadata without exposing it through Planner routing', async () => {
+    const db = createDb();
+    const taskRepo = new TaskRepo(db);
+    const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-smoke-source');
+    const session = createSession({
+      db,
+      taskEngine,
+      memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
+      attemptSandbox: new FakeAttemptSandbox(() => ({ body: 'smoke complete' })),
+      sessionId: 'sess_smoke_source',
+      planningAgent: stubPlanningAgent(workGraphPlan({ goal: 'run smoke task' })),
+      newTaskMetadata: { source: 'system_smoke', smokeRunId: 'smoke-run-1' },
+    });
+
+    session.initialize();
+    await session.submit('run smoke task', { awaitAsyncWork: true });
+
+    expect(db.prepare('SELECT source, smoke_run_id FROM tasks').get()).toEqual({
+      source: 'system_smoke',
+      smoke_run_id: 'smoke-run-1',
+    });
   });
 });

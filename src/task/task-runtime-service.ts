@@ -6,6 +6,7 @@ import type { Dependency, Task, TaskSnapshot, TaskStatus } from '../core/types.j
 export interface TaskRuntimeServiceDeps {
   taskEngine: TaskEngine;
   taskRepo: TaskRepo;
+  includeSystemSmoke?: boolean;
 }
 
 const CLEAR_SCOPE_STATUSES: Record<TaskClearScope, TaskStatus[]> = {
@@ -19,22 +20,29 @@ export class TaskRuntimeService {
   constructor(private readonly deps: TaskRuntimeServiceDeps) {}
 
   listTasks(): Task[] {
-    return this.deps.taskEngine.list();
+    return this.deps.taskRepo.findAll({ includeSystemSmoke: this.deps.includeSystemSmoke });
   }
 
   listActiveTasks(): Task[] {
-    return this.deps.taskRepo.findActive();
+    return this.deps.taskRepo.findActive({ includeSystemSmoke: this.deps.includeSystemSmoke });
   }
 
   listTasksByStatus(status: TaskStatus): Task[] {
-    return this.deps.taskRepo.findByStatus(status);
+    return this.deps.taskRepo.findByStatus(status, { includeSystemSmoke: this.deps.includeSystemSmoke });
   }
 
   findTask(taskId: string): Task | null {
     return this.deps.taskRepo.findById(taskId);
   }
 
-  createTask(input: { id?: string; title: string; goal: string; resources?: string[] }): Task {
+  createTask(input: {
+    id?: string;
+    title: string;
+    goal: string;
+    resources?: string[];
+    source?: Task['source'];
+    smokeRunId?: string | null;
+  }): Task {
     return this.deps.taskEngine.create(input);
   }
 
