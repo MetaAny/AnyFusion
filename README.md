@@ -38,7 +38,7 @@ It is designed for workflows where continuity, control, and accountability matte
 | **Policy-governed planning** | Natural-language planning is separated from authorization: the Planner proposes, the Control Kernel decides, and the Runtime applies only approved side effects. |
 | **Dependency-aware work graphs** | Complex objectives become explicit DAGs with acceptance criteria, typed dependencies, scoped context, and durable handoff contracts between work units. |
 | **Specialized-agent orchestration** | Controlled Capability routing maps each Subtask to the complete eligible set from one verified, digest-bound Executor Registry snapshot, including Codex, Pi, Hermes profiles, or organization-specific session CLIs. |
-| **Worktree execution** | Verified registry-bound CLI Executors run as short-lived child processes in persistent private Git worktrees; Docker remains an explicit binding-level compatibility option. |
+| **Worktree execution** | Verified registry-bound CLI Executors run as short-lived child processes in persistent private Git worktrees; Docker packages the one Ubuntu Runtime but does not dispatch individual attempts. |
 | **Verification and accountability** | Structured completion contracts capture acceptance evidence, artifacts, handoffs, attempt receipts, and audit events before results are exposed or delivered. |
 | **Operational memory and delivery** | Explicitly confirmed preferences, deterministic task search, terminal workflows, Gateway surfaces, and Feishu delivery remain connected to the same durable task state. |
 
@@ -61,7 +61,7 @@ flowchart LR
   Planning --> Workflow[Durable Kernel Workflow<br/>Inbox / ledger / application]
   Workflow --> Kernel[Control Kernel<br/>Policy and authorization]
   Kernel --> Runtime[Execution Runtime<br/>Frontier / dispatch / recovery]
-  Runtime --> Agents[Verified Registry Executors<br/>Worktree / Docker compatibility]
+  Runtime --> Agents[Verified Registry Executors<br/>Worktree child processes]
   Agents --> Verify[Verification and Delivery<br/>Evidence / artifacts / handoffs]
 
   State[(Persistent Task State<br/>memory / attempts / audit)]
@@ -135,10 +135,9 @@ anyfusion smoke --executor pi --scenario pi-research --timeout 300
 The launcher builds both repositories and uses only verified absolute CLI
 bindings from `$ANYFUSION_CONFIG_HOME/executors.yaml`. Use
 `anyfusion --no-build` to reuse current outputs. Runtime data is stored under
-`~/.local/share/anyfusion`; the Registry and private Executor source
-configuration are stored under `~/.config/anyfusion`. Existing Dockerfiles
-remain for CI, cross-platform deployment, and the explicit compatibility
-backend.
+`~/.local/share/anyfusion/runtime`; the Registry and private Executor source
+configuration are stored under `~/.config/anyfusion`. Docker remains only for
+the unified Ubuntu Runtime/test environment used from Windows.
 
 ## Project Status
 
@@ -149,7 +148,7 @@ backend.
 | Deployment | Limited internal pilot use |
 | Task scope | One active top-level task with dependency-aware subtasks |
 | Dispatch | Deterministic batches with up to four concurrent isolated attempts inside the active top-level Task |
-| Persistence | Fresh-only SQLite schema 33; schema 32 and older databases are rejected without migration or automatic deletion |
+| Persistence | Fresh-only SQLite schema 34; schema 33 and older databases are rejected without migration or automatic deletion |
 | Executor authority | Digest-bound host Registry; only enabled, verified, digest-matched bindings are routable |
 | Compatibility | CLI, configuration, and runtime contracts may evolve before a stable release |
 
@@ -160,7 +159,7 @@ AnyFusion is not presented as Production Ready. The preview is intended to valid
 | Resource | Purpose |
 | --- | --- |
 | [Technical Overview](docs/current/technical-overview.md) | Runtime architecture, operational setup, modules, and implementation details |
-| [Runtime Security](docs/current/phase-5-runtime-security.md) | Worktree Executor processes, Docker compatibility attempts, persistent workspaces, image profiles, and runtime elevation |
+| [Runtime Security](docs/current/phase-5-runtime-security.md) | Worktree Executor processes, persistent workspaces, Registry bindings, PID cleanup, and runtime elevation |
 | [Architecture Decisions](docs/adr/README.md) | Accepted boundaries and authoritative design decisions |
 | [Concurrency Roadmap](docs/plans/2026-07-16-planner-kernel-concurrency-convergence-roadmap.md) | Control-plane, resource-partitioning, recovery, and parallel scheduling plan |
 | [Preview Release Notes](docs/releases/v1.2.0-preview.0.md) | Current release scope, deployment status, and known limitations |

@@ -21,7 +21,7 @@ ADR-0022 is the origin authority for the unified Kernel event/snapshot/decision 
 
 ADR-0023 is the current authority for the durable KernelWorkflow, structured failure and availability rules, idempotent application recovery, Work Graph revisions, continuation, outbox, manual recovery, and the 2026-07-30 deferred-availability/executor-recovery amendment.
 
-ADR-0024 is the current authority for Phase 5 resource partitions, persistent workspaces, per-attempt Docker sandboxes, durable resource leases and runtime capability elevation.
+ADR-0024 is the current authority for resource partitions, persistent worktrees, registered CLI child-process attempts, durable resource leases and runtime capability elevation.
 
 ADR-0025 is the current authority for Phase 6A single-Task runnable frontier, Kernel dispatch batches, asynchronous attempt supervision, Git-backed workspaces, deterministic publication and merge-conflict recovery.
 
@@ -38,7 +38,7 @@ publication to local `main`.
 | Project workspaces and approved publication | [ADR-0027](0027-project-workspaces-and-user-approved-branch-publication.md) | Project selection, Subtask branches/worktrees, local-main synchronization, approval-gated merge and cleanup |
 | Single-Task concurrency and Git publication | [ADR-0025](0025-single-task-concurrency-and-git-publication.md) | Runnable frontier, dispatch batches, attempt supervision, Git workspace ownership, publication gate and conflict repair |
 | Phase 6 single-Task reliability closure | [ADR-0026](0026-phase-6-single-task-reliability-closure.md) | Task termination, multi-attempt recovery/completion closure, and deferral of multi-Task scheduling |
-| Resource partitions and sandboxed attempts | [ADR-0024](0024-resource-partition-sandbox-and-runtime-elevation.md) | Partition identity/conflicts, persistent workspace, Docker attempt boundary, leases, elevation and recovery |
+| Resource partitions and Executor attempts | [ADR-0024](0024-resource-partition-sandbox-and-runtime-elevation.md) | Partition identity/conflicts, persistent worktree, child-process lifecycle, leases, elevation and recovery |
 | Core modules and dependencies | [ADR-0020](0020-core-module-ownership-and-dependency-direction.md) | Planner/Kernel/Runtime control loop, module owners, Application Shell, persistence adapters and phase design gates |
 | Durable Kernel workflow and recovery | [ADR-0023](0023-durable-kernel-workflow-recovery-and-availability.md) | Durable inbox/application/outbox, structured failure, retry/fallback, deferred availability, Executor recovery, continuation and revisions |
 | Unified Kernel control plane | [ADR-0022](0022-unified-kernel-control-plane-and-decision-ledger.md) | Versioned event/snapshot/decision contract, ledger-first loop, attempt landing, capacity recovery and response-only correction |

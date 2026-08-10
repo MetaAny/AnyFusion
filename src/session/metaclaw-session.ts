@@ -33,7 +33,6 @@ import { ExecutionProgressService } from '../execution/execution-progress-servic
 import { WorkUnitClaimService } from '../execution/work-unit-claim-service.js';
 import { WorkspaceStore } from '../execution/workspace-store.js';
 import { WorkspaceRetentionService } from '../execution/workspace-retention-service.js';
-import { DockerCliAttemptSandboxAdapter } from '../execution/docker-cli-attempt-sandbox-adapter.js';
 import { WorktreeAttemptSandboxAdapter } from '../execution/worktree-attempt-sandbox-adapter.js';
 import type { AttemptSandboxPort } from '../execution/attempt-sandbox.js';
 import { ResourceLeaseService } from '../execution/resource-lease-service.js';
@@ -207,6 +206,7 @@ export interface PlannerTuiSnapshot {
       preferredAgentClassList: string[];
     }>;
   }>;
+  executorRegistry: import('../executor/executor-registry-types.js').PlannerExecutorRegistryProjection;
   executorStatuses: Array<TuiExecutorRegistryEntry & {
     classHealth: KernelExecutorStatusProjection['classHealth'];
     recentAttempts: KernelExecutorStatusProjection['recentAttempts'];
@@ -272,10 +272,7 @@ interface FocusContext {
 const DEFAULT_PLANNER_TIMEOUT_MS = 60_000;
 
 function createDefaultAttemptSandbox(): AttemptSandboxPort {
-  const backend = (process.env.METACLAW_EXECUTOR_BACKEND ?? 'worktree').trim().toLowerCase();
-  if (backend === 'docker' || backend === 'container') return new DockerCliAttemptSandboxAdapter();
-  if (backend === 'worktree' || backend === 'native' || backend === '') return new WorktreeAttemptSandboxAdapter();
-  throw new Error(`Unsupported METACLAW_EXECUTOR_BACKEND: ${backend}`);
+  return new WorktreeAttemptSandboxAdapter();
 }
 
 /** Wires the session-facing services and exposes the imperative API used by TUI, CLI, gateway, and scripted runs. */
@@ -384,7 +381,9 @@ export class MetaclawSession {
       verificationRepo: new ExecutorVerificationRepo(deps.db),
       statusRepo: this.kernelExecutorStatusRepo,
     });
-    this.agentClassService = new AgentClassService({ registry: this.executorRegistryService });
+    this.agentClassService = new AgentClassService({
+      snapshot: () => this.executorRegistryService.current(),
+    });
     this.attemptSandbox = deps.attemptSandbox ?? createDefaultAttemptSandbox();
     this.permissionRepository = new SqlitePermissionRepository(deps.db);
     this.attemptSandboxRepository = new SqliteAttemptSandboxRepository(deps.db);
@@ -399,7 +398,6 @@ export class MetaclawSession {
       snapshot: () => this.executorRegistryService.current(),
       attemptSandbox: this.attemptSandbox,
       attemptSandboxRepository: this.attemptSandboxRepository,
-      controlNetwork: process.env.METACLAW_CONTROL_NETWORK ?? 'metaclaw-control',
     });
     this.executionRuntime = new ExecutionRuntime(executorRegistry);
     this.commandReadServices = new CommandReadServices(
@@ -507,7 +505,6 @@ export class MetaclawSession {
       workspaceRepository: this.workspaceRepository,
       sourceRoot,
       autoApproveRepositoryPromotions: usingTestProjectFallback,
-      controlNetwork: process.env.METACLAW_CONTROL_NETWORK ?? 'metaclaw-control',
     });
     this.kernelExecutionRuntime = new KernelExecutionRuntime({
       sessionId: deps.sessionId,
@@ -610,6 +607,20 @@ export class MetaclawSession {
   dispose(): void {
     this.unregisterPlannerHost?.();
     this.unregisterPlannerHost = null;
+    void this.stopAttemptProcesses();
+  }
+
+  async shutdown(): Promise<void> {
+    this.unregisterPlannerHost?.();
+    this.unregisterPlannerHost = null;
+    await this.stopAttemptProcesses();
+  }
+
+  private async stopAttemptProcesses(): Promise<void> {
+    const active = await this.attemptSandbox.listManaged();
+    await Promise.all(active
+      .filter(record => record.status === 'running' || record.status === 'paused')
+      .map(record => this.attemptSandbox.stop(record.runtimeHandle).catch(() => undefined)));
   }
 
   subscribe(listener: (snapshot: SessionSnapshot) => void): () => void {
@@ -658,6 +669,7 @@ export class MetaclawSession {
    */
   getPlannerTuiSnapshot(): PlannerTuiSnapshot {
     const snapshot = this.getSnapshot();
+    const executorRegistry = this.executorRegistryService.current();
     return {
       schemaVersion: 1,
       session: {
@@ -687,6 +699,11 @@ export class MetaclawSession {
           preferredAgentClassList: [...subtask.preferredAgentClassList],
         })),
       })),
+      executorRegistry: {
+        configDigest: executorRegistry.configDigest,
+        planner: executorRegistry.planner,
+        tui: executorRegistry.tui,
+      },
       executorStatuses: this.buildTuiExecutorStatuses(),
       smokeRunAudits: new SmokeRunAuditRepo(this.deps.db).list(),
     };
@@ -1875,7 +1892,7 @@ export class MetaclawSession {
         attemptId: record.request.attemptId,
         agentClassName: record.request.agentClassName,
         permissionProfileId: record.request.permissionProfileId,
-        containerId: sandbox?.containerId ?? '',
+        runtimeHandle: sandbox?.runtimeHandle ?? '',
         workspaceId,
         checkpointId: null,
       },
@@ -2077,9 +2094,6 @@ export class MetaclawSession {
               effectivePermissionProfile: defaults?.binding.effectivePermissionProfile
                 ?? input.permissionProfile
                 ?? 'restricted-custom',
-              backendSupport: defaults?.binding.backendSupport ?? ['worktree'],
-              dockerImageRef: defaults?.binding.dockerImageRef ?? null,
-              dockerImageId: defaults?.binding.dockerImageId ?? null,
               sessionProtocol: defaults?.binding.sessionProtocol ?? input.sessionProtocol ?? null,
             },
             strengths: [],
@@ -2235,7 +2249,7 @@ export class MetaclawSession {
           }
           dispatchItems.markUncertain(
             record.attemptId,
-            `sandbox ${record.containerId} was reconciled during startup`,
+            `runtime ${record.runtimeHandle} was reconciled during startup`,
             now,
           );
           this.kernelWorkflowRepo.enqueue({
@@ -2249,7 +2263,7 @@ export class MetaclawSession {
             taskId: record.taskId,
             subtaskId: record.subtaskId,
             attemptId: record.attemptId,
-            containerId: record.containerId,
+            runtimeHandle: record.runtimeHandle,
             workspaceId: record.workspaceId,
             checkpointId: checkpointIds.get(record.attemptId) ?? null,
           });

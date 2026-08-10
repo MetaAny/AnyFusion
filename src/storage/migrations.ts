@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3';
 
-const CURRENT_SCHEMA_VERSION = 33;
+const CURRENT_SCHEMA_VERSION = 34;
 
 const CURRENT_SCHEMA_SQL = `
 CREATE TABLE projects (
@@ -625,9 +625,8 @@ CREATE TABLE attempt_sandboxes (
             subtask_id TEXT NOT NULL,
             work_unit_id TEXT NOT NULL,
             workspace_id TEXT NOT NULL,
-            container_id TEXT NOT NULL UNIQUE,
-            image_ref TEXT NOT NULL,
-            image_id TEXT NOT NULL,
+            runtime_handle TEXT NOT NULL UNIQUE,
+            process_id INTEGER,
             status TEXT NOT NULL,
             lease_token TEXT NOT NULL,
             labels_json TEXT NOT NULL,
@@ -682,7 +681,7 @@ CREATE TABLE "kernel_dispatch_items" (
               'terminal', 'cancelled', 'uncertain'
             )),
             work_unit_id TEXT,
-            sandbox_container_id TEXT,
+            sandbox_runtime_handle TEXT,
             launch_started_at TEXT,
             terminal_at TEXT,
             cancellation_decision_id TEXT,

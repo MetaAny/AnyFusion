@@ -152,7 +152,7 @@ export type KernelEvent =
     })
   | (KernelEventEnvelope & {
       type: 'sandbox_lost';
-      containerId: string | null;
+      runtimeHandle: string | null;
       workspaceId: string;
       checkpointId: string | null;
     })

@@ -51,9 +51,6 @@ export interface ExecutorInstallationBinding {
   environmentFiles: string[];
   inheritEnvironment: string[];
   effectivePermissionProfile: ExecutorPermissionProfileId;
-  backendSupport: Array<'worktree' | 'docker'>;
-  dockerImageRef: string | null;
-  dockerImageId: string | null;
   sessionProtocol: CliSessionProtocol | null;
 }
 
@@ -138,9 +135,6 @@ export interface RuntimeExecutorBinding {
   environmentFiles: string[];
   inheritEnvironment: string[];
   permissionProfileId: ExecutorPermissionProfileId;
-  backendSupport: Array<'worktree' | 'docker'>;
-  dockerImageRef: string | null;
-  dockerImageId: string | null;
   sessionProtocol: CliSessionProtocol | null;
 }
 
@@ -196,6 +190,13 @@ export interface TuiExecutorRegistryEntry {
   verifiedAt: string | null;
 }
 
+/** Read-only Registry facts that may cross the Planner host seam. */
+export interface PlannerExecutorRegistryProjection {
+  configDigest: string;
+  planner: PlannerExecutorCatalog;
+  tui: readonly TuiExecutorRegistryEntry[];
+}
+
 export interface ExecutorRegistrySnapshot {
   schemaVersion: 1;
   configDigest: string;
@@ -233,8 +234,6 @@ export function executorToAgentClass(executor: ExecutorDefinition): AgentClass {
     runtimeCommand: executor.binding.binaryPath,
     runtimeArgs: [],
     runtimeCheckCommand: [executor.binding.binaryPath, ...executor.binding.versionArgs].join(' '),
-    executionImageRef: executor.binding.dockerImageRef,
-    resolvedImageId: executor.binding.dockerImageId,
     permissionProfileId: executor.binding.effectivePermissionProfile,
     projectUrl: null,
   };

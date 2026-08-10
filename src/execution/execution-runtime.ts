@@ -15,10 +15,7 @@ import type { AgentClassLookupPort } from '../executor/agent-class-lookup-port.j
 import type { AttemptSandboxPort } from './attempt-sandbox.js';
 import { SandboxedExecutorAdapter } from '../executor/sandboxed-executor-adapter.js';
 import type { AttemptSandboxRepositoryPort } from './repositories.js';
-import {
-  runtimeContractForDriver,
-  type ExecutorRegistrySnapshot,
-} from '../executor/executor-registry-types.js';
+import type { ExecutorRegistrySnapshot } from '../executor/executor-registry-types.js';
 
 // Shared normalized result of running a task's work graph. Previously exported by
 // the retired core/execution-planning-service module; kept here on the live path.
@@ -42,15 +39,14 @@ export interface ExecutionResult {
 
 export interface ExecutorRegistryDeps {
   agentClassLookup: AgentClassLookupPort;
-  snapshot?: () => ExecutorRegistrySnapshot;
+  snapshot: () => ExecutorRegistrySnapshot;
   attemptSandbox: AttemptSandboxPort;
   attemptSandboxRepository?: AttemptSandboxRepositoryPort;
-  controlNetwork?: string;
 }
 
 export interface ExecutorRegistrationInspection {
   configured: boolean;
-  bindingSource: 'sandbox' | 'worktree' | 'unbound';
+  bindingSource: 'worktree' | 'unbound';
   adapterName: string | null;
 }
 
@@ -60,9 +56,7 @@ export class ExecutorRegistry {
 
   resolve(name: string): ExecutorAdapter | null {
     const agentClass = this.deps.agentClassLookup.findByName(name);
-    const binding = this.deps.snapshot
-      ? this.deps.snapshot().runtime.get(name) ?? null
-      : agentClass ? legacyRuntimeBinding(agentClass, this.deps.attemptSandbox.kind === 'worktree') : null;
+    const binding = this.deps.snapshot().runtime.get(name) ?? null;
     return agentClass && binding
       ? new SandboxedExecutorAdapter(agentClass, binding, this.deps.attemptSandbox, this.deps.attemptSandboxRepository)
       : null;
@@ -70,28 +64,18 @@ export class ExecutorRegistry {
 
   inspect(name: string): ExecutorRegistrationInspection {
     const agentClass = this.deps.agentClassLookup.findByName(name);
-    const binding = this.deps.snapshot
-      ? this.deps.snapshot().runtime.get(name) ?? null
-      : agentClass ? legacyRuntimeBinding(agentClass, this.deps.attemptSandbox.kind === 'worktree') : null;
-    const worktree = (this.deps.attemptSandbox.kind ?? 'container') === 'worktree';
-    const configured = Boolean(
-      agentClass?.permissionProfileId && binding
-      && (worktree
-        ? binding.backendSupport.includes('worktree')
-        : binding.backendSupport.includes('docker')),
-    );
+    const binding = this.deps.snapshot().runtime.get(name) ?? null;
+    const configured = Boolean(agentClass?.permissionProfileId && binding);
     return {
       configured,
-      bindingSource: configured ? worktree ? 'worktree' : 'sandbox' : 'unbound',
+      bindingSource: configured ? 'worktree' : 'unbound',
       adapterName: configured ? binding?.driver ?? null : null,
     };
   }
 
   async probe(name: string, previousFailure?: KernelFailure | null): Promise<ExecutorProbeResult> {
     const agentClass = this.deps.agentClassLookup.findByName(name);
-    const binding = this.deps.snapshot
-      ? this.deps.snapshot().runtime.get(name) ?? null
-      : agentClass ? legacyRuntimeBinding(agentClass, this.deps.attemptSandbox.kind === 'worktree') : null;
+    const binding = this.deps.snapshot().runtime.get(name) ?? null;
     if (!agentClass || !binding) {
       return {
         available: false,
@@ -102,45 +86,6 @@ export class ExecutorRegistry {
           summary: `Executor ${name} is missing, disabled, unverified, or stale`,
         },
       };
-    }
-    const worktree = (this.deps.attemptSandbox.kind ?? 'container') === 'worktree';
-    if (!binding.backendSupport.includes(worktree ? 'worktree' : 'docker')) {
-      return {
-        available: false,
-        failure: {
-          kind: 'configuration',
-          scope: 'agent_class',
-          code: 'executor_backend_unsupported',
-          summary: `Executor ${name} does not support the active ${worktree ? 'worktree' : 'docker'} backend`,
-        },
-      };
-    }
-    if (!worktree && agentClass.executionImageRef && !agentClass.resolvedImageId) {
-      try {
-        const imageId = await this.deps.attemptSandbox.resolveImage(agentClass.executionImageRef);
-        if (!imageId.startsWith('sha256:')) {
-          return {
-            available: false,
-            failure: {
-              kind: 'configuration',
-              scope: 'agent_class',
-              code: 'executor_image_not_immutable',
-              summary: `Executor image for ${name} did not resolve to an immutable image ID`,
-            },
-          };
-        }
-        this.deps.agentClassLookup.setResolvedImageId?.(name, imageId);
-      } catch (error) {
-        return {
-          available: false,
-          failure: {
-            kind: 'adapter',
-            scope: 'agent_class',
-            code: 'executor_image_probe_failed',
-            summary: error instanceof Error ? error.message : String(error),
-          },
-        };
-      }
     }
     const adapter = this.resolve(name);
     if (!adapter) {
@@ -154,68 +99,8 @@ export class ExecutorRegistry {
         },
       };
     }
-    if (!worktree) {
-      try {
-        await this.deps.attemptSandbox.probeControlNetwork?.(
-          this.deps.controlNetwork ?? process.env.METACLAW_CONTROL_NETWORK ?? 'metaclaw-control',
-        );
-      } catch (error) {
-        return {
-          available: false,
-          failure: {
-            kind: 'adapter',
-            scope: 'agent_class',
-            code: 'executor_control_network_unavailable',
-            summary: error instanceof Error ? error.message : String(error),
-          },
-        };
-      }
-    }
     return adapter.probe(previousFailure);
   }
-}
-
-function legacyRuntimeBinding(
-  agentClass: AgentClass,
-  worktree: boolean,
-): import('../executor/executor-registry-types.js').RuntimeExecutorBinding | null {
-  if (!agentClass.permissionProfileId) return null;
-  if (!worktree && (!agentClass.executionImageRef || !agentClass.resolvedImageId)) return null;
-  const command = agentClass.runtimeCommand ?? agentClass.name;
-  const executable = command.split('/').at(-1) ?? command;
-  const driver = executable === 'codex'
-    ? 'codex'
-    : executable === 'pi'
-      ? 'pi'
-      : executable.startsWith('hermes')
-        ? 'hermes'
-        : 'cli-session';
-  const sessionProtocol = driver === 'cli-session'
-    ? {
-        initialArgs: [...agentClass.runtimeArgs],
-        resumeArgs: [...agentClass.runtimeArgs],
-        sessionIdPattern: 'session[_-]?id[:=]\\s*([^\\s]+)',
-        finalOutputPattern: null,
-        timeoutMs: 120_000,
-        terminateSignal: 'SIGTERM' as const,
-      }
-    : null;
-  return {
-    id: agentClass.name,
-    configDigest: 'legacy-test-binding',
-    driver,
-    ...runtimeContractForDriver(driver, sessionProtocol),
-    binaryPath: command,
-    versionArgs: ['--version'],
-    runtimeHome: process.env.HOME ?? '/tmp',
-    environmentFiles: [],
-    inheritEnvironment: [],
-    permissionProfileId: agentClass.permissionProfileId,
-    backendSupport: [worktree ? 'worktree' : 'docker'],
-    dockerImageRef: worktree ? null : agentClass.executionImageRef ?? null,
-    dockerImageId: worktree ? null : agentClass.resolvedImageId ?? null,
-    sessionProtocol,
-  };
 }
 
 export interface ExecutionRuntimeRunInput {

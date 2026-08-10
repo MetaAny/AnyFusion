@@ -11,7 +11,7 @@
 
 ## Context
 
-Phase 5 established durable workspaces, per-attempt sandboxes, partition leases and a single durable Kernel workflow, but production still dispatches one Subtask at a time. Attempt success also publishes completion facts immediately, and dependency workspace composition cherry-picks commits. Enabling concurrency on that path would couple outcome timing to result order, expose downstream work before integration, and make same-path writes unsafe.
+Phase 5 established durable workspaces, per-attempt runtime records, partition leases and a single durable Kernel workflow, but production still dispatches one Subtask at a time. Attempt success also publishes completion facts immediately, and dependency workspace composition cherry-picks commits. Enabling concurrency on that path would couple outcome timing to result order, expose downstream work before integration, and make same-path writes unsafe.
 
 The product must first prove concurrency inside the single active top-level Task. Multi-Task fairness is a separate policy layer and must not force a second scheduler or rewrite the attempt/publication mechanisms.
 

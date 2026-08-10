@@ -64,9 +64,6 @@ export function createExecutorRegistrySnapshot(input: {
     environmentFiles: executor.binding.environmentFiles,
     inheritEnvironment: executor.binding.inheritEnvironment,
     permissionProfileId: executor.binding.effectivePermissionProfile,
-    backendSupport: executor.binding.backendSupport,
-    dockerImageRef: executor.binding.dockerImageRef,
-    dockerImageId: executor.binding.dockerImageId,
     sessionProtocol: executor.binding.sessionProtocol,
   })]));
   const tui = [...executors.values()].map(executor => {

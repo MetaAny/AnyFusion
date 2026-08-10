@@ -592,7 +592,7 @@ describe('ControlKernel', () => {
       type: 'wait_for_partition', taskId: 'task_1', subtaskId: 'subtask_1', conflictingLeaseIds: ['lease-1'],
     });
     expect(kernel.decide(runtimeEvent({
-      type: 'sandbox_lost', attemptId: 'attempt-1', containerId: null,
+      type: 'sandbox_lost', attemptId: 'attempt-1', runtimeHandle: null,
       workspaceId: 'workspace-1', checkpointId: 'checkpoint-1',
     }), {
       schemaVersion: 5, type: 'sandbox_recovery', workspaceExists: true,

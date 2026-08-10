@@ -77,6 +77,23 @@ describe('smoke-metaclaw-real-task helpers', () => {
     expect(readFileSync(join(targetDir, 'settings.json'), 'utf-8')).toContain('defaultModel');
   });
 
+  it('does not overwrite a managed Pi executor home', async () => {
+    const smoke = await loadSmokeScript();
+    const targetHome = join(tempRoot, 'managed-home');
+    const targetDir = join(targetHome, '.pi', 'agent');
+    mkdirSync(targetDir, { recursive: true });
+    writeFileSync(join(targetDir, 'models.json'), '{"managed":true}');
+
+    smoke.bootstrapExecutor({
+      executorCommand: 'pi',
+      executorHome: targetHome,
+      repoRoot: tempRoot,
+      preserveExistingConfig: true,
+    });
+
+    expect(readFileSync(join(targetDir, 'models.json'), 'utf-8')).toBe('{"managed":true}');
+  });
+
   it('derives smoke configuration from the same template used by shell.ps1', async () => {
     const smoke = await loadSmokeScript();
     const dockerDir = join(tempRoot, 'docker');
@@ -250,14 +267,14 @@ describe('smoke-metaclaw-real-task helpers', () => {
     const smoke = await loadSmokeScript();
 
     expect(smoke.verifyPiResearchScenario({
-      authoritativeState: authoritativeSuccessState('', 'pi-agent'),
+      authoritativeState: authoritativeSuccessState('', 'pi'),
     })).toEqual({
       taskId: 'task-1',
-      executorNames: ['pi-agent'],
+      executorNames: ['pi'],
     });
     expect(() => smoke.verifyPiResearchScenario({
       authoritativeState: authoritativeSuccessState('', 'codex-cli'),
-    })).toThrow(/expected a completed pi-agent receipt/);
+    })).toThrow(/expected a completed pi receipt/);
   });
 
   it('scopes authoritative Task and accepted proposal reads to the current smoke run', async () => {

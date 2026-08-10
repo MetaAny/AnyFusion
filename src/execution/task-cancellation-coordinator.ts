@@ -207,14 +207,14 @@ export class TaskCancellationCoordinator {
       const sandbox = this.deps.attemptSandboxRepository.find(item.attemptId);
       try {
         if (sandbox && ['created', 'running', 'paused'].includes(sandbox.status)) {
-          await this.deps.attemptSandbox.stop(sandbox.containerId);
+          await this.deps.attemptSandbox.stop(sandbox.runtimeHandle);
         }
         const observed = sandbox
-          ? await this.deps.attemptSandbox.inspect(sandbox.containerId)
+          ? await this.deps.attemptSandbox.inspect(sandbox.runtimeHandle)
           : null;
         if (observed && observed.status !== 'exited') continue;
         if (sandbox) {
-          await this.deps.attemptSandbox.remove(sandbox.containerId);
+          await this.deps.attemptSandbox.remove(sandbox.runtimeHandle);
           this.deps.attemptSandboxRepository.update(item.attemptId, {
             status: 'removed',
             cleanupStatus: 'removed',
@@ -318,7 +318,7 @@ export class TaskCancellationCoordinator {
         ON receipt.attempt_id = dispatch.attempt_id
       WHERE dispatch.task_id = ?${dispatchGeneration}
         AND dispatch.status = 'terminal'
-        AND (dispatch.work_unit_id IS NOT NULL OR dispatch.sandbox_container_id IS NOT NULL)
+        AND (dispatch.work_unit_id IS NOT NULL OR dispatch.sandbox_runtime_handle IS NOT NULL)
         AND receipt.attempt_id IS NULL
       LIMIT 1
     `).get(...parameters)) reasons.push('attempt_receipt');

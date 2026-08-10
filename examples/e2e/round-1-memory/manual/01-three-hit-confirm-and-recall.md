@@ -13,7 +13,7 @@ npm run build
 - 以真实 TUI 启动：
 
 ```bash
-./metaclaw.sh start
+anyfusion
 ```
 
 ## 输入步骤

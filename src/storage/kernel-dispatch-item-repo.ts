@@ -23,7 +23,7 @@ export interface KernelDispatchItemRecord {
   resourceGrant: ResourceClaim[];
   status: KernelDispatchItemStatus;
   workUnitId: string | null;
-  sandboxContainerId: string | null;
+  sandboxRuntimeHandle: string | null;
   launchStartedAt: string | null;
   terminalAt: string | null;
   cancellationDecisionId: string | null;
@@ -49,7 +49,7 @@ interface DispatchItemRow {
   resource_grant_json: string;
   status: KernelDispatchItemStatus;
   work_unit_id: string | null;
-  sandbox_container_id: string | null;
+  sandbox_runtime_handle: string | null;
   launch_started_at: string | null;
   terminal_at: string | null;
   cancellation_decision_id: string | null;
@@ -177,12 +177,12 @@ export class KernelDispatchItemRepo {
     `).run(workUnitId, now, attemptId).changes === 1;
   }
 
-  markSandbox(attemptId: string, containerId: string, now: string): void {
+  markRuntime(attemptId: string, runtimeHandle: string, now: string): void {
     this.db.prepare(`
       UPDATE kernel_dispatch_items
-      SET sandbox_container_id = ?, status = 'running', updated_at = ?
+      SET sandbox_runtime_handle = ?, status = 'running', updated_at = ?
       WHERE attempt_id = ? AND status IN ('launching', 'running')
-    `).run(containerId, now, attemptId);
+    `).run(runtimeHandle, now, attemptId);
   }
 
   markTerminal(attemptId: string, errorSummary: string | null, now: string): void {
@@ -300,7 +300,7 @@ export class KernelDispatchItemRepo {
     return this.db.prepare(`
       UPDATE kernel_dispatch_items
       SET status = 'pending_launch', launch_started_at = NULL, updated_at = created_at
-      WHERE status = 'launching' AND sandbox_container_id IS NULL
+      WHERE status = 'launching' AND sandbox_runtime_handle IS NULL
     `).run().changes;
   }
 }
@@ -321,7 +321,7 @@ function rowToDispatchItem(row: DispatchItemRow): KernelDispatchItemRecord {
     resourceGrant: JSON.parse(row.resource_grant_json) as ResourceClaim[],
     status: row.status,
     workUnitId: row.work_unit_id,
-    sandboxContainerId: row.sandbox_container_id,
+    sandboxRuntimeHandle: row.sandbox_runtime_handle,
     launchStartedAt: row.launch_started_at,
     terminalAt: row.terminal_at,
     cancellationDecisionId: row.cancellation_decision_id,

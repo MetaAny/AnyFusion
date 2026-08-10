@@ -1,5 +1,6 @@
 import {
   chmodSync,
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -30,6 +31,7 @@ describe('native AnyFusion Linux launcher', () => {
     expect(syntax.status, syntax.stderr).toBe(0);
     expect(help.status, help.stderr).toBe(0);
     expect(help.stdout).toContain('anyfusion smoke [smoke options]');
+    expect(help.stdout).toContain('anyfusion gateway run');
     expect(help.stdout).toContain('Codex and Pi use the existing host-installed commands');
     expect(help.stdout).toContain('Docker is not required');
   });
@@ -57,7 +59,8 @@ describe('native AnyFusion Linux launcher', () => {
 
     for (const command of ['codex', 'pi']) {
       const commandPath = join(fakeBin, command);
-      writeFileSync(commandPath, '#!/usr/bin/env bash\nexit 0\n');
+      const version = command === 'codex' ? 'codex-cli 0.146.0' : '0.81.1';
+      writeFileSync(commandPath, `#!/usr/bin/env bash\nprintf '%s\\n' '${version}'\n`);
       chmodSync(commandPath, 0o755);
     }
 
@@ -74,9 +77,14 @@ describe('native AnyFusion Linux launcher', () => {
       encoding: 'utf8',
       env: {
         ...process.env,
+        NODE_ENV: 'production',
         PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
         ANYFUSION_PI_ROOT: piRoot,
         ANYFUSION_CONFIG_HOME: configHome,
+        ANYFUSION_PLANNER_HOME: join(configHome, 'planner'),
+        METACLAW_PLANNER_HOME: join(configHome, 'planner'),
+        METACLAW_EXECUTOR_CODEX_HOME: join(configHome, 'codex'),
+        METACLAW_EXECUTOR_PI_HOME: join(configHome, 'pi-home'),
         METACLAW_HOME: dataHome,
         ANYFUSION_PLANNER_ENV_FILE: plannerEnv,
         ANYFUSION_CODEX_EXECUTOR_ENV_FILE: codexEnv,
@@ -98,8 +106,18 @@ describe('native AnyFusion Linux launcher', () => {
     expect(readFileSync(join(configHome, 'bin/anyfusion-planner'), 'utf8')).toContain(
       join(piRoot, 'packages/coding-agent/dist/cli.js'),
     );
+    const registry = readFileSync(join(configHome, 'executors.yaml'), 'utf8');
+    expect(registry).toContain('id: codex');
+    expect(registry).toContain('id: pi');
+    expect(registry).toContain('executors: []');
     expect(readFileSync(resolve('anyfusion'), 'utf8')).not.toContain('docker run');
     expect(readFileSync(resolve('anyfusion'), 'utf8')).not.toContain('docker build');
-    expect(readFileSync(resolve('anyfusion'), 'utf8')).toContain('export ANYFUSION_CONFIG_HOME');
+    expect(readFileSync(resolve('anyfusion'), 'utf8')).toContain('source "$BOOTSTRAP"');
+  });
+
+  it('keeps one native startup script', () => {
+    expect(existsSync(resolve('anyfusion'))).toBe(true);
+    expect(existsSync(resolve('anyfusion.sh'))).toBe(false);
+    expect(existsSync(resolve('metaclaw.sh'))).toBe(false);
   });
 });

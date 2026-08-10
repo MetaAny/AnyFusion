@@ -26,19 +26,16 @@ SCRIPT_PATH="$(resolve_script_path)"
 REPO_ROOT="$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd)"
 INVOKE_CWD="$PWD"
 ANYFUSION_PI_ROOT="${ANYFUSION_PI_ROOT:-$(dirname "$REPO_ROOT")/AnyFusion-Pi}"
-ANYFUSION_CONFIG_HOME="${ANYFUSION_CONFIG_HOME:-$HOME/.config/anyfusion}"
-METACLAW_HOME="${METACLAW_HOME:-$HOME/.local/share/anyfusion}"
 PLANNER_ENV_FILE="${ANYFUSION_PLANNER_ENV_FILE:-$REPO_ROOT/docker/planner-pi.env}"
 CODEX_ENV_FILE="${ANYFUSION_CODEX_EXECUTOR_ENV_FILE:-$REPO_ROOT/docker/executor-codex.env}"
 PI_ENV_FILE="${ANYFUSION_PI_EXECUTOR_ENV_FILE:-$REPO_ROOT/docker/executor-pi.env}"
-PLANNER_HOME="$ANYFUSION_CONFIG_HOME/planner"
-CODEX_HOME_DIR="$ANYFUSION_CONFIG_HOME/codex"
-PI_HOME_DIR="$ANYFUSION_CONFIG_HOME/pi-home"
-PLANNER_WRAPPER="$ANYFUSION_CONFIG_HOME/bin/anyfusion-planner"
 APP_ENTRY="$REPO_ROOT/dist/index.js"
 PLANNER_SCHEMA="$REPO_ROOT/dist/planning-agent-plan-v7.schema.json"
 PI_ATTEMPT_EXTENSION="$REPO_ROOT/dist/pi-attempt-tools.ts"
 PLANNER_CLI="$ANYFUSION_PI_ROOT/packages/coding-agent/dist/cli.js"
+BOOTSTRAP="$REPO_ROOT/scripts/runtime-bootstrap.sh"
+
+source "$BOOTSTRAP"
 
 info() {
   printf '[INFO] %s\n' "$*"
@@ -60,6 +57,8 @@ Usage:
   anyfusion --no-build [args...]    Reuse existing build outputs
   anyfusion --check                 Validate and prepare the native server runtime
   anyfusion executor <command> ...  Discover, register, verify, enable, disable, show, list, or reload Executors
+  anyfusion gateway run             Run the Gateway in the foreground
+  anyfusion --connect               Connect to an already running Gateway
   anyfusion --launcher-help         Show this help
 
 Runtime:
@@ -72,8 +71,9 @@ Runtime:
 
 Environment:
   ANYFUSION_PI_ROOT                 AnyFusion-Pi checkout; defaults to ../AnyFusion-Pi
-  ANYFUSION_CONFIG_HOME             Isolated Agent config root; defaults to ~/.config/anyfusion
-  METACLAW_HOME                     Runtime data root; defaults to ~/.local/share/anyfusion
+  ANYFUSION_CONFIG_HOME             Agent config root; defaults to ~/.config/anyfusion
+  ANYFUSION_DATA_HOME               Product data root; defaults to ~/.local/share/anyfusion
+  METACLAW_HOME                     Runtime data root; defaults to $ANYFUSION_DATA_HOME/runtime
   ANYFUSION_PLANNER_ENV_FILE        Planner provider env file
   ANYFUSION_CODEX_EXECUTOR_ENV_FILE Codex provider env file
   ANYFUSION_PI_EXECUTOR_ENV_FILE    Pi provider env file
@@ -82,38 +82,6 @@ EOF
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "Missing required command: $1"
-}
-
-env_file_value() {
-  local env_file="$1"
-  local key="$2"
-  local line
-  local value
-
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    line="${line%$'\r'}"
-    [[ -z "${line//[[:space:]]/}" || "$line" =~ ^[[:space:]]*# ]] && continue
-    if [[ "$line" =~ ^[[:space:]]*${key}[[:space:]]*=(.*)$ ]]; then
-      value="${BASH_REMATCH[1]}"
-      value="${value#"${value%%[![:space:]]*}"}"
-      value="${value%"${value##*[![:space:]]}"}"
-      if [[ "$value" == \"*\" && "$value" == *\" ]] || [[ "$value" == \'*\' && "$value" == *\' ]]; then
-        value="${value:1:${#value}-2}"
-      fi
-      printf '%s' "$value"
-      return 0
-    fi
-  done < "$env_file"
-}
-
-validate_provider_env() {
-  local label="$1"
-  local env_file="$2"
-  [[ -f "$env_file" ]] || fail "Missing $env_file; copy its .example file and configure the provider."
-  [[ -n "$(env_file_value "$env_file" OPENAI_API_KEY)" ]] \
-    || fail "$label OPENAI_API_KEY is empty in $env_file"
-  [[ -n "$(env_file_value "$env_file" OPENAI_BASE_URL)" ]] \
-    || fail "$label OPENAI_BASE_URL is empty in $env_file"
 }
 
 check_prerequisites() {
@@ -135,9 +103,6 @@ check_prerequisites() {
 
   [[ -f "$ANYFUSION_PI_ROOT/package.json" ]] \
     || fail "Missing sibling AnyFusion-Pi repository at $ANYFUSION_PI_ROOT"
-  validate_provider_env 'Planner' "$PLANNER_ENV_FILE"
-  validate_provider_env 'Codex Executor' "$CODEX_ENV_FILE"
-  validate_provider_env 'Pi Executor' "$PI_ENV_FILE"
 }
 
 dependencies_stale() {
@@ -170,63 +135,31 @@ require_build_outputs() {
   done
 }
 
-render_template() {
-  local template="$1"
-  local output="$2"
-  local base_url="$3"
-  sed "s|__OPENAI_BASE_URL__|${base_url}|g" "$template" > "$output"
-}
-
 prepare_runtime_configuration() {
-  local planner_base_url
-  local codex_base_url
-  local pi_base_url
   local node_path
+  local planner_wrapper
 
-  planner_base_url="$(env_file_value "$PLANNER_ENV_FILE" OPENAI_BASE_URL)"
-  codex_base_url="$(env_file_value "$CODEX_ENV_FILE" OPENAI_BASE_URL)"
-  pi_base_url="$(env_file_value "$PI_ENV_FILE" OPENAI_BASE_URL)"
   node_path="$(command -v node)"
+  export ANYFUSION_CONFIG_HOME="${ANYFUSION_CONFIG_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/anyfusion}"
+  planner_wrapper="$ANYFUSION_CONFIG_HOME/bin/anyfusion-planner"
 
-  mkdir -p \
-    "$METACLAW_HOME" \
-    "$METACLAW_HOME/planner-sessions" \
-    "$PLANNER_HOME" \
-    "$CODEX_HOME_DIR" \
-    "$PI_HOME_DIR/.pi/agent" \
-    "$(dirname "$PLANNER_WRAPPER")"
+  mkdir -p "$(dirname "$planner_wrapper")"
+  printf '#!/usr/bin/env bash\nexec %q %q "$@"\n' "$node_path" "$PLANNER_CLI" > "$planner_wrapper"
+  chmod 700 "$planner_wrapper"
 
-  render_template "$REPO_ROOT/docker/planner-pi-config/models.json" "$PLANNER_HOME/models.json" "$planner_base_url"
-  cp "$REPO_ROOT/docker/planner-pi-config/settings.json" "$PLANNER_HOME/settings.json"
-  render_template "$REPO_ROOT/docker/codex-config/executor/config.toml" "$CODEX_HOME_DIR/config.toml" "$codex_base_url"
-  render_template "$REPO_ROOT/docker/pi-config/models.json" "$PI_HOME_DIR/.pi/agent/models.json" "$pi_base_url"
-  cp "$REPO_ROOT/docker/pi-config/settings.json" "$PI_HOME_DIR/.pi/agent/settings.json"
-  printf '#!/usr/bin/env bash\nexec %q %q "$@"\n' "$node_path" "$PLANNER_CLI" > "$PLANNER_WRAPPER"
-  chmod 700 "$PLANNER_WRAPPER"
-
-  if [[ ! -f "$METACLAW_HOME/config.yaml" ]]; then
-    cp "$REPO_ROOT/docker/tui-config.yaml" "$METACLAW_HOME/config.yaml"
-  fi
-
-  export METACLAW_HOME
-  export ANYFUSION_CONFIG_HOME
-  export METACLAW_EXECUTOR_BACKEND=worktree
-  export METACLAW_PLANNER_COMMAND="$PLANNER_WRAPPER"
-  export METACLAW_PLANNER_TUI_COMMAND="$PLANNER_WRAPPER"
+  export ANYFUSION_TEMPLATE_ROOT="$REPO_ROOT/docker"
+  export ANYFUSION_DEFAULT_CONFIG="$REPO_ROOT/docker/tui-config.yaml"
+  export ANYFUSION_APP_ENTRY="$APP_ENTRY"
+  export METACLAW_PLANNER_COMMAND="$planner_wrapper"
+  export METACLAW_PLANNER_TUI_COMMAND="$planner_wrapper"
   export METACLAW_PLANNER_WORKDIR="$INVOKE_CWD"
-  export METACLAW_PLANNER_HOME="$PLANNER_HOME"
-  export ANYFUSION_PLANNER_HOME="$PLANNER_HOME"
-  export METACLAW_PLANNER_SESSION_DIR="$METACLAW_HOME/planner-sessions"
   export METACLAW_PLANNER_SCHEMA_PATH="$PLANNER_SCHEMA"
   export ANYFUSION_PLANNER_SCHEMA_PATH="$PLANNER_SCHEMA"
   export METACLAW_PLANNER_ENV_FILE="$PLANNER_ENV_FILE"
   export METACLAW_CODEX_EXECUTOR_ENV_FILE="$CODEX_ENV_FILE"
   export METACLAW_PI_EXECUTOR_ENV_FILE="$PI_ENV_FILE"
-  export METACLAW_EXECUTOR_CODEX_HOME="$CODEX_HOME_DIR"
-  export METACLAW_EXECUTOR_PI_HOME="$PI_HOME_DIR"
   export METACLAW_PI_ATTEMPT_EXTENSION="$PI_ATTEMPT_EXTENSION"
-  export PI_SKIP_VERSION_CHECK=1
-  export PI_TELEMETRY=0
+  anyfusion_bootstrap_runtime
 }
 
 main() {

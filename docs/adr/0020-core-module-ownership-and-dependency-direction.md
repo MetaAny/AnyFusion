@@ -108,6 +108,8 @@ Kernel Executor Status Projection 的稳定词汇和数据契约属于 Executor 
 
 Executor 注册、发现、验证、启停和 reload 是 Application Service。CLI、slash command 和 AnyFusion-Pi 只能调用该服务；Pi 不得直接写 `executors.yaml`、verification 表或 Kernel 状态。配置加载失败时由 Registry Service 保留上一份有效 snapshot。Task purge 同样是 `task/` 拥有的受控 Application Service；UI/Commands 不能绕过它建立删除授权或直接删除 immutable Task facts。
 
+运行中的 Session/Application Shell 持有 active Registry snapshot，并通过现有 Planner Host Protocol 向独立 Planner MCP 进程提供当前只读 Planner projection。Planner MCP 不得创建第二个长期 Registry loader；Execution Runtime 的生产 Interface 必须接收同一 snapshot 的已验证 Runtime binding，不得从 AgentClass 名称或进程环境推导后备 binding。
+
 ### 8. 路线图阶段设计门
 
 总路线图的每个阶段实施计划必须在动工前记录：

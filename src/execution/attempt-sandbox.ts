@@ -1,10 +1,10 @@
 export type SandboxMountMode = 'ro' | 'rw';
 
 /** Execution backends supported by the Runtime. */
-export type AttemptSandboxKind = 'container' | 'worktree';
+export type AttemptSandboxKind = 'worktree';
 
 /** Whether Executor prompts use container aliases or native Runtime paths. */
-export type AttemptSandboxPathMode = 'container' | 'native';
+export type AttemptSandboxPathMode = 'native';
 
 export interface AttemptSandboxMount {
   source: string;
@@ -29,21 +29,18 @@ export interface CreateAttemptSandboxInput {
   workUnitId: string;
   leaseToken: string;
   idempotencyKey: string;
-  imageRef: string;
-  resolvedImageId: string;
   command: string;
   args: string[];
   environment: Record<string, string>;
   mounts: AttemptSandboxMount[];
-  controlNetwork: string;
   egressMode: 'disabled' | 'proxy';
   nestedSandbox?: 'codex-workspace-write';
   limits: AttemptSandboxLimits;
 }
 
 export interface AttemptSandboxRecord {
-  containerId: string;
-  imageId: string;
+  runtimeHandle: string;
+  processId: number | null;
   status: 'created' | 'running' | 'paused' | 'exited' | 'missing';
   exitCode: number | null;
   labels: Record<string, string>;
@@ -52,17 +49,16 @@ export interface AttemptSandboxRecord {
 export interface AttemptSandboxPort {
   readonly kind?: AttemptSandboxKind;
   readonly pathMode?: AttemptSandboxPathMode;
-  resolveImage(imageRef: string): Promise<string>;
-  probeControlNetwork?(controlNetwork: string): Promise<void>;
   create(input: CreateAttemptSandboxInput): Promise<AttemptSandboxRecord>;
-  start(containerId: string): Promise<void>;
-  wait(containerId: string): Promise<number>;
-  logs(containerId: string): Promise<string>;
-  pause(containerId: string): Promise<void>;
-  resume(containerId: string): Promise<void>;
-  inspect(containerId: string): Promise<AttemptSandboxRecord | null>;
-  stop(containerId: string): Promise<void>;
-  remove(containerId: string): Promise<void>;
+  start(runtimeHandle: string): Promise<AttemptSandboxRecord>;
+  wait(runtimeHandle: string): Promise<number>;
+  logs(runtimeHandle: string): Promise<string>;
+  pause(runtimeHandle: string): Promise<void>;
+  resume(runtimeHandle: string): Promise<void>;
+  inspect(runtimeHandle: string): Promise<AttemptSandboxRecord | null>;
+  stop(runtimeHandle: string): Promise<void>;
+  stopProcess(processId: number): Promise<void>;
+  remove(runtimeHandle: string): Promise<void>;
   listManaged(): Promise<AttemptSandboxRecord[]>;
 }
 

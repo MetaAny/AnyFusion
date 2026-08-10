@@ -12,7 +12,7 @@ import type { AttemptSandboxRepositoryPort } from '../execution/repositories.js'
 import { buildEnvFromFile } from '../utils/env-file.js';
 import { AttemptModelGatewayServer } from '../execution/attempt-model-gateway.js';
 import { normalizeExecutorFailure } from './error-utils.js';
-import { runtimeContractForDriver, type RuntimeExecutorBinding } from './executor-registry-types.js';
+import type { RuntimeExecutorBinding } from './executor-registry-types.js';
 import { extractExecutorFinalOutput, extractExecutorSessionId } from './executor-session-output.js';
 
 const EXECUTOR_PROVIDER_ENV_KEYS = [
@@ -40,7 +40,7 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
   readonly name: string;
   readonly supportsContinuation: boolean;
   readonly supportsResponseOnly: boolean;
-  private readonly activeContainers = new Map<string, string>();
+  private readonly activeRuntimes = new Map<string, string>();
   private readonly runtimeBinding: Readonly<RuntimeExecutorBinding>;
   private readonly sandbox: AttemptSandboxPort;
   private readonly repository?: AttemptSandboxRepositoryPort;
@@ -48,25 +48,17 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
 
   constructor(
     agentClass: AgentClass,
-    runtimeBindingOrSandbox: Readonly<RuntimeExecutorBinding> | AttemptSandboxPort,
-    sandboxOrRepository?: AttemptSandboxPort | AttemptSandboxRepositoryPort,
+    runtimeBinding: Readonly<RuntimeExecutorBinding>,
+    sandbox: AttemptSandboxPort,
     repository?: AttemptSandboxRepositoryPort,
   ) {
     this.agentClass = agentClass;
-    const hasExplicitRuntimeBinding = isRuntimeBinding(runtimeBindingOrSandbox);
-    if (hasExplicitRuntimeBinding) {
-      this.runtimeBinding = runtimeBindingOrSandbox;
-      this.sandbox = sandboxOrRepository as AttemptSandboxPort;
-      this.repository = repository;
-    } else {
-      this.sandbox = runtimeBindingOrSandbox;
-      this.repository = sandboxOrRepository as AttemptSandboxRepositoryPort | undefined;
-      this.runtimeBinding = adapterLegacyBinding(agentClass, this.sandbox.kind === 'worktree');
-    }
+    this.runtimeBinding = runtimeBinding;
+    this.sandbox = sandbox;
+    this.repository = repository;
     this.name = agentClass.name;
     this.supportsContinuation = this.runtimeBinding.supportsSessionResume;
-    this.supportsResponseOnly = hasExplicitRuntimeBinding
-      && ['codex', 'pi'].includes(this.runtimeBinding.driver);
+    this.supportsResponseOnly = ['codex', 'pi'].includes(this.runtimeBinding.driver);
   }
 
   async execute(input: ExecutorInput): Promise<ExecutorResult> {
@@ -76,17 +68,8 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
     if (!this.agentClass.permissionProfileId) {
       return failed(`AgentClass ${this.name} has no permission profile`, 'agent_class_sandbox_unconfigured', startedAt);
     }
-    const worktreeBackend = (this.sandbox.kind ?? 'container') === 'worktree';
-    if (!this.runtimeBinding.backendSupport.includes(worktreeBackend ? 'worktree' : 'docker')) {
-      return failed(
-        `Executor ${this.name} does not support the active backend`,
-        'executor_backend_unsupported',
-        startedAt,
-      );
-    }
-    const nativePaths = (this.sandbox.pathMode
-      ?? (this.sandbox.kind === 'worktree' ? 'native' : 'container')) === 'native';
-    const usesDockerProxy = !nativePaths && this.agentClass.permissionProfileId === 'public-web-research';
+    const nativePaths = true;
+    const usesDockerProxy = false;
     const executionWorkspacePath = nativePaths ? binding.workspacePath : '/workspace';
     const resultPath = join(binding.workspacePath, '.metaclaw', 'results', EXECUTOR_RESULT_FILE_NAME);
     const prompt = buildExecutorContextPrompt({
@@ -137,8 +120,6 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
         ? await this.prepareNativeExecutorEnvironment(upstreamBaseUrl, gateway.baseUrl)
         : null;
       nativeExecutorTemporaryRoot = nativeExecutor?.temporaryRoot ?? null;
-      const imageRef = this.runtimeBinding.dockerImageRef ?? `worktree:${this.name}`;
-      const resolvedImageId = this.runtimeBinding.dockerImageId ?? await this.sandbox.resolveImage(imageRef);
       const record = await this.sandbox.create({
         attemptId: binding.attemptId,
         taskId: binding.taskId,
@@ -147,8 +128,6 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
         workUnitId: binding.workUnitId,
         leaseToken: binding.leaseToken,
         idempotencyKey: binding.idempotencyKey,
-        imageRef,
-        resolvedImageId,
         command,
         args,
         environment: {
@@ -177,7 +156,6 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
             ? [{ source: binding.gitMetadataPath, target: '/workspace/.git', mode: 'ro' as const }]
             : []),
         ],
-        controlNetwork: binding.controlNetwork,
         egressMode: usesDockerProxy ? 'proxy' : 'disabled',
         nestedSandbox: !nativePaths && this.runtimeBinding.driver === 'codex' ? 'codex-workspace-write' : undefined,
         limits: DEFAULT_ATTEMPT_SANDBOX_LIMITS,
@@ -190,9 +168,8 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
         subtaskId: binding.subtaskId,
         workUnitId: binding.workUnitId,
         workspaceId: binding.workspaceId,
-        containerId: record.containerId,
-        imageRef,
-        imageId: record.imageId,
+        runtimeHandle: record.runtimeHandle,
+        processId: null,
         status: 'created',
         leaseToken: binding.leaseToken,
         labels: record.labels,
@@ -203,13 +180,15 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
         createdAt,
         updatedAt: createdAt,
       });
-      this.activeContainers.set(binding.attemptId, record.containerId);
-      binding.onContainerCreated?.(record.containerId);
-      input.onProgress?.({ kind: 'status', text: `${this.sandbox.kind ?? 'container'} execution ${record.containerId.slice(0, 12)} started` });
-      await this.sandbox.start(record.containerId);
-      this.repository?.update(binding.attemptId, { status: 'running', updatedAt: new Date().toISOString() });
-      const exitCode = await this.sandbox.wait(record.containerId);
-      const logs = await this.sandbox.logs(record.containerId);
+      this.activeRuntimes.set(binding.attemptId, record.runtimeHandle);
+      const running = await this.sandbox.start(record.runtimeHandle);
+      binding.onRuntimeStarted?.(record.runtimeHandle, running.processId);
+      input.onProgress?.({ kind: 'status', text: `worktree execution ${record.runtimeHandle.slice(0, 24)} started` });
+      this.repository?.update(binding.attemptId, {
+        processId: running.processId, status: 'running', updatedAt: new Date().toISOString(),
+      });
+      const exitCode = await this.sandbox.wait(record.runtimeHandle);
+      const logs = await this.sandbox.logs(record.runtimeHandle);
       this.repository?.update(binding.attemptId, {
         status: 'exited', exitCode, resultCollectedAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
       });
@@ -224,20 +203,20 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
         const runtimeWorkspacePath = binding.workspacePath.replaceAll('\\', '/');
         output = output.replaceAll(/\/workspace(?=\/|[\s`"')\]}]|$)/gu, runtimeWorkspacePath);
       }
-      await this.sandbox.remove(record.containerId);
+      await this.sandbox.remove(record.runtimeHandle);
       this.repository?.update(binding.attemptId, { status: 'removed', cleanupStatus: 'removed', updatedAt: new Date().toISOString() });
-      this.activeContainers.delete(binding.attemptId);
+      this.activeRuntimes.delete(binding.attemptId);
       return exitCode === 0 && output
         ? { success: true, output, exitCode, durationMs: Date.now() - startedAt }
         : failedExecution(logs.trim() || `sandbox exited with code ${exitCode}`, startedAt, exitCode);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       let cleanupError: string | null = null;
-      const activeContainerId = this.activeContainers.get(binding.attemptId) ?? null;
-      if (activeContainerId) {
+      const activeRuntimeHandle = this.activeRuntimes.get(binding.attemptId) ?? null;
+      if (activeRuntimeHandle) {
         try {
-          await this.sandbox.stop(activeContainerId);
-          await this.sandbox.remove(activeContainerId);
+          await this.sandbox.stop(activeRuntimeHandle);
+          await this.sandbox.remove(activeRuntimeHandle);
           this.repository?.update(binding.attemptId, {
             status: 'removed', cleanupStatus: 'removed', cleanupError: null, updatedAt: new Date().toISOString(),
           });
@@ -245,12 +224,12 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
           cleanupError = cleanup instanceof Error ? cleanup.message : String(cleanup);
         }
       }
-      if (cleanupError || !activeContainerId) {
+      if (cleanupError || !activeRuntimeHandle) {
         this.repository?.update(binding.attemptId, {
           cleanupStatus: 'failed', cleanupError: cleanupError ?? message, updatedAt: new Date().toISOString(),
         });
       }
-      this.activeContainers.delete(binding.attemptId);
+      this.activeRuntimes.delete(binding.attemptId);
       return failed(message, 'sandbox_configuration_failure', startedAt);
     } finally {
       await modelGateway?.close().catch(() => undefined);
@@ -261,19 +240,8 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
   }
 
   async probe(
-    previousFailure?: import('../core/kernel-failure.js').KernelFailure | null,
+    _previousFailure?: import('../core/kernel-failure.js').KernelFailure | null,
   ): Promise<import('./adapter.js').ExecutorProbeResult> {
-    if (!this.runtimeBinding.backendSupport.includes(this.sandbox.kind === 'worktree' ? 'worktree' : 'docker')) {
-      return {
-        available: false,
-        failure: {
-          kind: 'configuration',
-          scope: 'agent_class',
-          code: 'executor_backend_unsupported',
-          summary: `Executor ${this.name} does not support the active backend`,
-        },
-      };
-    }
     if (!this.agentClass.permissionProfileId || !this.runtimeBinding.binaryPath) {
       return {
         available: false,
@@ -281,36 +249,11 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
           kind: 'configuration',
           scope: 'agent_class',
           code: 'agent_class_sandbox_unconfigured',
-          summary: `AgentClass ${this.name} has no verified image or permission profile`,
+          summary: `AgentClass ${this.name} has no verified Runtime binding or permission profile`,
         },
       };
     }
     try {
-      if (this.sandbox.kind !== 'worktree') {
-        if (!this.runtimeBinding.dockerImageRef || !this.runtimeBinding.dockerImageId) {
-          return {
-            available: false,
-            failure: {
-              kind: 'configuration',
-              scope: 'agent_class',
-              code: 'agent_class_sandbox_unconfigured',
-              summary: `AgentClass ${this.name} has no verified image or permission profile`,
-            },
-          };
-        }
-        const imageId = await this.sandbox.resolveImage(this.runtimeBinding.dockerImageRef);
-        if (imageId !== this.runtimeBinding.dockerImageId) {
-          return {
-            available: false,
-            failure: {
-              kind: 'configuration',
-              scope: 'agent_class',
-              code: 'agent_class_image_drift',
-              summary: `AgentClass ${this.name} image does not match its pinned image ID`,
-            },
-          };
-        }
-      }
       const provider = this.providerEnvironment();
       if (!provider.OPENAI_BASE_URL || !provider.OPENAI_API_KEY) {
         return {
@@ -322,40 +265,6 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
             summary: 'OPENAI_BASE_URL and OPENAI_API_KEY are required',
           },
         };
-      }
-      if (previousFailure && ['authentication', 'network'].includes(previousFailure.kind)) {
-        try {
-          const baseUrl = provider.OPENAI_BASE_URL.endsWith('/')
-            ? provider.OPENAI_BASE_URL
-            : `${provider.OPENAI_BASE_URL}/`;
-          const response = await fetch(new URL('models', baseUrl), {
-            method: 'GET',
-            headers: { Authorization: `Bearer ${provider.OPENAI_API_KEY}` },
-          });
-          if (!response.ok) {
-            return {
-              available: false,
-              failure: {
-                kind: response.status === 401 || response.status === 403
-                  ? 'authentication'
-                  : 'network',
-                scope: 'agent_class',
-                code: `provider_probe_http_${response.status}`,
-                summary: `Provider validation returned HTTP ${response.status}`,
-              },
-            };
-          }
-        } catch (error) {
-          return {
-            available: false,
-            failure: {
-              kind: 'network',
-              scope: 'agent_class',
-              code: 'provider_remote_probe_failed',
-              summary: error instanceof Error ? error.message : String(error),
-            },
-          };
-        }
       }
       return { available: true, failure: null };
     } catch (error) {
@@ -447,11 +356,11 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
   }
 
   abort(attemptId?: string): void {
-    const containerIds = attemptId
-      ? [this.activeContainers.get(attemptId)].filter((id): id is string => Boolean(id))
-      : [...this.activeContainers.values()];
-    for (const containerId of containerIds) {
-      void this.sandbox.stop(containerId).catch(() => undefined);
+    const runtimeHandles = attemptId
+      ? [this.activeRuntimes.get(attemptId)].filter((id): id is string => Boolean(id))
+      : [...this.activeRuntimes.values()];
+    for (const runtimeHandle of runtimeHandles) {
+      void this.sandbox.stop(runtimeHandle).catch(() => undefined);
     }
   }
 
@@ -684,60 +593,6 @@ function runResponseOnlyProcess(input: {
       });
     });
   });
-}
-
-function isRuntimeBinding(
-  value: Readonly<RuntimeExecutorBinding> | AttemptSandboxPort,
-): value is Readonly<RuntimeExecutorBinding> {
-  return typeof (value as RuntimeExecutorBinding).binaryPath === 'string'
-    && typeof (value as RuntimeExecutorBinding).driver === 'string';
-}
-
-function adapterLegacyBinding(agentClass: AgentClass, worktree: boolean): RuntimeExecutorBinding {
-  const command = agentClass.runtimeCommand ?? agentClass.name;
-  const executable = command.split('/').at(-1) ?? command;
-  const driver = executable === 'codex'
-    ? 'codex'
-    : executable === 'pi'
-      ? 'pi'
-      : executable.startsWith('hermes')
-        ? 'hermes'
-      : 'cli-session';
-  const sessionProtocol = driver === 'cli-session'
-    ? {
-        initialArgs: agentClass.runtimeArgs,
-        resumeArgs: agentClass.runtimeArgs,
-        sessionIdPattern: 'session[_-]?id[:=]\\s*([^\\s]+)',
-        finalOutputPattern: null,
-        timeoutMs: 120_000,
-        terminateSignal: 'SIGTERM' as const,
-      }
-    : null;
-  return {
-    id: agentClass.name,
-    configDigest: 'legacy-test-binding',
-    driver,
-    ...runtimeContractForDriver(driver, sessionProtocol),
-    binaryPath: command,
-    versionArgs: ['--version'],
-    runtimeHome: driver === 'codex'
-      ? process.env.METACLAW_EXECUTOR_CODEX_HOME ?? process.env.CODEX_HOME ?? process.env.HOME ?? '/tmp'
-      : process.env.METACLAW_EXECUTOR_PI_HOME ?? process.env.HOME ?? '/tmp',
-    environmentFiles: [
-      ...(driver === 'codex' && process.env.METACLAW_CODEX_EXECUTOR_ENV_FILE
-        ? [process.env.METACLAW_CODEX_EXECUTOR_ENV_FILE]
-        : []),
-      ...(driver === 'pi' && process.env.METACLAW_PI_EXECUTOR_ENV_FILE
-        ? [process.env.METACLAW_PI_EXECUTOR_ENV_FILE]
-        : []),
-    ],
-    inheritEnvironment: [],
-    permissionProfileId: agentClass.permissionProfileId ?? 'restricted-custom',
-    backendSupport: [worktree ? 'worktree' : 'docker'],
-    dockerImageRef: worktree ? null : agentClass.executionImageRef ?? null,
-    dockerImageId: worktree ? null : agentClass.resolvedImageId ?? null,
-    sessionProtocol,
-  };
 }
 
 function failed(message: string, code: string, startedAt: number, exitCode = 1): ExecutorResult {

@@ -3,7 +3,7 @@ export interface CliArgs {
   scriptPath?: string;
   gateway?: boolean;
   connect?: boolean;
-  gatewayCommand?: 'setup' | 'run' | 'install' | 'start' | 'stop' | 'restart' | 'status' | 'pairing' | 'doctor';
+  gatewayCommand?: 'setup' | 'run' | 'pairing' | 'doctor';
   gatewayPairingCommand?: 'list' | 'approve' | 'revoke';
   gatewayPairingUserId?: string;
   executorCommand?: 'discover' | 'register' | 'verify' | 'enable' | 'disable' | 'show' | 'list' | 'reload';
@@ -81,12 +81,7 @@ function parseGatewaySubcommand(argv: string[]): {
   if (
     command === 'setup'
     || command === 'run'
-    || command === 'install'
     || command === 'doctor'
-    || command === 'start'
-    || command === 'stop'
-    || command === 'restart'
-    || command === 'status'
   ) {
     return { command };
   }

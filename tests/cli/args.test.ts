@@ -43,7 +43,7 @@ describe('parseCliArgs', () => {
     });
   });
 
-  it('parses gateway subcommands without breaking legacy gateway flags', () => {
+  it('parses supported gateway subcommands without breaking gateway flags', () => {
     expect(parseCliArgs(['gateway', 'setup'])).toEqual({
       gateway: false,
       connect: false,
@@ -71,15 +71,11 @@ describe('parseCliArgs', () => {
       connect: false,
       gatewayCommand: 'doctor',
     });
-    expect(parseCliArgs(['gateway', 'install'])).toEqual({
-      gateway: false,
-      connect: false,
-      gatewayCommand: 'install',
-    });
   });
 
   it('rejects unknown gateway subcommands', () => {
     expect(() => parseCliArgs(['gateway', 'deploy'])).toThrow('未知 gateway 子命令');
+    expect(() => parseCliArgs(['gateway', 'install'])).toThrow('未知 gateway 子命令');
     expect(() => parseCliArgs(['gateway', 'pairing', 'unknown'])).toThrow('未知 gateway pairing 子命令');
   });
 });

@@ -86,9 +86,6 @@ export async function runExecutorCli(input: {
       inheritEnvironment: ['PATH'],
       effectivePermissionProfile: defaults?.binding.effectivePermissionProfile
         ?? permissionProfile(required(options, '--permission-profile')),
-      backendSupport: defaults?.binding.backendSupport ?? ['worktree'],
-      dockerImageRef: defaults?.binding.dockerImageRef ?? null,
-      dockerImageId: defaults?.binding.dockerImageId ?? null,
       sessionProtocol: defaults
         ? defaults.binding.sessionProtocol
         : {

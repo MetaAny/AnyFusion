@@ -97,8 +97,9 @@ function setup(rawResponse: string) {
     runResponseOnly,
   };
   const attemptSandbox: AttemptSandboxPort = {
-    resolveImage: vi.fn(), create: vi.fn(), start: vi.fn(), wait: vi.fn(), logs: vi.fn(),
-    pause: vi.fn(), resume: vi.fn(), inspect: vi.fn(), stop: vi.fn(), remove: vi.fn(), listManaged: vi.fn(),
+    create: vi.fn(), start: vi.fn(), wait: vi.fn(), logs: vi.fn(),
+    pause: vi.fn(), resume: vi.fn(), inspect: vi.fn(), stop: vi.fn(), stopProcess: vi.fn(),
+    remove: vi.fn(), listManaged: vi.fn(),
   } as unknown as AttemptSandboxPort;
   const fixtureRoot = `/tmp/metaclaw-phase2-attempt-runner/${randomUUID()}`;
   const sourceRoot = join(fixtureRoot, 'source');
@@ -129,7 +130,6 @@ function setup(rawResponse: string) {
     kernelWorkflowStore: new KernelWorkflowRepo(db),
     workspaceRepository: new SqliteWorkspaceRepository(db),
     sourceRoot,
-    controlNetwork: 'metaclaw-control',
   });
   const defaultResourceGrant = buildDefaultResourceClaims({
     workspaceId: `workspace-task_phase2-${a.generationId}-${a.id}`,

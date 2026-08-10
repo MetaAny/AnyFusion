@@ -1,29 +1,32 @@
 import { describe, expect, it, vi } from 'vitest';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { ExecutorInput } from '../../src/executor/adapter.js';
 import type { AgentClass, Subtask, WorkUnit } from '../../src/core/types.js';
 import { ExecutionRuntime, ExecutorRegistry } from '../../src/execution/execution-runtime.js';
 import type { AgentClassLookupPort } from '../../src/executor/agent-class-lookup-port.js';
 import type { AttemptSandboxPort, CreateAttemptSandboxInput, AttemptSandboxRecord } from '../../src/execution/attempt-sandbox.js';
 import { testExecutorAgentClasses } from '../support/executor-registry.js';
+import { createTestExecutorRegistrySnapshot } from '../../src/executor/test-executor-registry.js';
 
 function createSandbox(overrides: Partial<AttemptSandboxPort> = {}): AttemptSandboxPort {
   const record: AttemptSandboxRecord = {
-    containerId: 'container_test',
-    imageId: 'sha256:test',
+    runtimeHandle: 'worktree:attempt_test',
+    processId: 1234,
     status: 'created',
     exitCode: null,
     labels: {},
   };
   return {
-    resolveImage: vi.fn().mockResolvedValue('sha256:test'),
     create: vi.fn().mockImplementation(async (_input: CreateAttemptSandboxInput) => record),
-    start: vi.fn().mockResolvedValue(undefined),
+    start: vi.fn().mockResolvedValue(record),
     wait: vi.fn().mockResolvedValue(0),
     logs: vi.fn().mockResolvedValue('sandbox output'),
     pause: vi.fn().mockResolvedValue(undefined),
     resume: vi.fn().mockResolvedValue(undefined),
     inspect: vi.fn().mockResolvedValue(record),
     stop: vi.fn().mockResolvedValue(undefined),
+    stopProcess: vi.fn().mockResolvedValue(undefined),
     remove: vi.fn().mockResolvedValue(undefined),
     listManaged: vi.fn().mockResolvedValue([]),
     ...overrides,
@@ -54,8 +57,6 @@ function createAgentClass(name = 'codex-cli'): AgentClass {
     runtimeCommand: null,
     runtimeArgs: [],
     runtimeCheckCommand: null,
-    executionImageRef: null,
-    resolvedImageId: null,
     permissionProfileId: null,
     projectUrl: null,
   };
@@ -64,8 +65,6 @@ function createAgentClass(name = 'codex-cli'): AgentClass {
 function createConfiguredAgentClass(name = 'codex-cli'): AgentClass {
   return {
     ...createAgentClass(name),
-    executionImageRef: 'metaclaw/test:latest',
-    resolvedImageId: 'sha256:test',
     permissionProfileId: 'workspace-engineering',
   };
 }
@@ -126,9 +125,8 @@ function createSandboxBinding(): NonNullable<ExecutorInput['sandbox']> {
     inputsPath: process.cwd(),
     handoffsPath: process.cwd(),
     gitMetadataPath: null,
-    controlNetwork: 'metaclaw-control',
     capabilityBinding: null,
-    onContainerCreated: undefined,
+    onRuntimeStarted: undefined,
   };
 }
 
@@ -159,15 +157,45 @@ function createLookup(agentClasses: AgentClass[]): AgentClassLookupPort {
   return {
     findByName: name => byName.get(name) ?? null,
     listAgentClasses: () => [...byName.values()],
-    setResolvedImageId: (name, imageId) => {
-      const existing = byName.get(name);
-      if (existing) byName.set(name, { ...existing, resolvedImageId: imageId });
-    },
   };
 }
 
 function createRegistry(agentClasses: AgentClass[], sandbox: AttemptSandboxPort): ExecutorRegistry {
-  return new ExecutorRegistry({ agentClassLookup: createLookup(agentClasses), attemptSandbox: sandbox });
+  const snapshot = createRuntimeSnapshot(agentClasses);
+  return new ExecutorRegistry({
+    agentClassLookup: createLookup(agentClasses),
+    snapshot: () => snapshot,
+    attemptSandbox: sandbox,
+  });
+}
+
+function createRuntimeSnapshot(agentClasses: AgentClass[]) {
+  const snapshot = createTestExecutorRegistrySnapshot();
+  const runtimeRoot = '/tmp/metaclaw-execution-runtime-test';
+  const piHome = join(runtimeRoot, 'pi-home');
+  const codexHome = join(runtimeRoot, 'codex-home');
+  const envFile = join(runtimeRoot, 'executor.env');
+  mkdirSync(join(piHome, '.pi', 'agent'), { recursive: true });
+  mkdirSync(codexHome, { recursive: true });
+  writeFileSync(envFile, 'OPENAI_API_KEY=test-key\nOPENAI_BASE_URL=https://provider.invalid/v1\n');
+  writeFileSync(join(piHome, '.pi', 'agent', 'models.json'), JSON.stringify({
+    providers: { anyint: { baseUrl: 'https://provider.invalid/v1' } },
+  }));
+  writeFileSync(join(piHome, '.pi', 'agent', 'settings.json'), '{}');
+  writeFileSync(join(codexHome, 'config.toml'), 'base_url = "https://provider.invalid/v1"\n');
+  const routable = new Set(agentClasses
+    .filter(agentClass => agentClass.permissionProfileId)
+    .map(agentClass => agentClass.name));
+  return {
+    ...snapshot,
+    runtime: new Map([...snapshot.runtime]
+      .filter(([name]) => routable.has(name))
+      .map(([name, binding]) => [name, {
+        ...binding,
+        runtimeHome: binding.driver === 'pi' ? piHome : codexHome,
+        environmentFiles: [envFile],
+      }])),
+  };
 }
 
 describe('ExecutionRuntime', () => {
@@ -200,12 +228,12 @@ describe('ExecutionRuntime', () => {
     expect(registry.resolve('codex-cli')?.name).toBe('codex-cli');
     expect(registry.inspect('codex-cli')).toEqual({
       configured: true,
-      bindingSource: 'sandbox',
+      bindingSource: 'worktree',
       adapterName: 'codex',
     });
   });
 
-  it('reports unbound when the AgentClass has no verified image or permission profile', () => {
+  it('reports unbound when the AgentClass has no verified Registry binding or permission profile', () => {
     const registry = createRegistry([createAgentClass('custom-unbound')], createSandbox());
     expect(registry.inspect('custom-unbound')).toEqual({
       configured: false,
@@ -214,38 +242,37 @@ describe('ExecutionRuntime', () => {
     });
   });
 
-  it('fails closed when a legacy AgentClass has no immutable image binding', async () => {
+  it('fails closed when the verified Registry snapshot has no runtime binding', async () => {
     const unresolved: AgentClass = {
       ...createAgentClass('codex-cli'),
-      executionImageRef: 'metaclaw/test:latest',
-      resolvedImageId: null,
       permissionProfileId: 'workspace-engineering',
     };
     const lookup = createLookup([unresolved]);
     const sandbox = createSandbox();
-    const registry = new ExecutorRegistry({ agentClassLookup: lookup, attemptSandbox: sandbox });
+    const snapshot = createRuntimeSnapshot([]);
+    const registry = new ExecutorRegistry({
+      agentClassLookup: lookup,
+      snapshot: () => snapshot,
+      attemptSandbox: sandbox,
+    });
 
     await expect(registry.probe('codex-cli')).resolves.toMatchObject({
       available: false,
       failure: { code: 'executor_not_routable' },
     });
-    expect(sandbox.resolveImage).not.toHaveBeenCalled();
-    expect(lookup.findByName('codex-cli')?.resolvedImageId).toBeNull();
   });
 
-  it('does not probe an unresolved legacy image after the binding fails closed', async () => {
+  it('does not create a Runtime after the Registry binding fails closed', async () => {
     const unresolved: AgentClass = {
       ...createAgentClass('codex-cli'),
-      executionImageRef: 'metaclaw/test:latest',
-      resolvedImageId: null,
       permissionProfileId: 'workspace-engineering',
     };
-    const sandbox = createSandbox({
-      resolveImage: vi.fn().mockRejectedValue(
-        new Error('Cannot connect to the Docker daemon at unix:///var/run/docker.sock'),
-      ),
+    const sandbox = createSandbox();
+    const registry = new ExecutorRegistry({
+      agentClassLookup: createLookup([unresolved]),
+      snapshot: () => createRuntimeSnapshot([]),
+      attemptSandbox: sandbox,
     });
-    const registry = createRegistry([unresolved], sandbox);
 
     await expect(registry.probe('codex-cli')).resolves.toMatchObject({
       available: false,
@@ -253,7 +280,7 @@ describe('ExecutionRuntime', () => {
         code: 'executor_not_routable',
       },
     });
-    expect(sandbox.resolveImage).not.toHaveBeenCalled();
+    expect(sandbox.create).not.toHaveBeenCalled();
   });
 
   it('is unavailable when the AgentClass does not exist', async () => {
@@ -286,8 +313,7 @@ describe('ExecutionRuntime', () => {
     expect(result).toMatchObject({ status: 'success', error: null });
     expect(sandbox.create).toHaveBeenCalledWith(expect.objectContaining({
       attemptId: 'attempt_runtime',
-      imageRef: 'metaclaw/test:latest',
-      resolvedImageId: 'sha256:test',
+      command: '/usr/bin/pi',
     }));
   });
 

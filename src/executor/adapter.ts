@@ -26,9 +26,8 @@ export interface ExecutorInput {
     inputsPath: string;
     handoffsPath: string;
     gitMetadataPath: string | null;
-    controlNetwork: string;
     capabilityBinding: { mcpUrl: string; jsonUrl: string; useUrl: string; bearerToken: string } | null;
-    onContainerCreated?(containerId: string): void;
+    onRuntimeStarted?(runtimeHandle: string, processId: number | null): void;
   };
 }
 

@@ -79,9 +79,6 @@ function testExecutor(
       effectivePermissionProfile: capability === 'workspace-engineering'
         ? 'workspace-engineering'
         : 'public-web-research',
-      backendSupport: ['worktree', 'docker'],
-      dockerImageRef: `anyfusion-test/${id}:latest`,
-      dockerImageId: `sha256:${id === 'codex-cli' ? 'a' : 'b'}`.padEnd(71, id === 'codex-cli' ? 'a' : 'b'),
       sessionProtocol: null,
     },
     strengths: [],

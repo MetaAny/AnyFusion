@@ -1,8 +1,8 @@
-# ADR-0024: Resource Partition, Sandboxed Attempts And Runtime Elevation
+# ADR-0024: Resource Partition, Worktree Attempts And Runtime Elevation
 
 - **Status**: Accepted
 - **Date**: 2026-07-22
-- **Scope**: Phase 5 resource identity, persistent workspace, resource leases, per-attempt Docker sandbox, permission audit budgets and recovery
+- **Scope**: Resource identity, persistent worktrees, registered CLI child processes, permission audit budgets and recovery
 - **Amends**: ADR-0021, ADR-0023
 - **Governed by**: ADR-0020
 
@@ -24,46 +24,38 @@ ControlKernel remains the only strategic authority. Kernel v3 may grant a bounde
 
 ### Worktree-first, workspace-durable execution
 
-The default execution attempt is a short-lived process selected from a
-verified Executor Registry binding and launched by the trusted Runtime with
-`cwd` set to the persistent Task-generation + Subtask Git worktree. The Docker
-attempt backend remains available only when the same binding explicitly
-supports that compatibility mode. Every Task generation + Subtask owns a
+The only execution attempt is a short-lived process selected from a verified
+Executor Registry binding and launched by the trusted Runtime with `cwd` set
+to the persistent Task-generation + Subtask Git worktree. Every Task generation + Subtask owns a
 persistent workspace record and immutable checkpoints. Retry and fallback may
-resume only the authorized workspace state. A paused process/container is
+resume only the authorized workspace state. A paused process is
 retained only during bounded automatic Kernel/Planner review; waiting for a
 user or replan checkpoints the workspace, terminates the runtime instance and
 releases active leases.
 
 The original repository, Task evidence and dependency inputs are read-only. The private workspace and `/tmp` are writable. Git executions use a MetaClaw-managed repository/worktree and managed Task branch; Runtime owns `.git` and controlled commits. No Phase 5 action mutates, merges or pushes the user's branch. Non-Git workspaces use filesystem checkpoints and content-addressed objects. SQLite stores metadata, not large contents.
 
-Docker compatibility attempt containers are non-root with read-only root
-filesystem, dropped Linux capabilities, no-new-privileges, bounded
-CPU/memory/PIDs/logs, no host namespaces/devices/Docker socket, and no direct
-ungoverned egress. Worktree attempts are trusted Runtime child processes and do
-not receive a Docker Engine endpoint. The trusted Runtime uses the existing
-Docker Engine adapter only when the compatibility backend is selected.
+Worktree attempts are trusted Runtime child processes. Runtime persists the
+child PID, terminates the process group on cancellation and normal shutdown,
+and makes one best-effort PID termination during startup reconciliation. The
+worktree and private CLI home provide predictable Git/publication state but are
+not an operating-system security boundary. Runtime, Planner and Executors share
+the same trusted operating-system user in the Demo.
 
 Provider credentials also remain in the trusted Runtime. Each attempt receives
 only a random attempt-scoped token and a fixed internal model-gateway URL; the
 gateway binds the token to the configured provider endpoint and process
-lifetime. In worktree mode a verified Codex driver may use
+lifetime. A verified Codex driver may use
 `danger-full-access` inside the already-trusted Runtime process, so there is no
-second CLI sandbox beyond the managed worktree boundary. Docker compatibility
-attempts keep the Codex driver's nested `workspace-write` sandbox and
-non-interactive fail-closed approval policy. Because that nested Linux sandbox
-requires user-namespace syscalls, the Docker adapter may add
-`seccomp=unconfined` only when the verified binding selects the Codex driver
-and its pinned immutable image; non-root UID, read-only rootfs, dropped
-capabilities, no-new-privileges, internal networking and all mount boundaries
-remain mandatory. Other drivers and images do not inherit this exception.
+second CLI sandbox beyond the managed worktree boundary. This is an explicit
+Demo trust decision, not a claim of per-Executor host isolation.
 
 ### Default profiles and permission audit
 
 Default authority is an Executor Registry binding fact, not a Planner field.
-Each enabled Executor definition owns its confirmed permission profile,
-supported backends and any immutable compatibility image. Missing, unverified,
-stale or drifted bindings fail closed and never fall back to another backend.
+Each enabled Executor definition owns its confirmed permission profile and one
+native CLI Runtime binding. Missing, unverified, stale or drifted bindings fail
+closed; there is no second backend fallback.
 Permission and installation details are excluded from the Planner-safe
 projection.
 
@@ -71,7 +63,7 @@ Runtime materializes a versioned explicit rule set from that profile and the cur
 
 The capability request protocol is deliberately small: capability, resource, operation, reason and suggested once/attempt scope. Runtime canonicalizes and binds identity. Read/network grants are attempt-bound with policy TTL/use/byte budgets; sensitive requests remain one-shot. A granted request returns an opaque grant ID but does not itself widen sandbox authority. `use_capability` records and atomically consumes attempt identity, TTL, call and byte budgets for the supplied operation payload. Stable fingerprints make request, Decision, grant and budget consumption idempotent.
 
-The initial product guarantee ends at the sandbox profile and this authorization/audit budget. It does not claim operation-specific broker mediation or fine-grained Runtime enforcement for every file, network or external mutation. In particular, consuming a grant is not proof that an arbitrary native tool operation was mediated. Platform escape, Docker socket/device/host namespace access, proxy bypass, system credential probing, cross-Task access and persistent security weakening remain non-overridable denials at the sandbox/profile boundary. A future provider adapter may add a separately specified mediated effect, but this ADR does not treat such an adapter as generally implemented.
+The initial product guarantee ends at the worktree/process profile and this authorization/audit budget. It does not claim operation-specific broker mediation or fine-grained Runtime enforcement for every file, network or external mutation. In particular, consuming a grant is not proof that an arbitrary native tool operation was mediated. Docker/host socket access, device access, system credential probing, cross-Task access and persistent security weakening remain denied by policy, while the shared Runtime user remains the actual trust boundary. A future provider adapter may add a separately specified mediated effect, but this ADR does not treat such an adapter as generally implemented.
 
 ### User authorization
 
@@ -81,32 +73,32 @@ For the local interactive Pi surface, the exact request is projected only after 
 
 ### Persistence and recovery
 
-SQLite v25 separates resource leases/waits, workspace/checkpoints/content references, permission requests/grants/user authorizations and attempt sandbox lifecycle. The old unused worktree lease shape becomes legacy audit. Resource and WorkUnit leases are attempt-bound, heartbeat-driven and idempotent. Startup reconciles database facts with Docker labels before accepting input and converts missing/orphaned/paused containers into normalized facts for the durable Kernel workflow.
+SQLite schema 34 separates resource leases/waits, workspace/checkpoints/content references, permission requests/grants/user authorizations and attempt process lifecycle. The old unused worktree lease shape remains legacy audit. Resource and WorkUnit leases are attempt-bound, heartbeat-driven and idempotent. Startup reads active attempt records, makes a best-effort termination of each recorded PID, and converts interrupted attempts into normalized facts for the durable Kernel workflow. Pre-release schema 34 is fresh-only.
 
 Phase 5 remains serial. Partition conflicts and wait relationships are exercised now so Phase 6 may derive concurrent dispatch without changing identity, authorization or recovery semantics.
 
 ## Ownership And Dependencies
 
 - Resource Model owns pure identity, overlap, conflict and lease/grant invariants.
-- Executor Registry owns controlled default permission profiles, backend support and image bindings.
+- Executor Registry owns controlled default permission profiles and verified CLI Runtime bindings.
 - ControlKernel owns grant/deny/escalate, partition wait and recovery policy through the single `decide` seam.
-- Execution Runtime owns workspace, lease application, selected backend lifecycle, permission request/audit-budget handling, checkpoint and normalized observations.
-- Storage, Docker, Git/CAS and external providers implement ports owned by Resource/Execution.
+- Execution Runtime owns workspace, lease application, child-process lifecycle, permission request/audit-budget handling, checkpoint and normalized observations.
+- Storage, Git/CAS and external providers implement ports owned by Resource/Execution.
 - Session, Commands, TUI and Gateway submit events and project status; they never write grants or leases directly.
 
-Kernel may not depend on Docker, Storage, Session, Planning implementation or raw paths. Runtime may not infer permission from stderr or widen a grant. Executor adapters may not run outside the selected Runtime backend or directly mutate external systems.
+Kernel may not depend on Storage, Session, Planning implementation or raw paths. Runtime may not infer permission from stderr or widen a grant. Executor adapters may run only the verified Registry CLI binding and may not directly mutate external systems.
 
 ## Consequences
 
 Executor work remains reproducible and recoverable across short-lived worktree
-processes or compatibility containers while large workspace contents stay
+processes while large workspace contents stay
 outside SQLite. Permission interruptions and budget consumption are auditable
 Kernel facts rather than hidden Adapter prompts. Fine-grained mediation remains
 outside the product claim until an operation-specific adapter is implemented and
 tested. Planner remains focused on semantic decomposition and is involved only
 when an otherwise valid request lacks explicit authority. The default Linux
 server path runs Runtime, Planner and verified registry-bound Executors as host
-processes. Docker remains for macOS/Windows deployment, CI image validation and
-the explicit compatibility backend. Custom Executor registration uses the same
+processes. Docker remains only for Windows/macOS Runtime packaging and CI image
+validation. Custom Executor registration uses the same
 Registry verification and backend-support contract rather than a separate
 Docker-only path.

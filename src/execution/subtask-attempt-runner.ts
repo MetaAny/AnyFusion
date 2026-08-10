@@ -88,7 +88,6 @@ export interface SubtaskAttemptRunnerDeps {
   workspaceRepository: WorkspaceRepositoryPort;
   sourceRoot: string;
   autoApproveRepositoryPromotions?: boolean;
-  controlNetwork: string;
 }
 
 /** Owns one Subtask attempt from claim through immutable terminal persistence. */
@@ -443,7 +442,7 @@ export class SubtaskAttemptRunner {
         attemptId,
         agentClassName: agentClass.name,
         permissionProfileId: agentClass.permissionProfileId ?? 'restricted-custom' as const,
-        containerId: '',
+        runtimeHandle: '',
         workspaceId: workspace.id,
         checkpointId: null as string | null,
       };
@@ -480,7 +479,7 @@ export class SubtaskAttemptRunner {
           },
           onEscalation: async request => {
             claim.markWaiting(`permission request ${request.id} requires Planner or user review`);
-            if (capabilityContext.containerId) await this.deps.attemptSandbox.stop(capabilityContext.containerId);
+            if (capabilityContext.runtimeHandle) await this.deps.attemptSandbox.stop(capabilityContext.runtimeHandle);
           },
           onRecoveryAuthorized: async () => undefined,
         },
@@ -509,11 +508,10 @@ export class SubtaskAttemptRunner {
             inputsPath,
             handoffsPath,
             gitMetadataPath: gitWorkspace?.gitMetadataPath ?? null,
-            controlNetwork: this.deps.controlNetwork,
             capabilityBinding,
-            onContainerCreated: containerId => {
-              capabilityContext.containerId = containerId;
-              this.dispatchItemRepo.markSandbox(attemptId, containerId, new Date().toISOString());
+            onRuntimeStarted: runtimeHandle => {
+              capabilityContext.runtimeHandle = runtimeHandle;
+              this.dispatchItemRepo.markRuntime(attemptId, runtimeHandle, new Date().toISOString());
             },
           },
           recovery: {
@@ -1198,7 +1196,7 @@ export class SubtaskAttemptRunner {
         attemptId: input.attemptId,
         agentClassName: input.agentClassName,
         permissionProfileId: input.permissionProfileId,
-        containerId: '',
+        runtimeHandle: '',
         workspaceId: input.workspaceId,
         checkpointId: null,
       },

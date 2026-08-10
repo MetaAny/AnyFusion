@@ -27,7 +27,7 @@ export interface PermissionAttemptContext {
   attemptId: string;
   agentClassName: string;
   permissionProfileId: NormalizedCapabilityRequest['permissionProfileId'];
-  containerId: string;
+  runtimeHandle: string;
   workspaceId: string;
   checkpointId: string | null;
 }
@@ -92,7 +92,7 @@ export class PermissionWorkflowService {
     const record = this.deps.repository.createRequest(request, now);
     if (record.status !== 'pending') return this.requestResult(record);
     if (options.suspendAttempt !== false) {
-      await this.deps.sandbox.pause(this.deps.context.containerId);
+      await this.deps.sandbox.pause(this.deps.context.runtimeHandle);
       try {
         const checkpointId = await this.deps.hooks.checkpoint('permission_suspended');
         this.deps.context.checkpointId = checkpointId;
@@ -267,8 +267,8 @@ export class PermissionWorkflowService {
   }
 
   private async resumeIfPresent(): Promise<void> {
-    const sandbox = await this.deps.sandbox.inspect(this.deps.context.containerId);
-    if (sandbox?.status === 'paused') await this.deps.sandbox.resume(this.deps.context.containerId);
+    const sandbox = await this.deps.sandbox.inspect(this.deps.context.runtimeHandle);
+    if (sandbox?.status === 'paused') await this.deps.sandbox.resume(this.deps.context.runtimeHandle);
   }
 
   private requestResult(record: PermissionRequestRecord): {

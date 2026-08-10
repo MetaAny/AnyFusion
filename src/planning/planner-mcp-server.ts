@@ -3,33 +3,25 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { join } from 'path';
-import { ExecutorVerificationRepo } from '../storage/executor-verification-repo.js';
-import { KernelExecutorStatusRepo } from '../storage/kernel-executor-status-repo.js';
-import { ExecutorRegistryService } from '../executor/executor-registry-service.js';
-import type { ExecutorRegistrySnapshot } from '../executor/executor-registry-types.js';
+import type { PlannerExecutorRegistryProjection } from '../executor/executor-registry-types.js';
 import { truncateText } from '../utils/truncate-text.js';
+import { readPlannerHostRegistryProjection } from './planner-host-registry-client.js';
 
 const MAX_RESULTS = 20;
 const DEFAULT_RESULTS = 10;
 const TASK_STATUSES = ['created', 'ready', 'running', 'parked', 'blocked', 'done', 'archived', 'cancelled'] as const;
 
 export class PlannerDataReader {
-  private readonly getExecutorRegistrySnapshot: () => ExecutorRegistrySnapshot;
+  private readonly getExecutorRegistrySnapshot: () =>
+    PlannerExecutorRegistryProjection | Promise<PlannerExecutorRegistryProjection>;
 
   constructor(
     private readonly db: Database.Database,
     private readonly sessionId: string,
-    getExecutorRegistrySnapshot?: () => ExecutorRegistrySnapshot,
+    getExecutorRegistrySnapshot: () =>
+      PlannerExecutorRegistryProjection | Promise<PlannerExecutorRegistryProjection>,
   ) {
-    if (getExecutorRegistrySnapshot) {
-      this.getExecutorRegistrySnapshot = getExecutorRegistrySnapshot;
-    } else {
-      const executorRegistry = new ExecutorRegistryService({
-        verificationRepo: new ExecutorVerificationRepo(db),
-        statusRepo: new KernelExecutorStatusRepo(db),
-      });
-      this.getExecutorRegistrySnapshot = () => executorRegistry.current();
-    }
+    this.getExecutorRegistrySnapshot = getExecutorRegistrySnapshot;
   }
 
   searchTasks(input: { query?: string; statuses?: string[]; limit?: number }) {
@@ -199,14 +191,14 @@ export class PlannerDataReader {
     };
   }
 
-  listExecutorStatus() {
-    const snapshot = this.getExecutorRegistrySnapshot();
+  async listExecutorStatus() {
+    const snapshot = await this.getExecutorRegistrySnapshot();
     const statuses = new Map((this.db.prepare(`
       SELECT agent_class_name, class_health, recent_attempts_json,
              recent_recovery_checks_json, updated_at
       FROM kernel_executor_status
     `).all() as Array<Record<string, unknown>>).map(row => [String(row.agent_class_name), row]));
-    const rows = [...snapshot.executors.values()]
+    const rows = [...snapshot.tui]
       .sort((left, right) => left.id.localeCompare(right.id))
       .map(executor => ({ executor, status: statuses.get(executor.id) }));
     return {
@@ -215,7 +207,7 @@ export class PlannerDataReader {
       executorStatuses: rows.map(({ executor, status }) => ({
         agentClassName: executor.id,
         enabled: executor.enabled,
-        verification: snapshot.tui.find(item => item.id === executor.id)?.verification ?? 'unverified',
+        verification: executor.verification,
         classHealth: typeof status?.class_health === 'string' ? status.class_health : 'unverified',
         recentAttempts: safeJson(status?.recent_attempts_json, []).slice(0, 3),
         recentRecoveryChecks: safeJson(status?.recent_recovery_checks_json, []).slice(0, 3),
@@ -224,8 +216,8 @@ export class PlannerDataReader {
     };
   }
 
-  getPlanningContext() {
-    const snapshot = this.getExecutorRegistrySnapshot();
+  async getPlanningContext() {
+    const snapshot = await this.getExecutorRegistrySnapshot();
     const preferences = this.db.prepare(`
       SELECT id, type, scope, subject, content, confirmed_at
       FROM preferences
@@ -318,7 +310,7 @@ export function createPlannerMcpServer(reader: PlannerDataReader): McpServer {
   server.registerTool('get_planning_context', {
     description: 'Read current session Planner facts: bounded confirmed preferences, the exact pending authorization request, and canonical routing capabilities and AgentClasses. Call before executable planning, preference-dependent replies, or authorization resolution.',
     inputSchema: {},
-  }, async () => toolResult(reader.getPlanningContext()));
+  }, async () => toolResult(await reader.getPlanningContext()));
   server.registerTool('get_session_interaction', {
     description: 'Read one bounded interaction side by stable ID only when the current user explicitly referenced it.',
     inputSchema: {
@@ -333,7 +325,7 @@ export function createPlannerMcpServer(reader: PlannerDataReader): McpServer {
   server.registerTool('list_executor_status', {
     description: 'List bounded Kernel executor class health and three recent safe execution outcomes. Static routing capabilities are already in Planner startup context.',
     inputSchema: {},
-  }, async () => toolResult(reader.listExecutorStatus()));
+  }, async () => toolResult(await reader.listExecutorStatus()));
   server.registerTool('get_executor_diagnostics', {
     description: 'Read recent bounded executor probe failures and their persisted safe reasons when the user asks why execution is blocked or an executor is unavailable.',
     inputSchema: {
@@ -347,11 +339,17 @@ export function createPlannerMcpServer(reader: PlannerDataReader): McpServer {
 export async function runPlannerMcpServer(): Promise<void> {
   const home = process.env.METACLAW_HOME;
   const sessionId = process.env.METACLAW_PLANNER_SESSION_ID;
+  const plannerHostSocket = process.env.ANYFUSION_BRIDGE_SOCKET;
   if (!home) throw new Error('METACLAW_HOME is required');
   if (!sessionId) throw new Error('METACLAW_PLANNER_SESSION_ID is required');
+  if (!plannerHostSocket) throw new Error('ANYFUSION_BRIDGE_SOCKET is required');
   const dbPath = process.env.METACLAW_DB_PATH ?? join(home, 'metaclaw.db');
   const db = new Database(dbPath, { readonly: true, fileMustExist: true });
-  const server = createPlannerMcpServer(new PlannerDataReader(db, sessionId));
+  const server = createPlannerMcpServer(new PlannerDataReader(
+    db,
+    sessionId,
+    () => readPlannerHostRegistryProjection({ socketPath: plannerHostSocket, sessionId }),
+  ));
   await server.connect(new StdioServerTransport());
 }
 

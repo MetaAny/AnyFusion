@@ -136,7 +136,7 @@ describe('PlannerDataReader', () => {
     expect(JSON.stringify(result)).not.toContain('secret other session');
   });
 
-  it('exposes bounded Planner-owned facts through MCP instead of prompt injection', () => {
+  it('exposes bounded Planner-owned facts through MCP instead of prompt injection', async () => {
     const { db, reader } = createHarness();
     db.prepare(`
       INSERT INTO preferences (
@@ -151,7 +151,7 @@ describe('PlannerDataReader', () => {
       '2026-07-30T00:00:00.000Z',
     );
 
-    const result = reader.getPlanningContext();
+    const result = await reader.getPlanningContext();
 
     expect(result.confirmedPreferences).toEqual([
       expect.objectContaining({ id: 'pref_planner', content: 'Prefer concise answers.' }),
@@ -162,7 +162,7 @@ describe('PlannerDataReader', () => {
     expect(result.pendingAuthorizationRequest).toBeNull();
   });
 
-  it('returns dynamic executor status without static catalog or runtime configuration', () => {
+  it('returns dynamic executor status without static catalog or runtime configuration', async () => {
     const { db, taskEngine, reader } = createHarness();
     const task = taskEngine.create({ title: 'active task', goal: 'work' });
     taskEngine.transition(task.id, 'ready');
@@ -188,7 +188,7 @@ describe('PlannerDataReader', () => {
       taskCounts: { ready: 1 },
       activeTasks: [expect.objectContaining({ id: task.id, status: 'ready' })],
     });
-    const status = reader.listExecutorStatus();
+    const status = await reader.listExecutorStatus();
     expect(status.executorStatuses).toEqual(expect.arrayContaining([
       expect.objectContaining({
         agentClassName: 'codex-cli',
@@ -242,15 +242,15 @@ describe('PlannerDataReader', () => {
     });
   });
 
-  it('performs all planner reads with SQLite query-only mode enabled', () => {
+  it('performs all planner reads with SQLite query-only mode enabled', async () => {
     const { db, reader } = createHarness();
     db.pragma('query_only = ON');
     const before = Number((db.prepare('SELECT total_changes() AS count').get() as { count: number }).count);
 
     reader.searchTasks({});
-    reader.getPlanningContext();
+    await reader.getPlanningContext();
     reader.getRuntimeState();
-    reader.listExecutorStatus();
+    await reader.listExecutorStatus();
     reader.getExecutorDiagnostics({});
 
     const after = Number((db.prepare('SELECT total_changes() AS count').get() as { count: number }).count);

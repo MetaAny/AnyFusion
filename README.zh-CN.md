@@ -38,7 +38,7 @@ AnyFusion 是位于人员、企业协作入口与 Agent Runtime 之间的本地�
 | **策略治理的规划链路** | 自然语言规划与执行授权严格分离：Planner 提案，Control Kernel 决策，Runtime 只执行已授权的副作用。 |
 | **依赖感知工作图** | 复杂目标被表达为显式 DAG，包含验收标准、类型化依赖、受限上下文，以及工作单元之间可持久化的 handoff contract。 |
 | **多垂类 Agent 编排** | 受控 Capability 路由把 Subtask 映射到同一份 verified、digest-bound Executor Registry snapshot 的完整候选集，包括 Codex、Pi、Hermes Profile 或企业自定义 session CLI。 |
-| **Worktree 执行边界** | 已验证的 Registry CLI binding 在统一 Runtime 中作为短生命周期子进程运行，每个 attempt 使用自己的持久 Git worktree；Docker 仅作为 binding 显式声明的兼容选项。 |
+| **Worktree 执行边界** | 已验证的 Registry CLI binding 在统一 Runtime 中作为短生命周期子进程运行，每个 attempt 使用自己的受管 Git worktree；不再保留嵌套 Docker 执行路径。 |
 | **验收、证据与审计** | 结构化完成协议在结果暴露或交付前记录验收证据、产物、handoff、attempt receipt 与审计事件。 |
 | **业务记忆与多端交付** | 已确认偏好、任务历史、语义检索、终端工作流、Gateway 和飞书交付均连接至同一份持久任务状态。 |
 
@@ -61,7 +61,7 @@ flowchart LR
   Planning --> Workflow[持久化 Kernel Workflow<br/>Inbox / Ledger / Application]
   Workflow --> Kernel[Control Kernel<br/>策略与授权]
   Kernel --> Runtime[Execution Runtime<br/>Frontier / Dispatch / Recovery]
-  Runtime --> Agents[已验证 Registry Executor<br/>Worktree / Docker 兼容模式]
+  Runtime --> Agents[已验证 Registry Executor<br/>Worktree 子进程]
   Agents --> Verify[验收与交付<br/>证据 / 产物 / Handoff]
 
   State[(持久任务状态<br/>记忆 / Attempt / 审计)]
@@ -132,9 +132,9 @@ anyfusion smoke --executor pi --scenario pi-research --timeout 300
 launcher 默认构建两个仓库，并且只使用
 `$ANYFUSION_CONFIG_HOME/executors.yaml` 中已验证的绝对 CLI binding。
 `anyfusion --no-build` 可复用当前构建产物。Runtime 数据位于
-`~/.local/share/anyfusion`，Registry 和 Executor 私有源配置位于
-`~/.config/anyfusion`。原有 Dockerfile 继续用于 CI、跨平台部署和显式
-compatibility backend。
+`~/.local/share/anyfusion/runtime`，Registry 和 Executor 私有源配置位于
+`~/.config/anyfusion`。Docker 只提供统一的 Ubuntu Runtime/测试环境，供
+Windows 开发机编排使用；Executor attempt 不会启动嵌套容器。
 
 ## 项目状态
 
@@ -145,7 +145,7 @@ compatibility backend。
 | 部署状态 | 已部署至内部服务器进行小范围试用 |
 | 任务范围 | 一个活跃顶层任务，内部支持具备依赖关系的多个 Subtask |
 | 调度方式 | 单一活跃顶层 Task 内按确定性 batch 并行运行最多四个隔离 attempt |
-| 持久化 | fresh-only SQLite schema 33；schema 32 及更旧数据库无迁移直接拒绝 |
+| 持久化 | fresh-only SQLite schema 34；schema 33 及更旧数据库无迁移直接拒绝 |
 | Executor 权威源 | digest-bound 主机 Registry；只有 enabled、verified、digest-matched binding 可路由 |
 | 兼容性 | CLI、配置和 Runtime contract 在稳定版前可能继续演进 |
 
@@ -156,7 +156,7 @@ AnyFusion 当前不会被描述为 Production Ready。Preview 阶段用于验证
 | 资源 | 内容 |
 | --- | --- |
 | [技术总览](docs/current/technical-overview.zh-CN.md) | Runtime 架构、运行环境、模块和实现细节 |
-| [运行时安全](docs/current/phase-5-runtime-security.md) | Worktree Executor 进程、Docker 兼容 attempt、持久 workspace、镜像 profile 和运行时提权 |
+| [运行时安全](docs/current/phase-5-runtime-security.md) | Worktree Executor 进程、持久 workspace、PID 清理、Registry binding 和运行时提权 |
 | [架构决策](docs/adr/README.md) | 已接受的系统边界和权威设计决策 |
 | [并发收敛路线图](docs/plans/2026-07-16-planner-kernel-concurrency-convergence-roadmap.md) | 控制平面、资源分区、故障恢复和并发调度计划 |
 | [Preview Release Notes](docs/releases/v1.2.0-preview.0.md) | 当前版本范围、部署状态和已知限制 |

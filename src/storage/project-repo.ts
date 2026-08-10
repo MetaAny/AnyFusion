@@ -50,4 +50,3 @@ export class ProjectRepo {
     return row ? fromRow(row) : null;
   }
 }
-

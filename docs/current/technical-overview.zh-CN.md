@@ -4,7 +4,7 @@
 
 > 当前实现基线（2026-08-10）：PlanningAgentPlan v7、Work Graph
 > v6、Kernel event/snapshot/decision contract v5、Completion Protocol v3，
-> fresh-only SQLite schema v33、一个显式 Project 仓库、用户审批后的整分支
+> fresh-only SQLite schema v34、一个显式 Project 仓库、用户审批后的整分支
 > 发布，以及来自
 > `$ANYFUSION_CONFIG_HOME/executors.yaml` 的 digest-bound Executor Registry
 > Snapshot。`KernelWorkflow` 串行完成
@@ -74,7 +74,7 @@ flowchart LR
   Stop --> Delivery
   Delivery --> User
 
-  Session <--> Store[(本地 SQLite schema 33<br/>Project、任务、审批、<br/>work units、events、memory)]
+  Session <--> Store[(本地 SQLite schema 34<br/>Project、任务、审批、<br/>work units、events、memory)]
   Workflow -. audit .-> Decisions[(kernel_decisions)]
   TaskOS <--> Store
   Graph <--> Store
@@ -217,25 +217,22 @@ claim/provision WorkUnit，并通过 `SandboxedExecutorAdapter` 使用该 bindin
 - Node.js `>=22.19.0`。
 - npm。
 - Git。
-- Unix-like shell 环境，优先支持 macOS 和 Linux；Windows 用户推荐使用 WSL2，这是当前支持的可靠安装路径。
+- Ubuntu 24.04；Windows 用户通过 Docker 运行同一套 Ubuntu Runtime。
 - `better-sqlite3` 的原生编译工具链。
 
 推荐安装编译工具：
 
 ```bash
-# macOS
-xcode-select --install
-
-# Ubuntu / Debian
+# Ubuntu 24.04
 sudo apt-get update
 sudo apt-get install -y build-essential python3 make g++
 ```
 
 执行器前提：
 
-- worktree 模式：安装并认证 CLI，然后注册真实绝对路径和私有源 runtime home。
-- Docker 兼容模式：构建或拉取 binding 引用的镜像，并记录不可变
-  `sha256:` image ID。
+- 安装并认证 CLI，然后注册真实绝对路径和私有源 runtime home。
+- Windows 开发环境在唯一 Ubuntu Runtime 容器中使用同样的 Linux CLI；
+  不为 Executor 注册或构建单独镜像。
 
 飞书集成前提：
 
@@ -268,10 +265,10 @@ npm run smoke:anyfusion
 ```text
 MetaClaw native Planner session smoke passed.
 Scenario: planner-session
-Native session: /var/lib/metaclaw/codex/planner/sessions/...jsonl
+Native session: ~/.local/share/anyfusion/runtime/planner-sessions/...jsonl
 ```
 
-`setup.sh` 会安装 AnyFusion 本身、构建 CLI、执行 `npm link`、生成 `~/.local/share/anyfusion/config.yaml`，并自动检测当前系统里的 Executor。
+`setup.sh` 会安装 AnyFusion 本身、构建 CLI、执行 `npm link`、生成 `~/.local/share/anyfusion/runtime/config.yaml`，并自动检测当前系统里的 Executor。
 
 在交互式终端里，它会展示检测到的 Executor 列表，让用户选择要接入哪几个 Executor，并选择哪个作为默认 Executor。如果选择了缺失但支持自动安装的 Executor，setup 可以直接安装。没有任何 Executor 可用时，默认 fallback 是安装 Codex CLI：
 
@@ -289,7 +286,7 @@ codex
 
 - `node --version` 是 `>=22.19.0`。
 - `./setup.sh` 最后显示“安装完成”。
-- `~/.local/share/anyfusion/config.yaml` 已生成。
+- `~/.local/share/anyfusion/runtime/config.yaml` 已生成。
 - 新开一个 shell 后，`anyfusion --help` 可用。
 - `anyfusion executor list` 中需要参与路由的 Executor 均为
   `enabled / verified`。
@@ -298,10 +295,10 @@ codex
 setup 可选参数：
 
 ```bash
-# 默认不覆盖已有 ~/.local/share/anyfusion/config.yaml
+# 默认不覆盖已有 ~/.local/share/anyfusion/runtime/config.yaml
 METACLAW_OVERWRITE_CONFIG=false ./setup.sh
 
-# 强制重写 ~/.local/share/anyfusion/config.yaml
+# 强制重写 ~/.local/share/anyfusion/runtime/config.yaml
 METACLAW_OVERWRITE_CONFIG=true ./setup.sh
 
 # 只构建，不执行 npm link
@@ -332,54 +329,25 @@ anyfusion --help
 
 ## Windows 安装
 
-Windows 用户推荐使用 WSL2 + Ubuntu。这样可以提供 AnyFusion 当前需要的 Unix-like shell、原生编译工具链、socket、进程行为和 executor 兼容性。
+Windows 只负责 Docker 编排。Runtime、Planner、Codex 和 Pi 全部运行在同一个
+Ubuntu 24.04 Runtime 容器内，因此本机和 Ubuntu 服务器使用相同应用逻辑和
+Linux 进程行为。
 
-先在 Windows PowerShell 中安装 WSL2：
+将 `AnyFusion` 和兄弟仓库 `AnyFusion-Pi` 放在同一目录，创建三份 provider
+配置，然后在 PowerShell 中执行：
 
 ```powershell
-wsl --install -d Ubuntu
+Copy-Item docker\planner-pi.env.example docker\planner-pi.env
+Copy-Item docker\executor-codex.env.example docker\executor-codex.env
+Copy-Item docker\executor-pi.env.example docker\executor-pi.env
+.\docker\shell.ps1 -Start
+.\docker\shell.ps1 -SetupSsh
+.\docker\shell.ps1
 ```
 
-如果系统提示重启，重启后打开 Ubuntu，在 WSL 内安装依赖：
-
-```bash
-sudo apt-get update
-sudo apt-get install -y git curl build-essential python3 make g++
-
-curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
-sudo apt-get install -y nodejs
-
-node --version
-npm --version
-git --version
-```
-
-然后在 WSL Ubuntu shell 内安装并验证 AnyFusion：
-
-```bash
-git clone https://github.com/MetaAny/AnyFusion.git
-cd AnyFusion
-./setup.sh
-anyfusion --help
-npm run smoke:anyfusion
-```
-
-如果 setup 过程中安装了 Codex CLI，先在 WSL 里打开一次 Codex 并完成登录，再执行真实任务：
-
-```bash
-codex
-```
-
-Windows 安装核验清单：
-
-- 在 WSL Ubuntu 里运行 AnyFusion 命令，不要在 Windows PowerShell 里直接运行。
-- 仓库建议放在 WSL 文件系统，例如 `~/AnyFusion`，不要放在 `/mnt/c/...`，这样文件和 SQLite 性能更稳定。
-- `node --version` 是 `>=22.19.0`。
-- 新开一个 WSL shell 后，`anyfusion --help` 可用。
-- WSL 内需要参与路由的 Executor 均为 `enabled / verified`。
-- `npm run smoke:anyfusion` 成功完成
-
-Windows 原生 PowerShell 不是当前推荐的主要运行环境。高级用户可以使用 Node.js 22.19+、Git、Visual Studio Build Tools、`npm install`、`npm run build` 和 `node dist/index.js` 直接开发，但 `setup.sh`、`anyfusion.sh`、Unix socket Gateway 行为以及下游 executor CLI 可能和 Linux/macOS 不一致。Windows 的受支持路径是统一 Docker runtime；直接 Linux 开发可使用 WSL2。
+源码变化后使用 `-Rebuild`。Runtime 状态和 Executor 配置持久化在
+`/data/anyfusion`，默认 Project 持久化在 `/workspace/default`。Windows 原生
+Node.js 不是受支持的 Runtime 路径。
 
 ## 安装执行器
 
@@ -523,7 +491,7 @@ AnyFusion 调用方式：
 pi -p "<prompt>"
 ```
 
-Pi attempt 默认通过统一的 `SandboxedExecutorAdapter` seam 在当前 Subtask worktree 中运行 `pi` 子进程；Docker 兼容模式仍使用 canonical `metaclaw-executor-pi:phase5` 镜像。
+Pi attempt 通过统一的 `SandboxedExecutorAdapter` seam，在当前 Subtask worktree 中运行 Registry 已验证的 `pi` 子进程。Windows 开发环境只用一个 Ubuntu Runtime 容器，不再构建独立 Executor 镜像。
 
 ## Executor 与 Skill 的差异
 
@@ -533,7 +501,7 @@ Executor 是“谁来干活”。Skill 是“干活时带什么方法、知识�
 
 Executor 是由 Registry binding 派生的 AgentClass 兼容值，例如已确认的
 Codex、Pi、Hermes 或通用 session CLI。它可以作为 worktree 子进程运行，
-也可以走 Docker 兼容后端；driver/binding 决定模型工具链、权限、运行环境、
+不再选择第二种 Docker 执行后端；driver/binding 决定模型工具链、权限、运行环境、
 session、结果收集和私有 home 边界。
 
 Skill 更像轻量能力包。它描述某一类工作应该怎么做：怎么做期货分析、怎么做代码审查、怎么跑调研流程、怎么输出报告格式。Skill 可以改善某个 Executor 的表现，但不会自动改变这个 Executor 的 runtime、权限、工具或安装状态。
@@ -584,46 +552,45 @@ anyfusion
 - bridge 断开、数据过期或格式错误会明确降级 Task 投影或 proposal 提交，不能伪装 Task 已创建，也不得终止普通对话。
 - 设置 `METACLAW_STANDBY_TUI=1` 可启动完整保留的 Ink 备用实现；该模块不是默认入口，也不承担本次迁移后的持续功能开发。
 
-或使用项目脚本：
+也可以不安装全局链接，直接使用仓库 launcher：
 
 ```bash
-./anyfusion.sh start
+./anyfusion --project /path/to/project
 ```
 
 首次启动会创建：
 
 ```text
 ~/.local/share/anyfusion/
-├── config.yaml
-├── metaclaw.db
-└── gateway.sock
+└── runtime/
+    ├── config.yaml
+    ├── metaclaw.db
+    └── gateway.sock
 ```
 
 连接已有实例：
 
 ```bash
-./anyfusion.sh connect
+anyfusion --connect
 ```
 
-运行管理：
+以前台方式运行 Gateway：
 
 ```bash
-./anyfusion.sh status
-./anyfusion.sh logs
-./anyfusion.sh logs -f
-./anyfusion.sh restart
-./anyfusion.sh stop
+anyfusion gateway run --project /path/to/project
 ```
 
-安装或管理用户级 Gateway 服务：
+Gateway 初始化和诊断继续使用明确的 CLI 命令：
 
 ```bash
-./anyfusion.sh gateway install
-./anyfusion.sh gateway start
-./anyfusion.sh gateway status
-./anyfusion.sh gateway restart
-./anyfusion.sh gateway stop
+anyfusion gateway setup
+anyfusion gateway doctor
+anyfusion gateway pairing list
 ```
+
+仓库不再保留第二套后台进程 launcher，也不再生成 systemd 服务。Demo 阶段
+直接以前台方式运行 Gateway；服务器需要常驻时，由现有进程管理器包装
+`anyfusion gateway run`。
 
 直接 Gateway 模式：
 
@@ -637,24 +604,23 @@ anyfusion --connect
 仓库根目录的 `anyfusion` 命令是本 Linux 服务器的默认 launcher。它构建
 MetaClaw 和兄弟 AnyFusion-Pi，并将 MetaClaw 与 Planner 作为独立宿主机
 Node.js 进程启动。已验证的 Registry binding 复用宿主机安装命令，在受管
-Subtask worktree 中运行；只有 binding 和 backend 显式选择兼容模式时才使用
-Docker。
+Subtask worktree 中运行；这条服务器启动路径不使用 Docker。
 
 每次 attempt 使用 driver materializer 创建的私有 home；支持 evidence
 服务的 driver 还会获得 attempt-scoped model gateway token。Runtime 数据
-位于 `~/.local/share/anyfusion`，Executor Registry 位于
+位于 `~/.local/share/anyfusion/runtime`，Executor Registry 位于
 `$ANYFUSION_CONFIG_HOME`，通常是 `~/.config/anyfusion`。使用
 `anyfusion --no-build` 复用当前构建产物，使用
 `anyfusion smoke --scenario artifact` 完成本机端到端 gate。原有 Runtime
-Dockerfile 和 `docker/shell.ps1` 继续用于 CI、跨平台部署和显式
-compatibility backend 验证。
+Dockerfile 和 `docker/shell.ps1` 提供同一套 Ubuntu Runtime，用于 CI 和
+Windows 宿主机开发。
 
 ## 配置
 
 编辑：
 
 ```bash
-~/.local/share/anyfusion/config.yaml
+~/.local/share/anyfusion/runtime/config.yaml
 ```
 
 示例：
@@ -729,7 +695,7 @@ $ANYFUSION_CONFIG_HOME/executors.yaml
 
 ```bash
 export FEISHU_APP_SECRET="your Feishu app secret"
-./anyfusion.sh start
+anyfusion gateway run --project /path/to/project
 ```
 
 ## 飞书交付和在线预览
@@ -902,11 +868,10 @@ AnyFusion 可以把复杂需求表示成 work graph，而不是把整段需求�
 
 在 active session path 中，proposal 只有在 `ControlKernel` 授权并创建 durable
 application 后才会成为持久化 Work Graph v6 `Subtask` revision。未发布产品
-使用 fresh-only SQLite schema v33；所有 v32 或更早预发布 schema 都会带
-精确路径拒绝，不提供迁移、自动删除或双读。Schema 33 保留 schema 32 的
-Executor Registry 与 purge 基线，新增持久 Project、必需的 Task
-`project_id`，以及精确 publication base、permission request、changed paths
-和 approval status；同时保留
+使用 fresh-only SQLite schema v34；所有 v33 或更早预发布 schema 都会带
+精确路径拒绝，不提供迁移、自动删除或双读。Schema 34 保留 Project、
+publication、Executor Registry 与 purge 基线，并用 worktree process runtime
+handle 和 child PID 替换 Docker-only attempt 字段；同时保留
 Planner proposal、durable workflow、graph revision、
 resource/workspace/permission/sandbox、dispatch/publication/immutable merge
 audit、cancellation cleanup、lease revocation、generation replan、deferred

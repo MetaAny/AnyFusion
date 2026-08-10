@@ -9,7 +9,7 @@ This directory contains both current technical documentation and historical plan
   validation rules.
 - [Technical Overview](current/technical-overview.md): the previous long-form README, preserved as the current deep architecture and runtime reference.
 - [中文技术总览](current/technical-overview.zh-CN.md): the previous long-form Chinese README, preserved as the Chinese deep architecture and runtime reference.
-- [Phase 5 Runtime Security And Executor Registry Operations](current/phase-5-runtime-security.md): verified worktree Executor processes, Docker compatibility attempts, persistent workspace retention, registry bindings, and runtime elevation operations.
+- [Phase 5 Runtime Security And Executor Registry Operations](current/phase-5-runtime-security.md): verified worktree Executor processes, persistent workspace retention, registry bindings, PID cleanup, and runtime elevation operations.
 - [Repository README](../README.md): public project overview, install path, repository structure, and high-level architecture.
 - [CONTEXT](../CONTEXT.md): current PlanningAgent, ControlKernel, decision-ledger, and work-unit vocabulary.
 
@@ -31,7 +31,7 @@ Key recent ADRs:
 - [ADR-0020: Core Module Ownership And Dependency Direction](adr/0020-core-module-ownership-and-dependency-direction.md): normative module and dependency guide for the active convergence roadmap.
 - [ADR-0022: Unified Kernel Control Plane And Decision Ledger](adr/0022-unified-kernel-control-plane-and-decision-ledger.md): current event, snapshot, decision, ledger, Subtask and synchronous-loop contract delivered by Phase 3.
 - [ADR-0023: Durable Kernel Workflow, Recovery And Availability](adr/0023-durable-kernel-workflow-recovery-and-availability.md): Phase 4 durable inbox/application/outbox, recovery, structured failure, retry/fallback, availability, continuation and graph revision authority.
-- [ADR-0024: Resource Partition, Sandbox And Runtime Elevation](adr/0024-resource-partition-sandbox-and-runtime-elevation.md): Phase 5 resource identities, Docker attempts, persistent workspaces, leases and structured permission elevation.
+- [ADR-0024: Resource Partition, Sandbox And Runtime Elevation](adr/0024-resource-partition-sandbox-and-runtime-elevation.md): resource identities, worktree process attempts, persistent workspaces, leases and structured permission elevation.
 - [ADR-0025: Single-Task Concurrency And Git Publication](adr/0025-single-task-concurrency-and-git-publication.md): Phase 6 runnable frontier, batch dispatch, asynchronous attempts, Git-backed workspaces and publication.
 - [ADR-0026: Phase 6 Single-Task Reliability Closure](adr/0026-phase-6-single-task-reliability-closure.md): final Phase 6 scope, reliable Task termination/recovery closure and deferral of multi-Task scheduling.
 - [ADR-0027: Project Workspaces And User-Approved Branch Publication](adr/0027-project-workspaces-and-user-approved-branch-publication.md): explicit Project repositories, one Subtask worktree per branch, local-main synchronization and approval-gated whole-branch publication.
@@ -52,6 +52,7 @@ replacing those semantics.
 
 ## Active Delivery
 
+- [Ubuntu Runtime and Executor Registry convergence](plans/2026-08-10-ubuntu-runtime-and-executor-registry-convergence.md): local Ubuntu acceptance is complete; it merges the remote Registry work, makes Planner/Kernel/Runtime consume one live snapshot, removes per-attempt Docker and legacy startup paths, and aligns native Ubuntu plus Windows-hosted Docker on one bootstrap and path contract. Real-server acceptance remains open.
 - [Project workspaces and approved publication](plans/2026-08-10-project-workspaces-and-approved-publication.md): removes launch-cwd workspace inference and adds persistent Project repositories, Runtime-generated Subtask worktrees and user-approved whole-branch promotion to local `main`.
 - [Native Linux server launcher](plans/2026-07-23-linux-host-launcher.md): runs Runtime, AnyFusion-Pi and verified registry-bound worktree Executors as isolated host processes on the current server without requiring Docker.
 - [Node 22 single runtime image migration](plans/2026-08-05-node-22-single-runtime-image-migration.md): unifies MetaClaw and AnyFusion-Pi on one Node 22.19+ image and executable while preserving separate processes and dependency trees.

@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
@@ -20,12 +20,8 @@ describe('Kernel capacity control loop', () => {
     runMigrations(db);
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-kernel-capacity');
-    const available = { value: false };
     const attemptSandbox = new FakeAttemptSandbox(() => ({ body: 'capacity recovered' }));
-    attemptSandbox.resolveImage.mockImplementation(async () => {
-      if (!available.value) throw new Error('image unavailable');
-      return `sha256:${'a'.repeat(64)}`;
-    });
+    vi.stubEnv('OPENAI_API_KEY', '');
     const plan = workGraphPlan({ goal: 'run after capacity recovers', deliveryKind: 'report' });
     const config: Config = {
       version: 1,
@@ -52,9 +48,14 @@ describe('Kernel capacity control loop', () => {
     db.prepare('DELETE FROM work_units').run();
 
     await session.submit('run after capacity recovers', { awaitAsyncWork: true });
+    await vi.waitFor(async () => {
+      await session.waitForAsyncWork();
+      const diagnostics = JSON.stringify(db.prepare('SELECT * FROM kernel_dispatch_items').all());
+      expect(taskRepo.findAll()[0]?.status, diagnostics).not.toBe('running');
+    });
 
     const [task] = taskRepo.findAll();
-    expect(task.status).toBe('blocked');
+    expect(task.status, session.getSnapshot().output.join('\n')).toBe('blocked');
     expect(attemptSandbox.create).not.toHaveBeenCalled();
     expect(db.prepare(`SELECT action FROM kernel_decisions WHERE task_id = ? ORDER BY rowid`).all(task.id))
       .toEqual(expect.arrayContaining([{ action: 'wait_for_capacity' }]));
@@ -62,11 +63,11 @@ describe('Kernel capacity control loop', () => {
       .find(item => item.agentClassName === 'codex-cli')).toMatchObject({
       classHealth: 'error',
       recentAttempts: [expect.objectContaining({
-        failure: expect.objectContaining({ code: 'executor_local_probe_failed' }),
+        failure: expect.objectContaining({ code: 'provider_configuration_missing' }),
       })],
     });
 
-    available.value = true;
+    vi.stubEnv('OPENAI_API_KEY', 'metaclaw-test-placeholder');
     await session.submit('/executor refresh codex-cli', {
       awaitAsyncWork: true,
     });
@@ -80,5 +81,6 @@ describe('Kernel capacity control loop', () => {
     expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
     expect(db.prepare(`SELECT action FROM kernel_decisions WHERE task_id = ? ORDER BY rowid`).all(task.id))
       .toEqual(expect.arrayContaining([{ action: 'probe_capacity' }, { action: 'dispatch_batch' }, { action: 'complete_task' }]));
+    vi.unstubAllEnvs();
   });
 });

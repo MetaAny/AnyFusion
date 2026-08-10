@@ -131,9 +131,6 @@ function binding(driver: RuntimeExecutorBinding['driver']): RuntimeExecutorBindi
     environmentFiles: [],
     inheritEnvironment: [],
     permissionProfileId: 'restricted-custom',
-    backendSupport: ['worktree'],
-    dockerImageRef: null,
-    dockerImageId: null,
     sessionProtocol: null,
   };
 }

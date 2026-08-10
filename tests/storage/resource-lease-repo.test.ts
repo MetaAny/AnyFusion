@@ -2,7 +2,6 @@ import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { SqliteResourceLeaseRepository } from '../../src/storage/resource-lease-repo.js';
-import { AgentClassService } from '../../src/executor/agent-class-service.js';
 
 function seedForeignKeys(db: Database.Database): void {
   const now = '2026-07-22T00:00:00.000Z';
@@ -20,7 +19,6 @@ function seedForeignKeys(db: Database.Database): void {
   ) VALUES (?, 'task', 1, 'gen', ?, ?, 'ready', '[]', '[]', '[]', '[]', 'report', '[]', 'low', '', '[]', '{}', NULL, ?, ?)`);
   insertSubtask.run('subtask-a', 'a', 'a', now, now);
   insertSubtask.run('subtask-b', 'b', 'b', now, now);
-  new AgentClassService({ db }).seedDefaults();
   for (const id of ['worker-a', 'worker-b']) {
     db.prepare(`INSERT INTO work_units (
       id, agent_class_name, agent_class_kind, state, claimed_task_id, claimed_subtask_id,

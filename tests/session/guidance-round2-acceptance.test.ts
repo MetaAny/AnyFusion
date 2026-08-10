@@ -143,11 +143,11 @@ describe('Round 2 guidance acceptance', () => {
     await session.waitForAsyncWork();
 
     expect(handled).toBe(true);
-    expect(attemptSandbox.resolveImage).toHaveBeenCalled();
+    expect(attemptSandbox.create).toHaveBeenCalled();
     expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
     const executionInput = attemptSandbox.create.mock.calls[0]![0];
     expect(executionInput.taskId).toBe(task.id);
-    expect(taskRepo.findById(task.id)?.status).toBe('done');
+    expect(taskRepo.findById(task.id)?.status, session.getSnapshot().output.join('\n')).toBe('done');
     expect(session.getSnapshot().output.join('\n')).toContain('定时检查');
   });
 
@@ -347,8 +347,13 @@ describe('Round 2 guidance acceptance', () => {
     session.initialize();
 
     await session.submit(`/task resume ${task.id}`, { awaitAsyncWork: true });
+    await vi.waitFor(async () => {
+      await session.waitForAsyncWork();
+      const diagnostics = JSON.stringify(db.prepare('SELECT * FROM kernel_dispatch_items').all());
+      expect(taskRepo.findById(task.id)?.status, diagnostics).not.toBe('running');
+    });
 
-    expect(taskRepo.findById(task.id)?.status).toBe('done');
+    expect(taskRepo.findById(task.id)?.status, session.getSnapshot().output.join('\n')).toBe('done');
     expect(session.getSnapshot().latestGuidance).toBeNull();
   });
 });

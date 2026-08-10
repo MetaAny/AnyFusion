@@ -262,9 +262,6 @@ export class ExecutorRegistrationService {
       environmentFiles: executor.binding.environmentFiles,
       inheritEnvironment: executor.binding.inheritEnvironment,
       permissionProfileId: executor.binding.effectivePermissionProfile,
-      backendSupport: executor.binding.backendSupport,
-      dockerImageRef: executor.binding.dockerImageRef,
-      dockerImageId: executor.binding.dockerImageId,
       sessionProtocol: executor.binding.sessionProtocol,
     };
     const invocation = verificationInvocation(binding, challengeText, sessionId);
@@ -511,9 +508,6 @@ export function profileRegistrationDefaults(
       effectivePermissionProfile: profile.suggestedCapabilities.includes('current-web-research')
         ? 'public-web-research'
         : 'workspace-engineering',
-      backendSupport: ['worktree'],
-      dockerImageRef: null,
-      dockerImageId: null,
       sessionProtocol: null,
     },
   };

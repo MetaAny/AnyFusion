@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { createDefaultCommandCatalog } from '../../src/commands/command-tree.js';
 import { CommandReadServices } from '../../src/commands/command-read-services.js';
-import { AgentClassService } from '../../src/executor/agent-class-service.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
@@ -17,7 +16,6 @@ function createHarness() {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   runMigrations(db);
-  new AgentClassService({ db }).seedDefaults();
   const executorSnapshot = createTestExecutorRegistrySnapshot();
   const taskEngine = new TaskEngine(new TaskRepo(db), '/tmp/metaclaw-command-read-tests');
   const runtimeInspector = {

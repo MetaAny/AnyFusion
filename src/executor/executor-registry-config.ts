@@ -54,9 +54,6 @@ const BindingSchema = z.object({
   environmentFiles: z.array(z.string().trim().min(1)),
   inheritEnvironment: z.array(z.string().regex(ENV_KEY_PATTERN)),
   effectivePermissionProfile: z.enum(['workspace-engineering', 'public-web-research', 'restricted-custom']),
-  backendSupport: z.array(z.enum(['worktree', 'docker'])).min(1),
-  dockerImageRef: z.string().trim().min(1).nullable().default(null),
-  dockerImageId: z.string().trim().min(1).nullable().default(null),
   sessionProtocol: SessionProtocolSchema.nullable(),
 }).strict();
 
@@ -177,15 +174,6 @@ export function validateExecutorRegistryConfig(config: ExecutorRegistryConfig): 
     }
     for (const envFile of executor.binding.environmentFiles) {
       if (!isAbsolute(envFile)) errors.push(`Executor ${executor.id} environment file must be absolute: ${envFile}`);
-    }
-    if (executor.binding.backendSupport.includes('docker')) {
-      if (!executor.binding.dockerImageRef || !executor.binding.dockerImageId) {
-        errors.push(`Executor ${executor.id} docker backend requires dockerImageRef and dockerImageId`);
-      } else if (!executor.binding.dockerImageId.startsWith('sha256:')) {
-        errors.push(`Executor ${executor.id} dockerImageId must be immutable sha256`);
-      }
-    } else if (executor.binding.dockerImageRef || executor.binding.dockerImageId) {
-      errors.push(`Executor ${executor.id} declares a Docker image without docker backend support`);
     }
     for (const capabilityId of executor.capabilities) {
       const capability = config.capabilities.find(item => item.id === capabilityId);

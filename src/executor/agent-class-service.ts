@@ -1,31 +1,17 @@
-// Compatibility facade for consumers that still use the AgentClass value shape.
+// Projection facade for consumers that still use the AgentClass value shape.
 // Static executor definitions come only from the active registry snapshot.
-import type Database from 'better-sqlite3';
 import type { AgentClass, AgentClassKind } from '../core/types.js';
-import { ExecutorVerificationRepo } from '../storage/executor-verification-repo.js';
-import { KernelExecutorStatusRepo } from '../storage/kernel-executor-status-repo.js';
-import { ExecutorRegistryService } from './executor-registry-service.js';
 import { executorToAgentClass, type ExecutorRegistrySnapshot } from './executor-registry-types.js';
 
 export interface AgentClassServiceDeps {
-  db?: Database.Database;
-  registry?: ExecutorRegistryService;
-  snapshot?: () => ExecutorRegistrySnapshot;
+  snapshot: () => ExecutorRegistrySnapshot;
 }
 
 export class AgentClassService {
   private readonly snapshot: () => ExecutorRegistrySnapshot;
 
   constructor(deps: AgentClassServiceDeps) {
-    if (deps.snapshot) {
-      this.snapshot = deps.snapshot;
-      return;
-    }
-    const registry = deps.registry ?? new ExecutorRegistryService({
-      verificationRepo: new ExecutorVerificationRepo(requireDb(deps.db)),
-      statusRepo: new KernelExecutorStatusRepo(requireDb(deps.db)),
-    });
-    this.snapshot = () => registry.current();
+    this.snapshot = deps.snapshot;
   }
 
   seedDefaults(): void {
@@ -72,16 +58,7 @@ export class AgentClassService {
     ));
   }
 
-  setResolvedImageId(): void {
-    // Docker image resolution is now part of a verified Runtime binding.
-  }
-
   upsert(_agentClass: AgentClass): never {
     throw new Error('Executor definitions must be registered through executors.yaml');
   }
-}
-
-function requireDb(db: Database.Database | undefined): Database.Database {
-  if (!db) throw new Error('AgentClassService requires db or registry snapshot');
-  return db;
 }

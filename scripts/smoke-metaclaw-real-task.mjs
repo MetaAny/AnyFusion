@@ -92,7 +92,7 @@ export function installPiConfig(input = {}) {
 }
 
 export function bootstrapExecutor(input) {
-  if (input.executorCommand !== 'pi') {
+  if (input.executorCommand !== 'pi' || input.preserveExistingConfig) {
     return null;
   }
 
@@ -388,9 +388,9 @@ export function verifyPythonHelloScenario(input) {
 
 export function verifyPiResearchScenario(input) {
   const authoritative = verifyAuthoritativeTaskState(input.authoritativeState);
-  if (!authoritative.executorNames.includes('pi-agent')) {
+  if (!authoritative.executorNames.includes('pi')) {
     throw new Error(
-      `Smoke failed: pi-research expected a completed pi-agent receipt, observed ${authoritative.executorNames.join(', ') || 'none'}`,
+      `Smoke failed: pi-research expected a completed pi receipt, observed ${authoritative.executorNames.join(', ') || 'none'}`,
     );
   }
   return {
@@ -766,7 +766,12 @@ export function runSmoke(rawArgs = process.argv.slice(2), env = process.env) {
       throw new Error(`Smoke failed: current Runtime config does not exist: ${runtimeConfigPath}`);
     }
 
-    bootstrapExecutor({ executorCommand, executorHome, repoRoot });
+    bootstrapExecutor({
+      executorCommand,
+      executorHome,
+      repoRoot,
+      preserveExistingConfig: !ownsExecutorHome,
+    });
     writeFileSync(scriptPath, buildScenarioScript(scenario));
 
     if (env.METACLAW_SMOKE_SKIP_BUILD !== 'true') {
@@ -946,9 +951,8 @@ function runDockerSmoke(rawArgs, env) {
       '-e', 'METACLAW_SMOKE_SCRIPT_DIR=/smoke/script',
       '-e', 'METACLAW_SMOKE_WORKDIR=/workspace',
       '-e', 'METACLAW_SMOKE_MANAGED_BY_HOST=true',
-      '-e', 'METACLAW_HOME=/data/metaclaw',
+      '-e', 'METACLAW_HOME=/data/anyfusion/runtime',
       '-e', `METACLAW_PLANNER_TIMEOUT_MS=${plannerTimeoutMs}`,
-      '-e', 'METACLAW_EXECUTOR_BACKEND=worktree',
       runtimeImage,
       'node', '/app/scripts/smoke-metaclaw-real-task.mjs',
       ...rawArgs,

@@ -1,6 +1,6 @@
 # ADR-0018: Supported Routing Contracts and Unified Executor Definitions
 
-- Status: Accepted; registry authority amended 2026-08-08; module ownership clarified by ADR-0020
+- Status: Accepted; registry authority amended 2026-08-08 and active-snapshot projection amended 2026-08-10; module ownership clarified by ADR-0020
 - Date: 2026-07-16
 - Scope: host-level Executor definitions, capabilities, profiles, bindings, verification and controlled projections
 
@@ -16,7 +16,7 @@ A `Routing Capability` is a supported routing contract used to optimize AgentCla
 
 Each Capability has a stable ID, delivery contract, required affordances, recovery-safety level and minimum permission profile. Each Profile has discovery commands, one driver, default description and suggested capabilities. Each Executor has a stable ID, non-empty description, at least one controlled Capability, at least one primary use case, enablement and an installation binding. Strengths, weaknesses, risk, domains, input/output types, avoid-use cases and affinity are optional routing metadata.
 
-An installation binding declares an absolute binary path, version probe, driver, absolute private runtime home, environment-file references, inherited environment variable names, confirmed effective permission profile and supported backends. Docker support additionally requires an immutable image reference and `sha256:` image ID. Configuration never stores credential values. The generic `cli-session` driver additionally declares initial arguments, resume arguments, session-ID extraction, optional final-output extraction, timeout and termination signal. Codex, Pi and Hermes use dedicated drivers; unknown CLIs may use `cli-session`.
+An installation binding declares an absolute binary path, version probe, driver, absolute private runtime home, environment-file references, inherited environment variable names and confirmed effective permission profile. Configuration never stores credential values. Runtime launches that binding as a child process in the assigned worktree. The generic `cli-session` driver additionally declares initial arguments, resume arguments, session-ID extraction, optional final-output extraction, timeout and termination signal. Codex, Pi and Hermes use dedicated drivers; unknown CLIs may use `cli-session`.
 
 Loading produces one immutable `ExecutorRegistrySnapshot` identified by a SHA-256 `configDigest`. It exposes four controlled projections:
 
@@ -26,6 +26,14 @@ Loading produces one immutable `ExecutorRegistrySnapshot` identified by a SHA-25
 - Runtime: driver, absolute binary path, private home, environment sources, permissions, backend binding and session contract.
 
 All four projections are created from the same loaded version and Executor set. A failed reload retains the prior valid snapshot. Manual YAML changes take effect only after explicit reload or restart. Any configuration digest change makes existing verification stale.
+
+The live Session/Application Shell owns the active loaded snapshot. The
+separate Planner MCP process reads the current Planner-safe projection through
+the existing read-only Planner Host Protocol instead of creating its own
+long-lived Registry loader. Kernel and Runtime consume projections from the
+same Session-owned snapshot. Every production execution entry requires the
+verified Runtime binding; AgentClass names and process environment are not
+fallback binding sources.
 
 Registration, discovery and verification are one application service shared by CLI, slash commands and AnyFusion-Pi. Known profiles discover Codex, Pi and Hermes paths and versions but require user confirmation. Verification runs in a temporary Git workspace and isolated runtime home, checks version and output bounds, sends a random first challenge, extracts the session ID, resumes the same session with a second challenge, and validates cwd/home isolation, timeout, termination and normalized failure. Only a successful verification may atomically replace YAML, store the `executor_id + config_digest` verification fact, enable the Executor and refresh the snapshot.
 

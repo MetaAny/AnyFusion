@@ -70,9 +70,6 @@ function genericExecutor(root: string): ExecutorDefinition {
       environmentFiles: [],
       inheritEnvironment: ['PATH'],
       effectivePermissionProfile: 'workspace-engineering',
-      backendSupport: ['worktree'],
-      dockerImageRef: null,
-      dockerImageId: null,
       sessionProtocol: {
         initialArgs: ['start', '--prompt', '{prompt}'],
         resumeArgs: ['resume', '{sessionId}', '--prompt', '{prompt}'],

@@ -8,7 +8,7 @@ It is built for teams who need agents to do more than answer the current turn. A
 
 > Current implementation baseline (2026-08-10): PlanningAgentPlan v7, Work
 > Graph v6, Kernel event/snapshot/decision contract v5, Completion Protocol v3,
-> fresh-only SQLite schema v33 with no pre-release upgrade path, one explicit
+> fresh-only SQLite schema v34 with no pre-release upgrade path, one explicit
 > Project repository, user-approved whole-branch publication, and one
 > digest-bound Executor Registry Snapshot sourced from
 > `$ANYFUSION_CONFIG_HOME/executors.yaml`.
@@ -63,7 +63,7 @@ flowchart LR
   Publication --> Delivery[Delivery and UI<br/>TUI progress, Feishu, files, preview links]
   Delivery --> User
 
-  Session <--> Store[(Local SQLite schema 33<br/>projects, tasks, approvals,<br/>work units, events, memory)]
+  Session <--> Store[(Local SQLite schema 34<br/>projects, tasks, approvals,<br/>work units, events, memory)]
   Loop --> Decisions[(kernel_decisions)]
   Graph <--> Store
   Attempt <--> Store
@@ -184,10 +184,9 @@ availability, and recovery remain explicit Kernel policy.
 AnyFusion initializes `$ANYFUSION_CONFIG_HOME/executors.yaml` with controlled
 Capabilities and discovery Profiles for Codex, Pi and Hermes. No Executor is
 routable merely because its command is installed. It must be registered,
-verified for the current configuration digest and enabled. The default Runtime
-executes verified bindings as child processes in the Subtask worktree; Docker
-remains an explicit compatibility backend when the binding includes an
-immutable image:
+verified for the current configuration digest and enabled. Runtime executes
+every verified binding as a child process in the assigned Subtask worktree.
+Docker only packages the single Ubuntu Runtime on Windows/macOS:
 
 | Executor | Command | Best For | Install Requirement |
 | --- | --- | --- | --- |
@@ -212,16 +211,13 @@ Required:
 - Node.js `>=22.19.0`.
 - npm.
 - Git.
-- A Unix-like shell environment. macOS and Linux are primary targets; Windows users should use WSL2 for the supported install path.
+- Ubuntu 24.04. Windows users run the same Ubuntu Runtime through Docker.
 - Native build tooling for `better-sqlite3`.
 
 Recommended native build tools:
 
 ```bash
-# macOS
-xcode-select --install
-
-# Ubuntu / Debian
+# Ubuntu 24.04
 sudo apt-get update
 sudo apt-get install -y build-essential python3 make g++
 ```
@@ -230,8 +226,8 @@ Executor prerequisites:
 
 - Worktree mode: install and authenticate each CLI, then register its real
   absolute binary path and private source runtime home.
-- Docker compatibility mode: build or pull the image referenced by the binding
-  and record its immutable `sha256:` image ID.
+- Windows development uses the same registered Linux CLIs inside the one Ubuntu
+  Runtime container; no per-Executor image is registered or built.
 
 Feishu prerequisites, only if you use Feishu Gateway integration:
 
@@ -264,10 +260,10 @@ The install is usable when `anyfusion --help` prints the CLI help and `npm run s
 ```text
 MetaClaw native Planner session smoke passed.
 Scenario: planner-session
-Native session: /var/lib/metaclaw/codex/planner/sessions/...jsonl
+Native session: ~/.local/share/anyfusion/runtime/planner-sessions/...jsonl
 ```
 
-`setup.sh` installs AnyFusion itself, builds the local CLI, links `anyfusion`, creates `~/.local/share/anyfusion/config.yaml`, and detects installed executors on `PATH`.
+`setup.sh` installs AnyFusion itself, builds the local CLI, links `anyfusion`, creates `~/.local/share/anyfusion/runtime/config.yaml`, and detects installed executors on `PATH`.
 
 In an interactive terminal it shows the detected executor list, lets you choose which executors to connect, and asks which one should be the default. If a selected auto-installable executor is missing, setup can install it for you. Codex CLI is the default fallback when no executor is available:
 
@@ -285,7 +281,7 @@ Install checklist:
 
 - `node --version` is `>=22.19.0`.
 - `./setup.sh` finishes with "安装完成".
-- `~/.local/share/anyfusion/config.yaml` exists.
+- `~/.local/share/anyfusion/runtime/config.yaml` exists.
 - `anyfusion --help` works from a new shell.
 - Each intended Executor appears as `enabled / verified` in
   `anyfusion executor list`.
@@ -294,10 +290,10 @@ Install checklist:
 Setup options:
 
 ```bash
-# Do not overwrite an existing ~/.local/share/anyfusion/config.yaml
+# Do not overwrite an existing ~/.local/share/anyfusion/runtime/config.yaml
 METACLAW_OVERWRITE_CONFIG=false ./setup.sh
 
-# Rewrite ~/.local/share/anyfusion/config.yaml
+# Rewrite ~/.local/share/anyfusion/runtime/config.yaml
 METACLAW_OVERWRITE_CONFIG=true ./setup.sh
 
 # Build AnyFusion but skip npm link
@@ -328,54 +324,25 @@ If `anyfusion` is not found after setup, first open a new shell so your `PATH` p
 
 ## Windows Install
 
-The recommended Windows path is WSL2 with Ubuntu. This gives AnyFusion the Unix-like shell, native build tooling, sockets, process behavior, and executor compatibility that the runtime expects.
+Windows is the Docker orchestration host. Runtime, Planner, Codex and Pi all
+run inside the same Ubuntu 24.04 Runtime container, so Windows and the Ubuntu
+server use the same application logic and Linux process behavior.
 
-Install WSL2 from PowerShell:
+Keep `AnyFusion` and the sibling `AnyFusion-Pi` checkout side by side, create
+the three provider files, then run from PowerShell:
 
 ```powershell
-wsl --install -d Ubuntu
+Copy-Item docker\planner-pi.env.example docker\planner-pi.env
+Copy-Item docker\executor-codex.env.example docker\executor-codex.env
+Copy-Item docker\executor-pi.env.example docker\executor-pi.env
+.\docker\shell.ps1 -Start
+.\docker\shell.ps1 -SetupSsh
+.\docker\shell.ps1
 ```
 
-Restart Windows if prompted, then open Ubuntu and install prerequisites inside WSL:
-
-```bash
-sudo apt-get update
-sudo apt-get install -y git curl build-essential python3 make g++
-
-curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
-sudo apt-get install -y nodejs
-
-node --version
-npm --version
-git --version
-```
-
-Install and verify AnyFusion inside the WSL Ubuntu shell:
-
-```bash
-git clone https://github.com/MetaAny/AnyFusion.git
-cd AnyFusion
-./setup.sh
-anyfusion --help
-npm run smoke:anyfusion
-```
-
-If setup installs Codex CLI, open it once inside WSL and finish login before running real tasks:
-
-```bash
-codex
-```
-
-Windows install checklist:
-
-- Run AnyFusion commands inside WSL Ubuntu, not Windows PowerShell.
-- Keep the repository under the WSL filesystem, for example `~/AnyFusion`, not `/mnt/c/...`, for better file and SQLite performance.
-- Confirm `node --version` is `>=22.19.0`.
-- Confirm `anyfusion --help` works in a fresh WSL shell.
-- Confirm each intended Executor is `enabled / verified` in WSL.
-- Confirm `npm run smoke:anyfusion` completes successfully
-
-Native Windows PowerShell is not the primary supported runtime today. Advanced users can try direct development with Node.js 22.19+, Git, Visual Studio Build Tools, `npm install`, `npm run build`, and `node dist/index.js`, but `setup.sh`, `anyfusion.sh`, Unix socket Gateway behavior, and downstream executor CLIs may not behave the same way. Use the unified Docker runtime for the supported Windows path, or WSL2 for direct Linux development.
+Use `-Rebuild` after source changes. Runtime state and Executor configuration
+persist under `/data/anyfusion`, and the default Project persists at
+`/workspace/default`. Native Windows Node.js is not a supported Runtime path.
 
 ## Install Executors
 
@@ -429,6 +396,12 @@ Only success atomically replaces YAML, records verification for the exact
 `configDigest`, enables the Executor and refreshes the snapshot. A manual YAML
 change requires `/executor reload` or restart and makes prior verification
 stale. Invalid reload keeps the previous valid snapshot active.
+
+The live Session owns that active snapshot. Planner MCP reads its current
+Planner-safe projection through the existing read-only Planner Host socket;
+Kernel and Runtime consume projections from the same loaded snapshot and
+digest. Runtime execution has no AgentClass-name or environment-derived binding
+fallback.
 
 The Phase 5 permission product boundary is the sandbox profile plus durable request/grant/use audit budgets. `use_capability` atomically consumes attempt, expiry, call and byte limits, but it is not a universal operation broker and does not prove fine-grained mediation of every native file, network or external action. Container mounts, egress profile and resource leases remain the implemented enforcement boundaries.
 
@@ -497,9 +470,8 @@ which codex
 codex --help
 ```
 
-In worktree mode, Codex runs through the dedicated `codex` driver with an
-attempt-private materialized `CODEX_HOME`. In Docker compatibility mode, the
-registry binding must provide the immutable image reference and ID.
+Codex runs through the dedicated `codex` driver in the assigned worktree with
+an attempt-private materialized `CODEX_HOME`.
 
 ### Pi Agent
 
@@ -517,9 +489,8 @@ AnyFusion calls it as:
 pi -p "<prompt>"
 ```
 
-Pi attempts use the same execution seam in either backend. Docker compatibility
-mode runs them in `metaclaw-executor-pi:phase5`; worktree mode runs the trusted
-`pi` binary in the current Subtask worktree.
+Pi attempts run the registered `pi` binary in the current Subtask worktree
+through the same execution seam as every other Executor.
 
 ## Run
 
@@ -541,46 +512,45 @@ The default command launches the pinned AnyFusion-Pi Planner TUI:
 - Bridge failure, stale data, or malformed data degrades Task projection and proposal submission explicitly; it never pretends a Task was created and does not terminate ordinary conversation.
 - Set `METACLAW_STANDBY_TUI=1` to start the preserved Ink implementation for fallback investigation. That module is not the default and receives no migration feature work.
 
-Or use the project helper:
+Or use the repository launcher without installing the global link:
 
 ```bash
-./anyfusion.sh start
+./anyfusion --project /path/to/project
 ```
 
 On first launch, AnyFusion creates its local state under:
 
 ```text
 ~/.local/share/anyfusion/
-├── config.yaml
-├── metaclaw.db
-└── gateway.sock
+└── runtime/
+    ├── config.yaml
+    ├── metaclaw.db
+    └── gateway.sock
 ```
 
 Connect a second terminal to the same runtime:
 
 ```bash
-./anyfusion.sh connect
+anyfusion --connect
 ```
 
-Runtime utilities:
+Run the Gateway in the foreground:
 
 ```bash
-./anyfusion.sh status
-./anyfusion.sh logs
-./anyfusion.sh logs -f
-./anyfusion.sh restart
-./anyfusion.sh stop
+anyfusion gateway run --project /path/to/project
 ```
 
-Install or manage AnyFusion as a user-level service:
+Gateway setup and diagnostics remain explicit CLI operations:
 
 ```bash
-./anyfusion.sh gateway install
-./anyfusion.sh gateway start
-./anyfusion.sh gateway status
-./anyfusion.sh gateway restart
-./anyfusion.sh gateway stop
+anyfusion gateway setup
+anyfusion gateway doctor
+anyfusion gateway pairing list
 ```
+
+The repository no longer ships a second background-process launcher or a
+generated systemd service. Keep the Gateway in the foreground for the Demo, or
+wrap `anyfusion gateway run` with the server's existing process supervisor.
 
 Direct Gateway modes:
 
@@ -595,17 +565,16 @@ The repository-root `anyfusion` command is the default launcher on this Linux
 server. It builds MetaClaw and the sibling AnyFusion-Pi repository and starts
 MetaClaw plus Planner as separate host Node.js processes. Verified registry
 bindings reuse their installed host commands and run in managed Subtask
-worktrees. Docker is not used by this startup path unless a binding and backend
-explicitly select compatibility mode.
+worktrees. Docker is not used by this startup path.
 
 Each attempt receives a driver-materialized private home and an attempt-scoped
 model gateway token when the driver supports that evidence path. Runtime state
-is under `~/.local/share/anyfusion`; the Executor registry is under
+is under `~/.local/share/anyfusion/runtime`; the Executor registry is under
 `$ANYFUSION_CONFIG_HOME`, normally `~/.config/anyfusion`. Use
 `anyfusion --no-build` to reuse current outputs and
 `anyfusion smoke --scenario artifact` for the native Planner-to-Executor gate.
-The existing Runtime Dockerfile and `docker/shell.ps1` remain for CI,
-cross-platform deployment and explicit compatibility-backend validation.
+The Runtime Dockerfile and `docker/shell.ps1` provide the same Ubuntu runtime
+for CI and Windows-hosted development.
 
 Local validation covers TypeScript lint/build, focused Planner RPC and host-protocol tests, the Docker Vitest suite, Unix-socket bridge behavior, Session validation, and unchanged Kernel/Execution/Executor regressions. Linux container smoke additionally verifies the single Node 22.19+ executable, isolated application dependency trees and processes, absence of an embedded Planner Node, Planner RPC JSONL, entrypoint config separation, and the final unified image.
 
@@ -614,7 +583,7 @@ Local validation covers TypeScript lint/build, focused Planner RPC and host-prot
 Application and integration settings remain in:
 
 ```bash
-~/.local/share/anyfusion/config.yaml
+~/.local/share/anyfusion/runtime/config.yaml
 ```
 
 Example:
@@ -691,7 +660,7 @@ Export the Feishu app secret before starting the runtime:
 
 ```bash
 export FEISHU_APP_SECRET="your Feishu app secret"
-./anyfusion.sh start
+anyfusion gateway run --project /path/to/project
 ```
 
 ## Feishu Gateway Delivery And Markdown Preview
@@ -848,12 +817,11 @@ AnyFusion can represent complex requests as a work graph instead of a single und
 
 In the active session path, proposed nodes become persisted Work Graph v6
 `Subtask` records only after a durable `authorize_task_plan` application. The
-unreleased product uses fresh-only SQLite schema v33; every v32 or older
+unreleased product uses fresh-only SQLite schema v34; every v33 or older
 pre-release schema is rejected with its exact path, with no migration,
-automatic deletion or dual-read path. Schema 33 retains the schema 32 Executor
-Registry and purge baseline, adds durable Projects, requires Task `project_id`,
-and records exact publication base, permission request, changed paths and
-approval status while preserving the
+automatic deletion or dual-read path. Schema 34 retains the Project,
+publication, Executor Registry and purge baseline while replacing Docker-only
+attempt fields with the worktree process runtime handle and child PID. It preserves the
 durable inbox/application/outbox, graph revisions,
 resource/workspace/permission/sandbox records, dispatch/publication/immutable
 merge audit, cancellation cleanup, lease revocation, generation replan,
@@ -880,8 +848,7 @@ An Executor is who does the work. A Skill is the method, knowledge, or operating
 
 Executors are registry-bound AgentClass compatibility values such as confirmed
 Codex, Pi, Hermes or generic session CLIs.
-They may be launched as trusted child processes in a managed worktree or as
-Docker-sandboxed attempts during compatibility operation. An executor
+They are launched as trusted child processes in a managed worktree. An executor
 determines the model, toolchain, permissions, runtime environment, context
 window, file access, non-interactive command, cost profile, and reliability
 boundary.

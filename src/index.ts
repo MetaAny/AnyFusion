@@ -71,17 +71,6 @@ async function main() {
     return;
   }
 
-  if (
-    cliArgs.gatewayCommand === 'install'
-    || cliArgs.gatewayCommand === 'start'
-    || cliArgs.gatewayCommand === 'stop'
-    || cliArgs.gatewayCommand === 'restart'
-    || cliArgs.gatewayCommand === 'status'
-  ) {
-    console.log(`请使用 ./metaclaw.sh ${cliArgs.gatewayCommand} 管理后台进程。`);
-    return;
-  }
-
   // 2. 加载配置
   const configPath = resolve(metaclawDir, 'config.yaml');
   const config = loadConfig(configPath);
@@ -207,7 +196,7 @@ async function main() {
       });
     } finally {
       clearInterval(blockedRecheckTimer);
-      plannerTuiSession.dispose();
+      await plannerTuiSession.shutdown();
       await Promise.all([
         plannerHost.stop(),
         nativeGatewayServer.stop(),
@@ -272,7 +261,7 @@ async function main() {
           markdownPreviewServer?.stop() ?? Promise.resolve(),
         ]);
       } finally {
-        gatewaySession?.dispose();
+        await gatewaySession?.shutdown();
         gatewaySession = null;
       }
     })();
@@ -280,7 +269,7 @@ async function main() {
   };
   process.once('exit', () => {
     if (gatewayBlockedRecheckTimer) clearInterval(gatewayBlockedRecheckTimer);
-    gatewaySession?.dispose();
+    void gatewaySession?.shutdown();
     void gatewayFeishuBridge?.stop();
     void markdownPreviewServer?.stop();
     void gatewayServer.stop();

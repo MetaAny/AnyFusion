@@ -11,10 +11,12 @@ import type {
   SessionSnapshot,
 } from '../../src/session/metaclaw-session.js';
 import { PlannerTuiBridge, type PlannerTuiBridgeSession } from '../../src/tui-bridge/planner-tui-bridge.js';
+import { readPlannerHostRegistryProjection } from '../../src/planning/planner-host-registry-client.js';
 
 class FakeSession implements PlannerTuiBridgeSession {
   readonly executorResults: PlannerTuiExecutorResult[] = [];
   readonly permissionRequests: PlannerTuiPermissionRequest[] = [];
+  registryDigest = 'registry-digest-1';
   private readonly listeners = new Set<(snapshot: SessionSnapshot) => void>();
   readonly submitPlannerProposal = vi.fn(async (submission: PlannerProposalSubmission): Promise<PlannerProposalResult> => ({
     status: 'accepted',
@@ -74,7 +76,13 @@ class FakeSession implements PlannerTuiBridgeSession {
         },
         plannerState: { status: 'idle' }, recentOutput: [],
       },
-      taskPool: [], executorStatuses: [],
+      taskPool: [],
+      executorRegistry: {
+        configDigest: this.registryDigest,
+        planner: { version: 3, configDigest: this.registryDigest, capabilities: [], executors: [] },
+        tui: [],
+      },
+      executorStatuses: [], smokeRunAudits: [],
     };
   }
 
@@ -101,6 +109,20 @@ afterEach(async () => {
 });
 
 describe('PlannerTuiBridge shared Proposal Host', () => {
+  it('returns the current Session-owned Registry projection to a long-lived Planner reader', async () => {
+    const socketPath = join(tmpdir(), `planner-host-${process.pid}-${Date.now()}-registry.sock`);
+    const session = new FakeSession();
+    const bridge = new PlannerTuiBridge({ socketPath });
+    bridges.push(bridge);
+    bridge.registerSession('session-1', session);
+    await bridge.start();
+
+    const readCurrent = () => readPlannerHostRegistryProjection({ socketPath, sessionId: 'session-1' });
+    expect((await readCurrent()).configDigest).toBe('registry-digest-1');
+    session.registryDigest = 'registry-digest-2';
+    expect((await readCurrent()).configDigest).toBe('registry-digest-2');
+  });
+
   it('binds hello to a registered session and returns the structured authoritative result', async () => {
     const socketPath = join(tmpdir(), `planner-host-${process.pid}-${Date.now()}.sock`);
     const session = new FakeSession();

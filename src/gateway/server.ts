@@ -105,11 +105,11 @@ export class MetaclawGatewayServer {
 
     socket.on('close', () => {
       unsubscribe();
-      session.dispose();
+      void session.shutdown();
     });
     socket.on('error', () => {
       unsubscribe();
-      session.dispose();
+      void session.shutdown();
     });
 
     send({ type: 'hello', sessionId });
