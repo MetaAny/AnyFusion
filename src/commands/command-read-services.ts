@@ -1,10 +1,11 @@
 import type Database from 'better-sqlite3';
 import type { WorkUnitEvent } from '../core/types.js';
 import type { ExecutorRegistrationInspection } from '../execution/execution-runtime.js';
-import { AgentClassRepo } from '../storage/agent-class-repo.js';
 import { KernelDecisionRepo } from '../storage/kernel-decision-repo.js';
 import { TaskEventRepo } from '../storage/task-event-repo.js';
 import { WorkUnitRepo } from '../storage/work-unit-repo.js';
+import type { ExecutorRegistrySnapshot } from '../executor/executor-registry-types.js';
+import { createTestExecutorRegistrySnapshot } from '../executor/test-executor-registry.js';
 
 const TASK_HISTORY_LIMIT = 20;
 const ACTIVE_WORK_UNIT_STATES = new Set(['starting', 'claimed', 'running', 'waiting']);
@@ -50,7 +51,6 @@ type TaskHistoryEntry =
   | { kind: 'task-event'; createdAt: string; event: ReturnType<TaskEventRepo['listByTask']>[number] };
 
 export class CommandReadServices {
-  private readonly agentClasses: AgentClassRepo;
   private readonly kernelDecisions: KernelDecisionRepo;
   private readonly taskEvents: TaskEventRepo;
   private readonly workUnits: WorkUnitRepo;
@@ -58,8 +58,8 @@ export class CommandReadServices {
   constructor(
     private readonly db: Database.Database,
     private readonly executorRuntime: ExecutorRuntimeInspector,
+    private readonly getExecutorRegistrySnapshot: () => ExecutorRegistrySnapshot = () => createTestExecutorRegistrySnapshot(),
   ) {
-    this.agentClasses = new AgentClassRepo(db);
     this.kernelDecisions = new KernelDecisionRepo(db);
     this.taskEvents = new TaskEventRepo(db);
     this.workUnits = new WorkUnitRepo(db);
@@ -100,41 +100,41 @@ export class CommandReadServices {
   }
 
   executorDetails(executorName: string): string {
-    const agentClass = this.agentClasses.findByName(executorName);
-    if (!agentClass) {
-      return `Error: Executor AgentClass is not registered: ${executorName}`;
+    const snapshot = this.getExecutorRegistrySnapshot();
+    const executor = snapshot.executors.get(executorName);
+    const status = snapshot.tui.find(item => item.id === executorName);
+    if (!executor || !status) {
+      return `Error: Executor is not registered: ${executorName}`;
     }
 
     const registration = this.executorRuntime.inspectExecutorRegistration(executorName);
     const activeWorkUnits = this.workUnits.listByAgentClass(executorName)
       .filter(unit => ACTIVE_WORK_UNIT_STATES.has(unit.state));
-    const affinity = Object.entries(agentClass.intentAffinity)
+    const affinity = Object.entries(executor.affinity)
       .map(([intent, score]) => `${intent}:${score}`)
       .join(', ') || '-';
-    const runtime = [agentClass.runtimeCommand, ...agentClass.runtimeArgs].filter(Boolean).join(' ') || '-';
     const lines = [
-      `Executor AgentClass：${agentClass.name}`,
-      `  kind: ${agentClass.kind}`,
-      '  配置状态: 已配置',
+      `Executor：${executor.id}`,
+      `  config digest: ${snapshot.configDigest}`,
+      `  配置状态: ${status.verification}`,
+      `  enabled: ${executor.enabled ? '是' : '否'}`,
       `  runtime binding: ${registration.bindingSource}${registration.adapterName ? ` (${registration.adapterName})` : ''}`,
       `  runtime configured: ${registration.configured ? '是' : '否'}`,
-      `  domains: ${formatList(agentClass.domains)}`,
-      `  capabilities: ${formatList(agentClass.capabilities)}`,
-      `  input types: ${formatList(agentClass.inputTypes)}`,
-      `  output types: ${formatList(agentClass.outputTypes)}`,
-      `  strengths: ${formatList(agentClass.strengths)}`,
-      `  weaknesses: ${formatList(agentClass.weaknesses)}`,
-      `  primary use cases: ${formatList(agentClass.primaryUseCases)}`,
-      `  avoid use cases: ${formatList(agentClass.avoidUseCases)}`,
+      `  description: ${executor.description}`,
+      `  domains: ${formatList(executor.domains)}`,
+      `  capabilities: ${formatList(executor.capabilities)}`,
+      `  input types: ${formatList(executor.inputTypes)}`,
+      `  output types: ${formatList(executor.outputTypes)}`,
+      `  strengths: ${formatList(executor.strengths)}`,
+      `  weaknesses: ${formatList(executor.weaknesses)}`,
+      `  primary use cases: ${formatList(executor.primaryUseCases)}`,
+      `  avoid use cases: ${formatList(executor.avoidUseCases)}`,
       `  intent affinity: ${affinity}`,
-      `  risk: ${agentClass.riskLevel}`,
-      `  harness/model: ${agentClass.harness ?? '-'} / ${agentClass.model ?? '-'}`,
-      `  skills: ${formatList(agentClass.skills)}`,
-      `  MCP servers: ${formatList(agentClass.mcpServers)}`,
-      `  plugins: ${formatList(agentClass.plugins)}`,
-      `  runtime command: ${runtime}`,
-      `  runtime check: ${agentClass.runtimeCheckCommand ?? '-'}`,
-      `  project URL: ${agentClass.projectUrl ?? '-'}`,
+      `  risk: ${executor.riskLevel}`,
+      `  driver: ${executor.binding.driver}`,
+      `  runtime command: ${executor.binding.binaryPath}`,
+      `  runtime home: ${executor.binding.runtimeHome}`,
+      `  permission profile: ${executor.binding.effectivePermissionProfile}`,
       '',
       `当前工作的 WorkUnits (${activeWorkUnits.length})：`,
       ...(activeWorkUnits.length > 0

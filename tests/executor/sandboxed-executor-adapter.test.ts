@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -8,6 +8,10 @@ import {
   EXECUTOR_RESULT_FILE_NAME,
   SandboxedExecutorAdapter,
 } from '../../src/executor/sandboxed-executor-adapter.js';
+import {
+  runtimeContractForDriver,
+  type RuntimeExecutorBinding,
+} from '../../src/executor/executor-registry-types.js';
 
 describe('SandboxedExecutorAdapter provider isolation', () => {
   it('passes only the attempt gateway token instead of provider credentials', async () => {
@@ -151,6 +155,72 @@ describe('SandboxedExecutorAdapter provider isolation', () => {
     }
   });
 
+  it('runs Pi response-only correction without tools or a Task sandbox', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'metaclaw-response-only-pi-'));
+    const envFile = join(directory, 'executor-pi.env');
+    const piHome = join(directory, 'pi-home');
+    const piAgentHome = join(piHome, '.pi', 'agent');
+    const binDir = join(directory, 'bin');
+    const fakePi = join(binDir, 'pi');
+    const capturePath = join(directory, 'response-only-args.json');
+    mkdirSync(piAgentHome, { recursive: true });
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(envFile, [
+      'OPENAI_API_KEY=provider-secret',
+      'OPENAI_BASE_URL=https://provider.invalid/v1',
+    ].join('\n'));
+    writeFileSync(join(piAgentHome, 'models.json'), JSON.stringify({
+      providers: { anyint: { baseUrl: 'https://provider.invalid/v1' } },
+    }));
+    writeFileSync(join(piAgentHome, 'settings.json'), '{}');
+    writeFileSync(fakePi, `#!/usr/bin/env node
+const { writeFileSync } = require('node:fs');
+writeFileSync(process.env.CAPTURE_PATH, JSON.stringify({ args: process.argv.slice(2), home: process.env.HOME }));
+process.stdout.write(JSON.stringify({
+  type: 'message_end',
+  message: {
+    role: 'assistant',
+    content: [{ type: 'text', text: 'Corrected report.\\n<!-- metaclaw:completion:v3 -->\\n{"evidence":["research complete"],"noChangeReason":null}' }],
+  },
+}) + '\\n');
+`);
+    chmodSync(fakePi, 0o755);
+    vi.stubEnv('METACLAW_PI_EXECUTOR_ENV_FILE', envFile);
+    vi.stubEnv('METACLAW_EXECUTOR_PI_HOME', piHome);
+    vi.stubEnv('CAPTURE_PATH', capturePath);
+    const { sandbox, create } = sandboxPort('worktree');
+    const adapter = new SandboxedExecutorAdapter(
+      agentClass(),
+      piRuntimeBinding(fakePi, piHome, envFile),
+      sandbox,
+    );
+
+    try {
+      const result = await adapter.executeResponseOnly({
+        prompt: 'Correct only the final response format.',
+        maxBytes: 128 * 1024,
+      });
+
+      expect(adapter.supportsResponseOnly).toBe(true);
+      expect(result).toMatchObject({ success: true, exitCode: 0 });
+      expect(result.output).toContain('<!-- metaclaw:completion:v3 -->');
+      expect(create).not.toHaveBeenCalled();
+      const capture = JSON.parse(readFileSync(capturePath, 'utf8'));
+      expect(capture.args).toEqual(expect.arrayContaining([
+        'text',
+        '--no-session',
+        '--no-tools',
+        '--no-context-files',
+        'Correct only the final response format.',
+      ]));
+      expect(capture.home).not.toBe(piHome);
+      expect(existsSync(capture.home)).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it('renders a scoped Codex home against the attempt model gateway in worktree mode', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'metaclaw-worktree-codex-provider-'));
     const envFile = join(directory, 'executor-codex.env');
@@ -218,7 +288,7 @@ describe('SandboxedExecutorAdapter provider isolation', () => {
     }
   });
 
-  it('rejects noncanonical AgentClasses in the worktree backend', async () => {
+  it('allows a registered generic CLI binding in the worktree backend', async () => {
     const { sandbox, create } = sandboxPort('worktree');
     const adapter = new SandboxedExecutorAdapter({
       ...agentClass(),
@@ -228,11 +298,8 @@ describe('SandboxedExecutorAdapter provider isolation', () => {
 
     const result = await adapter.execute(executorInput('.'));
 
-    expect(result).toMatchObject({
-      success: false,
-      failure: { code: 'worktree_executor_not_canonical' },
-    });
-    expect(create).not.toHaveBeenCalled();
+    expect(result.success).toBe(true);
+    expect(create).toHaveBeenCalledOnce();
   });
 
   it('runs the same AgentClass concurrently and aborts only the requested attempt', async () => {
@@ -323,6 +390,29 @@ function sandboxRecord(imageId: string) {
   return {
     containerId: 'container_1', imageId, status: 'created' as const,
     exitCode: null, labels: {},
+  };
+}
+
+function piRuntimeBinding(
+  binaryPath: string,
+  runtimeHome: string,
+  environmentFile: string,
+): RuntimeExecutorBinding {
+  return {
+    id: 'pi-agent',
+    configDigest: 'test-config',
+    driver: 'pi',
+    ...runtimeContractForDriver('pi', null),
+    binaryPath,
+    versionArgs: ['--version'],
+    runtimeHome,
+    environmentFiles: [environmentFile],
+    inheritEnvironment: [],
+    permissionProfileId: 'public-web-research',
+    backendSupport: ['worktree'],
+    dockerImageRef: null,
+    dockerImageId: null,
+    sessionProtocol: null,
   };
 }
 

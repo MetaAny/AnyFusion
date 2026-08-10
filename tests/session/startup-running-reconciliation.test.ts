@@ -11,9 +11,7 @@ import type { Config } from '../../src/core/types.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { seedPersistedWorkGraph } from '../support/persisted-work-graph.js';
 import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
-import { AgentClassRepo } from '../../src/storage/agent-class-repo.js';
 import { WorkUnitRepo } from '../../src/storage/work-unit-repo.js';
-import { getBuiltinExecutorAgentClasses } from '../../src/executor/builtin-executor-catalog.js';
 import { SubtaskRepo } from '../../src/storage/subtask-repo.js';
 import { KernelDispatchItemRepo } from '../../src/storage/kernel-dispatch-item-repo.js';
 import { ResourceLeaseService } from '../../src/execution/resource-lease-service.js';
@@ -102,9 +100,6 @@ describe('session startup running-task reconciliation', () => {
     seedPersistedWorkGraph(db, runningTask.id, runningTask.goal);
     taskEngine.transition(runningTask.id, 'ready');
     taskEngine.transition(runningTask.id, 'running');
-    new AgentClassRepo(db).upsert(
-      getBuiltinExecutorAgentClasses().find(item => item.name === 'codex-cli')!,
-    );
     const workUnits = new WorkUnitRepo(db);
     workUnits.upsert({
       id: 'executor-recovery-blocked',
@@ -160,9 +155,6 @@ describe('session startup running-task reconciliation', () => {
     const subtaskRepo = new SubtaskRepo(db);
     const subtask = subtaskRepo.listActiveByTask(runningTask.id)[0]!;
     subtaskRepo.updateStatus(subtask.id, 'running');
-    new AgentClassRepo(db).upsert(
-      getBuiltinExecutorAgentClasses().find(item => item.name === 'codex-cli')!,
-    );
     const attemptId = 'attempt-terminal-seal-blocked';
     const workUnitId = 'executor-terminal-seal-blocked';
     const workUnits = new WorkUnitRepo(db);

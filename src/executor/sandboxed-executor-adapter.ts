@@ -1,16 +1,19 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentClass, ExecutorResult } from '../core/types.js';
 import type { AttemptSandboxPort } from '../execution/attempt-sandbox.js';
 import { DEFAULT_ATTEMPT_SANDBOX_LIMITS } from '../execution/attempt-sandbox.js';
 import type { ExecutorAdapter, ExecutorInput } from './adapter.js';
-import { buildCodexNonInteractiveArgs } from './codex-args.js';
+import { buildCodexNonInteractiveArgs, buildCodexResumeArgs } from './codex-args.js';
 import { buildExecutorContextPrompt } from './prompt-builder.js';
 import type { AttemptSandboxRepositoryPort } from '../execution/repositories.js';
 import { buildEnvFromFile } from '../utils/env-file.js';
 import { AttemptModelGatewayServer } from '../execution/attempt-model-gateway.js';
 import { normalizeExecutorFailure } from './error-utils.js';
+import { runtimeContractForDriver, type RuntimeExecutorBinding } from './executor-registry-types.js';
+import { extractExecutorFinalOutput, extractExecutorSessionId } from './executor-session-output.js';
 
 const EXECUTOR_PROVIDER_ENV_KEYS = [
   'OPENAI_API_KEY',
@@ -24,6 +27,8 @@ const SANDBOX_SAFE_PROVIDER_ENV_KEYS = [
   'PI_TELEMETRY',
 ] as const;
 
+const RESPONSE_ONLY_TIMEOUT_MS = 120_000;
+
 export const EXECUTOR_RESULT_FILE_NAME = 'executor-final-response.md';
 
 interface NativeExecutorEnvironment {
@@ -33,15 +38,35 @@ interface NativeExecutorEnvironment {
 
 export class SandboxedExecutorAdapter implements ExecutorAdapter {
   readonly name: string;
-  readonly supportsContinuation = false;
+  readonly supportsContinuation: boolean;
+  readonly supportsResponseOnly: boolean;
   private readonly activeContainers = new Map<string, string>();
+  private readonly runtimeBinding: Readonly<RuntimeExecutorBinding>;
+  private readonly sandbox: AttemptSandboxPort;
+  private readonly repository?: AttemptSandboxRepositoryPort;
+  private readonly agentClass: AgentClass;
 
   constructor(
-    private readonly agentClass: AgentClass,
-    private readonly sandbox: AttemptSandboxPort,
-    private readonly repository?: AttemptSandboxRepositoryPort,
+    agentClass: AgentClass,
+    runtimeBindingOrSandbox: Readonly<RuntimeExecutorBinding> | AttemptSandboxPort,
+    sandboxOrRepository?: AttemptSandboxPort | AttemptSandboxRepositoryPort,
+    repository?: AttemptSandboxRepositoryPort,
   ) {
+    this.agentClass = agentClass;
+    const hasExplicitRuntimeBinding = isRuntimeBinding(runtimeBindingOrSandbox);
+    if (hasExplicitRuntimeBinding) {
+      this.runtimeBinding = runtimeBindingOrSandbox;
+      this.sandbox = sandboxOrRepository as AttemptSandboxPort;
+      this.repository = repository;
+    } else {
+      this.sandbox = runtimeBindingOrSandbox;
+      this.repository = sandboxOrRepository as AttemptSandboxRepositoryPort | undefined;
+      this.runtimeBinding = adapterLegacyBinding(agentClass, this.sandbox.kind === 'worktree');
+    }
     this.name = agentClass.name;
+    this.supportsContinuation = this.runtimeBinding.supportsSessionResume;
+    this.supportsResponseOnly = hasExplicitRuntimeBinding
+      && ['codex', 'pi'].includes(this.runtimeBinding.driver);
   }
 
   async execute(input: ExecutorInput): Promise<ExecutorResult> {
@@ -52,10 +77,10 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
       return failed(`AgentClass ${this.name} has no permission profile`, 'agent_class_sandbox_unconfigured', startedAt);
     }
     const worktreeBackend = (this.sandbox.kind ?? 'container') === 'worktree';
-    if (worktreeBackend && !['codex-cli', 'pi-agent'].includes(this.name)) {
+    if (!this.runtimeBinding.backendSupport.includes(worktreeBackend ? 'worktree' : 'docker')) {
       return failed(
-        `Worktree execution supports only canonical Codex and Pi AgentClasses: ${this.name}`,
-        'worktree_executor_not_canonical',
+        `Executor ${this.name} does not support the active backend`,
+        'executor_backend_unsupported',
         startedAt,
       );
     }
@@ -112,8 +137,8 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
         ? await this.prepareNativeExecutorEnvironment(upstreamBaseUrl, gateway.baseUrl)
         : null;
       nativeExecutorTemporaryRoot = nativeExecutor?.temporaryRoot ?? null;
-      const imageRef = this.agentClass.executionImageRef ?? `worktree:${this.name}`;
-      const resolvedImageId = this.agentClass.resolvedImageId ?? await this.sandbox.resolveImage(imageRef);
+      const imageRef = this.runtimeBinding.dockerImageRef ?? `worktree:${this.name}`;
+      const resolvedImageId = this.runtimeBinding.dockerImageId ?? await this.sandbox.resolveImage(imageRef);
       const record = await this.sandbox.create({
         attemptId: binding.attemptId,
         taskId: binding.taskId,
@@ -154,7 +179,7 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
         ],
         controlNetwork: binding.controlNetwork,
         egressMode: usesDockerProxy ? 'proxy' : 'disabled',
-        nestedSandbox: !nativePaths && this.name === 'codex-cli' ? 'codex-workspace-write' : undefined,
+        nestedSandbox: !nativePaths && this.runtimeBinding.driver === 'codex' ? 'codex-workspace-write' : undefined,
         limits: DEFAULT_ATTEMPT_SANDBOX_LIMITS,
       });
       const createdAt = new Date().toISOString();
@@ -188,10 +213,13 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
       this.repository?.update(binding.attemptId, {
         status: 'exited', exitCode, resultCollectedAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
       });
+      this.captureContinuationToken(logs, input);
       let output = logs.trim();
-      if (this.name === 'codex-cli' && exitCode === 0) {
+      if (this.runtimeBinding.resultCollector === 'result-file' && exitCode === 0) {
         output = (await readFile(resultPath, 'utf8').catch(() => logs)).trim();
       }
+      output = this.extractFinalOutput(output);
+      if (output !== logs.trim()) this.captureContinuationToken(output, input);
       if (output && !nativePaths) {
         const runtimeWorkspacePath = binding.workspacePath.replaceAll('\\', '/');
         output = output.replaceAll(/\/workspace(?=\/|[\s`"')\]}]|$)/gu, runtimeWorkspacePath);
@@ -235,18 +263,18 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
   async probe(
     previousFailure?: import('../core/kernel-failure.js').KernelFailure | null,
   ): Promise<import('./adapter.js').ExecutorProbeResult> {
-    if (this.sandbox.kind === 'worktree' && !['codex-cli', 'pi-agent'].includes(this.name)) {
+    if (!this.runtimeBinding.backendSupport.includes(this.sandbox.kind === 'worktree' ? 'worktree' : 'docker')) {
       return {
         available: false,
         failure: {
           kind: 'configuration',
           scope: 'agent_class',
-          code: 'worktree_executor_not_canonical',
-          summary: `Worktree execution supports only canonical Codex and Pi AgentClasses: ${this.name}`,
+          code: 'executor_backend_unsupported',
+          summary: `Executor ${this.name} does not support the active backend`,
         },
       };
     }
-    if (!this.agentClass.permissionProfileId || (!this.agentClass.runtimeCommand && this.name !== 'codex-cli' && this.name !== 'pi-agent')) {
+    if (!this.agentClass.permissionProfileId || !this.runtimeBinding.binaryPath) {
       return {
         available: false,
         failure: {
@@ -259,7 +287,7 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
     }
     try {
       if (this.sandbox.kind !== 'worktree') {
-        if (!this.agentClass.executionImageRef || !this.agentClass.resolvedImageId) {
+        if (!this.runtimeBinding.dockerImageRef || !this.runtimeBinding.dockerImageId) {
           return {
             available: false,
             failure: {
@@ -270,8 +298,8 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
             },
           };
         }
-        const imageId = await this.sandbox.resolveImage(this.agentClass.executionImageRef);
-        if (imageId !== this.agentClass.resolvedImageId) {
+        const imageId = await this.sandbox.resolveImage(this.runtimeBinding.dockerImageRef);
+        if (imageId !== this.runtimeBinding.dockerImageId) {
           return {
             available: false,
             failure: {
@@ -343,6 +371,81 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
     }
   }
 
+  async executeResponseOnly(input: { prompt: string; maxBytes: number }): Promise<ExecutorResult> {
+    const startedAt = Date.now();
+    if (!this.supportsResponseOnly) {
+      return failed(
+        `Executor ${this.name} does not support response-only correction`,
+        'response_only_unsupported',
+        startedAt,
+      );
+    }
+    let modelGateway: AttemptModelGatewayServer | null = null;
+    let temporaryRoot: string | null = null;
+    try {
+      const providerEnvironment = this.providerEnvironment();
+      const upstreamBaseUrl = providerEnvironment.OPENAI_BASE_URL;
+      const upstreamApiKey = providerEnvironment.OPENAI_API_KEY;
+      if (!upstreamBaseUrl || !upstreamApiKey) {
+        throw new Error('response-only model gateway requires OPENAI_BASE_URL and OPENAI_API_KEY');
+      }
+      modelGateway = new AttemptModelGatewayServer({
+        upstreamBaseUrl,
+        upstreamApiKey,
+        advertisedHost: '127.0.0.1',
+        bindHost: '127.0.0.1',
+      });
+      const gateway = await modelGateway.start();
+      const nativeExecutor = await this.prepareNativeExecutorEnvironment(
+        upstreamBaseUrl,
+        gateway.baseUrl,
+      );
+      temporaryRoot = nativeExecutor.temporaryRoot;
+      const outputPath = join(temporaryRoot, 'response-only-result.md');
+      const args = this.responseOnlyArgs(input.prompt, outputPath, temporaryRoot);
+      const result = await runResponseOnlyProcess({
+        command: this.runtimeBinding.binaryPath,
+        args,
+        cwd: temporaryRoot,
+        env: {
+          ...process.env,
+          ...nativeExecutor.environment,
+          ...Object.fromEntries(SANDBOX_SAFE_PROVIDER_ENV_KEYS.flatMap(key => {
+            const value = providerEnvironment[key];
+            return value ? [[key, value]] : [];
+          })),
+          OPENAI_BASE_URL: gateway.baseUrl,
+          OPENAI_API_KEY: gateway.apiKey,
+        },
+        maxBytes: input.maxBytes,
+      });
+      let output = result.stdout.trim();
+      if (this.runtimeBinding.driver === 'codex' && result.exitCode === 0) {
+        output = (await readFile(outputPath, 'utf8').catch(() => result.stdout)).trim();
+      } else {
+        output = this.extractFinalOutput(output);
+      }
+      return result.exitCode === 0 && output
+        ? { success: true, output, exitCode: 0, durationMs: Date.now() - startedAt }
+        : failedExecution(
+            result.stderr.trim() || result.stdout.trim() || `response-only process exited with code ${result.exitCode}`,
+            startedAt,
+            result.exitCode,
+          );
+    } catch (error) {
+      return failedExecution(
+        error instanceof Error ? error.message : String(error),
+        startedAt,
+        1,
+      );
+    } finally {
+      await modelGateway?.close().catch(() => undefined);
+      if (temporaryRoot) {
+        await rm(temporaryRoot, { recursive: true, force: true }).catch(() => undefined);
+      }
+    }
+  }
+
   abort(attemptId?: string): void {
     const containerIds = attemptId
       ? [this.activeContainers.get(attemptId)].filter((id): id is string => Boolean(id))
@@ -358,15 +461,18 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
     input: ExecutorInput,
     nativePaths: boolean,
   ): { command: string; args: string[] } {
-    const command = this.agentClass.runtimeCommand
-      ?? (this.name === 'codex-cli' ? 'codex' : this.name === 'pi-agent' ? 'pi' : null);
-    if (!command) throw new Error(`AgentClass ${this.name} has no executor runtime command`);
-    if (this.name === 'codex-cli') {
-      const args = buildCodexNonInteractiveArgs(prompt, {
+    const command = this.runtimeBinding.binaryPath;
+    if (this.runtimeBinding.driver === 'codex') {
+      const continuationToken = input.recovery?.continuationToken;
+      const options = {
         ephemeral: false,
+        json: true,
         outputLastMessagePath: outputPath,
-        sandbox: nativePaths ? 'danger-full-access' : 'workspace-write',
-      });
+        sandbox: nativePaths ? 'danger-full-access' as const : 'workspace-write' as const,
+      };
+      const args = continuationToken && input.recovery?.mode === 'native_session'
+        ? buildCodexResumeArgs(continuationToken, prompt, options)
+        : buildCodexNonInteractiveArgs(prompt, options);
       const runtimeMcpArgs: string[] = [];
       const evidenceMcpUrl = input.context.evidenceTools.binding?.mcpUrl;
       const capabilityMcpUrl = input.sandbox?.capabilityBinding?.mcpUrl;
@@ -385,25 +491,68 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
       args.splice(args.length - 1, 0, ...runtimeMcpArgs);
       return { command, args };
     }
-    if (this.name === 'pi-agent') {
+    if (this.runtimeBinding.driver === 'pi') {
       const extensionPath = process.env.METACLAW_PI_ATTEMPT_EXTENSION?.trim()
         || '/opt/metaclaw/pi-attempt-tools.ts';
+      const continuationToken = input.recovery?.continuationToken;
       return {
         command,
         args: [
+          '--mode', 'json',
+          ...(continuationToken && input.recovery?.mode === 'native_session'
+            ? ['--session', continuationToken]
+            : []),
           '--no-extensions', '--extension', extensionPath, '--tools',
           'web_search,web_fetch,evidence_list,evidence_search,evidence_get,bash,read,write,edit,grep,find,ls',
           '-p', prompt,
         ],
       };
     }
-    const template = this.agentClass.runtimeArgs;
+    if (this.runtimeBinding.driver === 'hermes') {
+      const continuationToken = input.recovery?.continuationToken;
+      return {
+        command,
+        args: continuationToken && input.recovery?.mode === 'native_session'
+          ? ['chat', '--resume', continuationToken, '-q', prompt, '-Q', '--yolo', '--source', 'anyfusion']
+          : ['chat', '-q', prompt, '-Q', '--yolo', '--source', 'anyfusion'],
+      };
+    }
+    const protocol = this.runtimeBinding.sessionProtocol;
+    if (!protocol) throw new Error(`Executor ${this.name} cli-session binding has no session protocol`);
+    const continuationToken = input.recovery?.continuationToken;
+    const template = continuationToken && input.recovery?.mode === 'native_session'
+      ? protocol.resumeArgs
+      : protocol.initialArgs;
     return {
       command,
-      args: template.some(arg => arg.includes('{prompt}'))
-        ? template.map(arg => arg.replaceAll('{prompt}', prompt))
-        : [...template, prompt],
+      args: template.map(arg => arg
+        .replaceAll('{prompt}', prompt)
+        .replaceAll('{sessionId}', continuationToken ?? '')
+        .replaceAll('{outputPath}', outputPath)),
     };
+  }
+
+  private responseOnlyArgs(prompt: string, outputPath: string, cwd: string): string[] {
+    if (this.runtimeBinding.driver === 'codex') {
+      const args = buildCodexNonInteractiveArgs(prompt, {
+        ephemeral: true,
+        json: true,
+        outputLastMessagePath: outputPath,
+        sandbox: 'workspace-write',
+      });
+      args.splice(args.length - 1, 0, '--ignore-rules', '-C', cwd);
+      return args;
+    }
+    return [
+      '--mode', 'text',
+      '--no-session',
+      '--no-extensions',
+      '--no-tools',
+      '--no-skills',
+      '--no-prompt-templates',
+      '--no-context-files',
+      '-p', prompt,
+    ];
   }
 
   private async prepareNativeExecutorEnvironment(
@@ -412,9 +561,8 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
   ): Promise<NativeExecutorEnvironment> {
     const temporaryRoot = await mkdtemp(join(tmpdir(), 'metaclaw-executor-attempt-'));
     try {
-      if (this.name === 'codex-cli') {
-        const sourceHome = process.env.METACLAW_EXECUTOR_CODEX_HOME ?? process.env.CODEX_HOME;
-        if (!sourceHome) throw new Error('Codex worktree execution requires an Executor CODEX_HOME');
+      if (this.runtimeBinding.driver === 'codex') {
+        const sourceHome = this.runtimeBinding.runtimeHome;
         const source = await readFile(join(sourceHome, 'config.toml'), 'utf8');
         if (!source.includes(upstreamBaseUrl)) {
           throw new Error('Codex Executor config does not contain the configured provider base URL');
@@ -429,8 +577,23 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
         return { environment: { CODEX_HOME: attemptHome }, temporaryRoot };
       }
 
-      const sourceHome = process.env.METACLAW_EXECUTOR_PI_HOME ?? process.env.HOME;
-      if (!sourceHome) throw new Error('Pi worktree execution requires an Executor HOME');
+      if (this.runtimeBinding.homeMaterializer === 'hermes-config') {
+        const attemptHome = join(temporaryRoot, 'hermes');
+        const sourceConfig = this.runtimeBinding.runtimeHome.endsWith('/.hermes')
+          ? join(this.runtimeBinding.runtimeHome, 'config.yaml')
+          : join(this.runtimeBinding.runtimeHome, '.hermes', 'config.yaml');
+        const targetConfig = join(attemptHome, '.hermes', 'config.yaml');
+        await mkdir(join(attemptHome, '.hermes'), { recursive: true });
+        await copyFile(sourceConfig, targetConfig);
+        return { environment: { HOME: attemptHome }, temporaryRoot };
+      }
+
+      if (this.runtimeBinding.homeMaterializer !== 'pi-config') {
+        const attemptHome = join(temporaryRoot, 'runtime-home');
+        await mkdir(attemptHome, { recursive: true });
+        return { environment: { HOME: attemptHome }, temporaryRoot };
+      }
+      const sourceHome = this.runtimeBinding.runtimeHome;
       const sourceAgentHome = join(sourceHome, '.pi', 'agent');
       const [modelsSource, settingsSource] = await Promise.all([
         readFile(join(sourceAgentHome, 'models.json'), 'utf8'),
@@ -473,17 +636,108 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
   }
 
   private providerEnvironment(): Record<string, string> {
-    const envFile = this.name === 'codex-cli'
-      ? process.env.METACLAW_CODEX_EXECUTOR_ENV_FILE
-      : this.name === 'pi-agent'
-        ? process.env.METACLAW_PI_EXECUTOR_ENV_FILE
-        : undefined;
-    const source = buildEnvFromFile(envFile, process.env);
+    const inherited: Record<string, string> = Object.fromEntries(Object.entries(process.env).filter(
+      (entry): entry is [string, string] => typeof entry[1] === 'string',
+    ));
+    let source: Record<string, string> = inherited;
+    for (const envFile of this.runtimeBinding.environmentFiles) {
+      source = Object.fromEntries(Object.entries(buildEnvFromFile(envFile, source)).filter(
+        (entry): entry is [string, string] => typeof entry[1] === 'string',
+      ));
+    }
     return Object.fromEntries(EXECUTOR_PROVIDER_ENV_KEYS.flatMap(key => {
-      const value = source[key];
+      const value = source[String(key)];
       return value ? [[key, value]] : [];
     }));
   }
+
+  private extractFinalOutput(output: string): string {
+    return extractExecutorFinalOutput(this.runtimeBinding, output);
+  }
+
+  private captureContinuationToken(output: string, input: ExecutorInput): void {
+    if (!input.recovery?.onContinuationToken) return;
+    const token = extractExecutorSessionId(this.runtimeBinding, output);
+    if (token) input.recovery.onContinuationToken(token);
+  }
+}
+
+function runResponseOnlyProcess(input: {
+  command: string;
+  args: string[];
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  maxBytes: number;
+}): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  return new Promise(resolvePromise => {
+    execFile(input.command, input.args, {
+      cwd: input.cwd,
+      env: input.env,
+      encoding: 'utf8',
+      timeout: RESPONSE_ONLY_TIMEOUT_MS,
+      maxBuffer: input.maxBytes,
+    }, (error, stdout, stderr) => {
+      resolvePromise({
+        exitCode: typeof error?.code === 'number' ? error.code : error ? 1 : 0,
+        stdout,
+        stderr: error && !stderr ? error.message : stderr,
+      });
+    });
+  });
+}
+
+function isRuntimeBinding(
+  value: Readonly<RuntimeExecutorBinding> | AttemptSandboxPort,
+): value is Readonly<RuntimeExecutorBinding> {
+  return typeof (value as RuntimeExecutorBinding).binaryPath === 'string'
+    && typeof (value as RuntimeExecutorBinding).driver === 'string';
+}
+
+function adapterLegacyBinding(agentClass: AgentClass, worktree: boolean): RuntimeExecutorBinding {
+  const command = agentClass.runtimeCommand ?? agentClass.name;
+  const executable = command.split('/').at(-1) ?? command;
+  const driver = executable === 'codex'
+    ? 'codex'
+    : executable === 'pi'
+      ? 'pi'
+      : executable.startsWith('hermes')
+        ? 'hermes'
+      : 'cli-session';
+  const sessionProtocol = driver === 'cli-session'
+    ? {
+        initialArgs: agentClass.runtimeArgs,
+        resumeArgs: agentClass.runtimeArgs,
+        sessionIdPattern: 'session[_-]?id[:=]\\s*([^\\s]+)',
+        finalOutputPattern: null,
+        timeoutMs: 120_000,
+        terminateSignal: 'SIGTERM' as const,
+      }
+    : null;
+  return {
+    id: agentClass.name,
+    configDigest: 'legacy-test-binding',
+    driver,
+    ...runtimeContractForDriver(driver, sessionProtocol),
+    binaryPath: command,
+    versionArgs: ['--version'],
+    runtimeHome: driver === 'codex'
+      ? process.env.METACLAW_EXECUTOR_CODEX_HOME ?? process.env.CODEX_HOME ?? process.env.HOME ?? '/tmp'
+      : process.env.METACLAW_EXECUTOR_PI_HOME ?? process.env.HOME ?? '/tmp',
+    environmentFiles: [
+      ...(driver === 'codex' && process.env.METACLAW_CODEX_EXECUTOR_ENV_FILE
+        ? [process.env.METACLAW_CODEX_EXECUTOR_ENV_FILE]
+        : []),
+      ...(driver === 'pi' && process.env.METACLAW_PI_EXECUTOR_ENV_FILE
+        ? [process.env.METACLAW_PI_EXECUTOR_ENV_FILE]
+        : []),
+    ],
+    inheritEnvironment: [],
+    permissionProfileId: agentClass.permissionProfileId ?? 'restricted-custom',
+    backendSupport: [worktree ? 'worktree' : 'docker'],
+    dockerImageRef: worktree ? null : agentClass.executionImageRef ?? null,
+    dockerImageId: worktree ? null : agentClass.resolvedImageId ?? null,
+    sessionProtocol,
+  };
 }
 
 function failed(message: string, code: string, startedAt: number, exitCode = 1): ExecutorResult {

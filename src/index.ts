@@ -27,9 +27,16 @@ import { formatGatewayDoctorChecks, runGatewayDoctor } from './gateway/doctor.js
 import { MetaclawSession } from './session/metaclaw-session.js';
 import { PlannerTuiBridge } from './tui-bridge/planner-tui-bridge.js';
 import { runPlannerTuiProcess } from './tui-bridge/planner-tui-process.js';
+import { runExecutorCli } from './cli/executor-cli.js';
+import { ProjectRepo } from './storage/project-repo.js';
+import { ProjectService } from './project/project-service.js';
 
 async function main() {
   const cliArgs = parseCliArgs(process.argv.slice(2));
+  const smokeRunId = process.env.ANYFUSION_SMOKE_RUN_ID?.trim() || null;
+  const newTaskMetadata = smokeRunId
+    ? { source: 'system_smoke' as const, smokeRunId }
+    : undefined;
 
   // 1. 初始化目录
   const metaclawDir = resolveMetaclawDir();
@@ -78,25 +85,33 @@ async function main() {
   // 2. 加载配置
   const configPath = resolve(metaclawDir, 'config.yaml');
   const config = loadConfig(configPath);
+  // 3. 初始化数据库
+  const db = createDatabase(resolve(metaclawDir, 'metaclaw.db'));
+  if (cliArgs.executorCommand) {
+    console.log(await runExecutorCli({
+      db,
+      command: cliArgs.executorCommand,
+      args: cliArgs.executorArgs ?? [],
+    }));
+    db.close();
+    return;
+  }
+  const project = await new ProjectService(new ProjectRepo(db)).resolveProject(cliArgs.projectPath);
+  process.env.METACLAW_PLANNER_WORKDIR = project.rootPath;
   const markdownPreviewConfig = config.integrations?.markdown_preview;
   const markdownPreviewServer = markdownPreviewConfig?.enabled
-    ? new MarkdownPreviewServer(markdownPreviewConfig, process.cwd())
+    ? new MarkdownPreviewServer(markdownPreviewConfig, project.rootPath)
     : null;
   if (markdownPreviewServer && markdownPreviewConfig) {
     try {
       await markdownPreviewServer.start();
       const markdownPreviewBaseUrl = (markdownPreviewConfig.public_base_url
         ?? `http://${markdownPreviewConfig.host}:${markdownPreviewConfig.port}`).replace(/\/+$/, '');
-      console.log(
-        `Markdown preview listening: ${markdownPreviewBaseUrl}`,
-      );
+      console.log(`Markdown preview listening: ${markdownPreviewBaseUrl}`);
     } catch (error) {
       console.error(`Markdown preview start failed: ${(error as Error).message}`);
     }
   }
-
-  // 3. 初始化数据库
-  const db = createDatabase(resolve(metaclawDir, 'metaclaw.db'));
 
   // 4. 初始化 Repos
   const taskSearchIndexRepo = new TaskSearchIndexRepo(db);
@@ -136,6 +151,8 @@ async function main() {
         contextRecaller,
         notifier,
         plannerHost,
+        project,
+        newTaskMetadata,
       });
       if (result.output.length > 0) {
         process.stdout.write(`${result.output.join('\n')}\n`);
@@ -160,6 +177,8 @@ async function main() {
       contextRecaller,
       notifier,
       plannerHost,
+      project,
+      newTaskMetadata,
     });
     plannerTuiSession.initialize({ showDashboard: false });
     const nativeGatewayServer = new MetaclawGatewayServer({
@@ -171,7 +190,7 @@ async function main() {
       config,
       contextRecaller,
       notifier,
-      workspaceRoot: process.cwd(),
+      workspaceRoot: project.rootPath,
       plannerHost,
     });
     await nativeGatewayServer.start();
@@ -184,7 +203,7 @@ async function main() {
       await runPlannerTuiProcess({
         socketPath: plannerTuiSocketPath,
         sessionId,
-        cwd: process.cwd(),
+        cwd: project.rootPath,
       });
     } finally {
       clearInterval(blockedRecheckTimer);
@@ -207,7 +226,7 @@ async function main() {
     config,
     contextRecaller,
     notifier,
-    workspaceRoot: process.cwd(),
+    workspaceRoot: project.rootPath,
     plannerHost,
   });
 
@@ -226,6 +245,7 @@ async function main() {
       contextRecaller,
       notifier,
       plannerHost,
+      project,
     });
     gatewaySession = session;
     session.initialize({ showDashboard: false });

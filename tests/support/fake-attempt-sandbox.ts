@@ -1,4 +1,6 @@
 import { vi } from 'vitest';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import type {
   AttemptSandboxPort,
   AttemptSandboxRecord,
@@ -59,6 +61,11 @@ export class FakeAttemptSandbox implements AttemptSandboxPort {
   readonly wait = vi.fn(async (containerId: string) => {
     const response = this.requireResponse(containerId);
     const exitCode = response.wait ? await response.wait : (response.exitCode ?? 0);
+    if (exitCode === 0) {
+      const workspacePath = this.requireInput(containerId).mounts
+        .find(mount => mount.target === '/workspace' && mount.mode === 'rw')?.source;
+      if (workspacePath) await prepareGitCandidate(workspacePath);
+    }
     this.updateRecord(containerId, { status: 'exited', exitCode });
     return exitCode;
   });
@@ -113,6 +120,17 @@ export class FakeAttemptSandbox implements AttemptSandboxPort {
     if (!current) throw new Error(`unknown fake sandbox ${containerId}`);
     this.records.set(containerId, { ...current, ...changes });
   }
+}
+
+const exec = promisify(execFile);
+
+async function prepareGitCandidate(workspacePath: string): Promise<void> {
+  const prefix = ['-c', `safe.directory=${workspacePath}`, '-C', workspacePath];
+  await exec('git', [...prefix, 'config', 'user.name', 'AnyFusion Test Executor']);
+  await exec('git', [...prefix, 'config', 'user.email', 'test-executor@anyfusion.local']);
+  await exec('git', [...prefix, 'add', '-A']);
+  await exec('git', [...prefix, 'commit', '--allow-empty', '-m', 'test: executor result']);
+  await exec('git', [...prefix, 'merge', '--no-edit', 'main']);
 }
 
 export function completionResponseFromSandboxInput(

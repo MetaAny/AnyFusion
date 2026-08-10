@@ -15,6 +15,10 @@ import type { AgentClassLookupPort } from '../executor/agent-class-lookup-port.j
 import type { AttemptSandboxPort } from './attempt-sandbox.js';
 import { SandboxedExecutorAdapter } from '../executor/sandboxed-executor-adapter.js';
 import type { AttemptSandboxRepositoryPort } from './repositories.js';
+import {
+  runtimeContractForDriver,
+  type ExecutorRegistrySnapshot,
+} from '../executor/executor-registry-types.js';
 
 // Shared normalized result of running a task's work graph. Previously exported by
 // the retired core/execution-planning-service module; kept here on the live path.
@@ -38,6 +42,7 @@ export interface ExecutionResult {
 
 export interface ExecutorRegistryDeps {
   agentClassLookup: AgentClassLookupPort;
+  snapshot?: () => ExecutorRegistrySnapshot;
   attemptSandbox: AttemptSandboxPort;
   attemptSandboxRepository?: AttemptSandboxRepositoryPort;
   controlNetwork?: string;
@@ -55,49 +60,58 @@ export class ExecutorRegistry {
 
   resolve(name: string): ExecutorAdapter | null {
     const agentClass = this.deps.agentClassLookup.findByName(name);
-    return agentClass
-      ? new SandboxedExecutorAdapter(agentClass, this.deps.attemptSandbox, this.deps.attemptSandboxRepository)
+    const binding = this.deps.snapshot
+      ? this.deps.snapshot().runtime.get(name) ?? null
+      : agentClass ? legacyRuntimeBinding(agentClass, this.deps.attemptSandbox.kind === 'worktree') : null;
+    return agentClass && binding
+      ? new SandboxedExecutorAdapter(agentClass, binding, this.deps.attemptSandbox, this.deps.attemptSandboxRepository)
       : null;
   }
 
   inspect(name: string): ExecutorRegistrationInspection {
     const agentClass = this.deps.agentClassLookup.findByName(name);
+    const binding = this.deps.snapshot
+      ? this.deps.snapshot().runtime.get(name) ?? null
+      : agentClass ? legacyRuntimeBinding(agentClass, this.deps.attemptSandbox.kind === 'worktree') : null;
     const worktree = (this.deps.attemptSandbox.kind ?? 'container') === 'worktree';
     const configured = Boolean(
-      agentClass?.permissionProfileId
+      agentClass?.permissionProfileId && binding
       && (worktree
-        ? ['codex-cli', 'pi-agent'].includes(name)
-        : agentClass.executionImageRef && agentClass.resolvedImageId),
+        ? binding.backendSupport.includes('worktree')
+        : binding.backendSupport.includes('docker')),
     );
     return {
       configured,
       bindingSource: configured ? worktree ? 'worktree' : 'sandbox' : 'unbound',
-      adapterName: configured ? name : null,
+      adapterName: configured ? binding?.driver ?? null : null,
     };
   }
 
   async probe(name: string, previousFailure?: KernelFailure | null): Promise<ExecutorProbeResult> {
     const agentClass = this.deps.agentClassLookup.findByName(name);
-    if (!agentClass) {
+    const binding = this.deps.snapshot
+      ? this.deps.snapshot().runtime.get(name) ?? null
+      : agentClass ? legacyRuntimeBinding(agentClass, this.deps.attemptSandbox.kind === 'worktree') : null;
+    if (!agentClass || !binding) {
       return {
         available: false,
         failure: {
           kind: 'configuration',
           scope: 'agent_class',
-          code: 'agent_class_not_found',
-          summary: `AgentClass ${name} is not registered`,
+          code: 'executor_not_routable',
+          summary: `Executor ${name} is missing, disabled, unverified, or stale`,
         },
       };
     }
     const worktree = (this.deps.attemptSandbox.kind ?? 'container') === 'worktree';
-    if (worktree && !['codex-cli', 'pi-agent'].includes(name)) {
+    if (!binding.backendSupport.includes(worktree ? 'worktree' : 'docker')) {
       return {
         available: false,
         failure: {
           kind: 'configuration',
           scope: 'agent_class',
-          code: 'worktree_executor_not_canonical',
-          summary: `Worktree execution supports only canonical Codex and Pi AgentClasses: ${name}`,
+          code: 'executor_backend_unsupported',
+          summary: `Executor ${name} does not support the active ${worktree ? 'worktree' : 'docker'} backend`,
         },
       };
     }
@@ -161,6 +175,49 @@ export class ExecutorRegistry {
   }
 }
 
+function legacyRuntimeBinding(
+  agentClass: AgentClass,
+  worktree: boolean,
+): import('../executor/executor-registry-types.js').RuntimeExecutorBinding | null {
+  if (!agentClass.permissionProfileId) return null;
+  if (!worktree && (!agentClass.executionImageRef || !agentClass.resolvedImageId)) return null;
+  const command = agentClass.runtimeCommand ?? agentClass.name;
+  const executable = command.split('/').at(-1) ?? command;
+  const driver = executable === 'codex'
+    ? 'codex'
+    : executable === 'pi'
+      ? 'pi'
+      : executable.startsWith('hermes')
+        ? 'hermes'
+        : 'cli-session';
+  const sessionProtocol = driver === 'cli-session'
+    ? {
+        initialArgs: [...agentClass.runtimeArgs],
+        resumeArgs: [...agentClass.runtimeArgs],
+        sessionIdPattern: 'session[_-]?id[:=]\\s*([^\\s]+)',
+        finalOutputPattern: null,
+        timeoutMs: 120_000,
+        terminateSignal: 'SIGTERM' as const,
+      }
+    : null;
+  return {
+    id: agentClass.name,
+    configDigest: 'legacy-test-binding',
+    driver,
+    ...runtimeContractForDriver(driver, sessionProtocol),
+    binaryPath: command,
+    versionArgs: ['--version'],
+    runtimeHome: process.env.HOME ?? '/tmp',
+    environmentFiles: [],
+    inheritEnvironment: [],
+    permissionProfileId: agentClass.permissionProfileId,
+    backendSupport: [worktree ? 'worktree' : 'docker'],
+    dockerImageRef: worktree ? null : agentClass.executionImageRef ?? null,
+    dockerImageId: worktree ? null : agentClass.resolvedImageId ?? null,
+    sessionProtocol,
+  };
+}
+
 export interface ExecutionRuntimeRunInput {
   taskId: string;
   executionId: string;
@@ -197,7 +254,9 @@ export class ExecutionRuntime implements ActiveExecutionControl {
   }
 
   supportsResponseOnly(name: string): boolean {
-    return typeof this.registry.resolve(name)?.executeResponseOnly === 'function';
+    const executor = this.registry.resolve(name);
+    return executor?.supportsResponseOnly === true
+      && typeof executor.executeResponseOnly === 'function';
   }
 
   supportsContinuation(name: string): boolean {

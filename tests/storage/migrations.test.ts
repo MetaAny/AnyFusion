@@ -10,8 +10,9 @@ describe('current SQLite baseline', () => {
     expect(() => runMigrations(db)).not.toThrow();
 
     expect(db.prepare('SELECT version FROM schema_version').all())
-      .toEqual([{ version: 31 }]);
+      .toEqual([{ version: 33 }]);
     for (const table of [
+      'projects',
       'tasks',
       'subtasks',
       'work_graph_revisions',
@@ -28,6 +29,9 @@ describe('current SQLite baseline', () => {
       'workspace_merge_attempts',
       'generation_replan_requests',
       'kernel_executor_status',
+      'executor_verifications',
+      'smoke_run_audits',
+      'task_purge_audits',
       'planner_proposal_turns',
       'planner_proposal_submissions',
     ]) {
@@ -42,6 +46,7 @@ describe('current SQLite baseline', () => {
       'executor_route_events',
       'guidance_events',
       'reflection_events',
+      'agent_classes',
     ]) {
       expect(db.prepare(`PRAGMA table_info(${removed})`).all(), removed).toEqual([]);
     }
@@ -62,6 +67,12 @@ describe('current SQLite baseline', () => {
     expect((db.prepare('PRAGMA table_info(learning_candidates)').all() as Array<{ name: string }>)
       .map(column => column.name)).toEqual(expect.arrayContaining([
       'source_skill_usage_event_id',
+    ]));
+    expect((db.prepare('PRAGMA table_info(workspace_publications)').all() as Array<{ name: string }>)
+      .map(column => column.name)).toEqual(expect.arrayContaining([
+      'main_base_commit',
+      'permission_request_id',
+      'changed_paths_json',
     ]));
     expect(db.prepare(`
       SELECT name FROM sqlite_master
@@ -87,7 +98,7 @@ describe('current SQLite baseline', () => {
     `);
 
     expect(() => runMigrations(db)).toThrow(
-      'unsupported pre-release SQLite schema (30); create a fresh database for schema 31',
+      'unsupported pre-release SQLite schema (30) at (unknown path); back up and create a fresh database for schema 33',
     );
     expect(db.prepare('SELECT version FROM schema_version').all())
       .toEqual([{ version: 30 }]);
@@ -98,7 +109,7 @@ describe('current SQLite baseline', () => {
     db.exec('CREATE TABLE legacy_marker (id TEXT PRIMARY KEY)');
 
     expect(() => runMigrations(db)).toThrow(
-      'unsupported pre-release SQLite database without schema_version',
+      'unsupported pre-release SQLite database without schema_version at (unknown path)',
     );
     expect(db.prepare(`
       SELECT name FROM sqlite_master

@@ -53,8 +53,11 @@ export interface PrioritySignals {
 // ─── 任务对象 ───
 export interface Task {
   id: string;
+  projectId: string;
   title: string;
   goal: string;
+  source: 'user' | 'system_smoke';
+  smokeRunId: string | null;
   status: TaskStatus;
   summary: string;
   snapshots: TaskSnapshot[];

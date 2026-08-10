@@ -1,0 +1,182 @@
+name: Publish Container Images
+
+on:
+  workflow_dispatch:
+    inputs:
+      anyfusion_pi_ref:
+        description: AnyFusion-Pi branch, tag, or commit to include in the runtime image
+        required: true
+        default: codex/anyfusion-planner
+        type: string
+      image_tag:
+        description: Optional additional image tag; sha-<commit> is always published
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: publish-images
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Build and publish images
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out AnyFusion
+        uses: actions/checkout@v4
+        with:
+          path: AnyFusion
+
+      - name: Check out AnyFusion-Pi
+        uses: actions/checkout@v4
+        with:
+          repository: MetaAny/AnyFusion-Pi
+          ref: ${{ inputs.anyfusion_pi_ref }}
+          token: ${{ secrets.ANYFUSION_PI_TOKEN || github.token }}
+          path: AnyFusion-Pi
+
+      - name: Resolve image names and tags
+        id: images
+        shell: bash
+        env:
+          REQUESTED_TAG: ${{ inputs.image_tag }}
+        run: |
+          set -euo pipefail
+
+          namespace="${GITHUB_REPOSITORY_OWNER,,}"
+          immutable_tag="sha-${GITHUB_SHA::12}"
+          requested_tag="${REQUESTED_TAG,,}"
+
+          if [[ -n "$requested_tag" && ! "$requested_tag" =~ ^[a-z0-9][a-z0-9._-]{0,127}$ ]]; then
+            echo "Invalid image tag: $REQUESTED_TAG" >&2
+            exit 1
+          fi
+
+          write_tags() {
+            local output_name="$1"
+            local image_name="$2"
+            {
+              echo "${output_name}<<EOF"
+              echo "ghcr.io/${namespace}/${image_name}:${immutable_tag}"
+              if [[ -n "$requested_tag" && "$requested_tag" != "$immutable_tag" ]]; then
+                echo "ghcr.io/${namespace}/${image_name}:${requested_tag}"
+              fi
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          }
+
+          write_tags runtime_tags anyfusion-runtime
+          write_tags codex_tags metaclaw-executor-codex
+          write_tags pi_tags metaclaw-executor-pi
+          echo "immutable_tag=$immutable_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve AnyFusion-Pi revision
+        id: planner
+        working-directory: AnyFusion-Pi
+        shell: bash
+        run: echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
+          cache: npm
+          cache-dependency-path: AnyFusion/package-lock.json
+
+      - name: Build Executor support artifacts
+        working-directory: AnyFusion
+        shell: bash
+        run: |
+          npm ci
+          npm run build
+          test -f dist/capability-request-cli.js
+          test -f dist/capability-use-cli.js
+          test -f dist/pi-attempt-tools.ts
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish unified runtime
+        id: runtime
+        uses: docker/build-push-action@v6
+        with:
+          context: ./AnyFusion
+          file: ./AnyFusion/docker/Dockerfile.runtime
+          build-contexts: |
+            anyfusion-pi=./AnyFusion-Pi
+          platforms: linux/amd64
+          push: true
+          pull: true
+          tags: ${{ steps.images.outputs.runtime_tags }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            io.anyfusion.planner.revision=${{ steps.planner.outputs.revision }}
+          cache-from: type=gha,scope=anyfusion-runtime
+          cache-to: type=gha,mode=max,scope=anyfusion-runtime
+
+      - name: Build and publish Codex Executor
+        id: codex
+        uses: docker/build-push-action@v6
+        with:
+          context: ./AnyFusion
+          file: ./AnyFusion/docker/Dockerfile.attempt-codex
+          platforms: linux/amd64
+          push: true
+          pull: true
+          tags: ${{ steps.images.outputs.codex_tags }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=metaclaw-executor-codex
+          cache-to: type=gha,mode=max,scope=metaclaw-executor-codex
+
+      - name: Build and publish Pi Executor
+        id: pi
+        uses: docker/build-push-action@v6
+        with:
+          context: ./AnyFusion
+          file: ./AnyFusion/docker/Dockerfile.attempt-pi
+          platforms: linux/amd64
+          push: true
+          pull: true
+          tags: ${{ steps.images.outputs.pi_tags }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=metaclaw-executor-pi
+          cache-to: type=gha,mode=max,scope=metaclaw-executor-pi
+
+      - name: Write build summary
+        shell: bash
+        env:
+          IMMUTABLE_TAG: ${{ steps.images.outputs.immutable_tag }}
+          RUNTIME_DIGEST: ${{ steps.runtime.outputs.digest }}
+          CODEX_DIGEST: ${{ steps.codex.outputs.digest }}
+          PI_DIGEST: ${{ steps.pi.outputs.digest }}
+          PLANNER_REVISION: ${{ steps.planner.outputs.revision }}
+        run: |
+          {
+            echo "## Published images"
+            echo
+            echo "| Image | Tag | Digest |"
+            echo "| --- | --- | --- |"
+            echo "| anyfusion-runtime | \`$IMMUTABLE_TAG\` | \`$RUNTIME_DIGEST\` |"
+            echo "| metaclaw-executor-codex | \`$IMMUTABLE_TAG\` | \`$CODEX_DIGEST\` |"
+            echo "| metaclaw-executor-pi | \`$IMMUTABLE_TAG\` | \`$PI_DIGEST\` |"
+            echo
+            echo "AnyFusion-Pi revision: \`$PLANNER_REVISION\`"
+          } >> "$GITHUB_STEP_SUMMARY"

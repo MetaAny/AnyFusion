@@ -26,7 +26,6 @@ import {
 } from '../kernel/control-kernel.js';
 import { DurableKernelWorkflow, type KernelWorkflow, type KernelWorkflowStore } from '../kernel/kernel-workflow.js';
 import type { WorkGraphRevisionRepo } from '../storage/work-graph-revision-repo.js';
-import { deriveRecoverySafety } from '../executor/builtin-executor-catalog.js';
 import type { KernelEffectOutboxRepo } from '../storage/kernel-effect-outbox-repo.js';
 import type { ExecutorAttemptReceiptRepo } from '../storage/executor-attempt-receipt-repo.js';
 import { buildDefaultResourceClaims } from '../resource/index.js';
@@ -498,7 +497,9 @@ export class KernelExecutionRuntime {
     const recoverySubtask = recoverySubtaskId
       ? subtasks.find(subtask => subtask.id === recoverySubtaskId)
       : subtasks.find(subtask => frontier.includes(subtask.id));
-    const recoverySafety = deriveRecoverySafety(recoverySubtask?.requiredCapabilities ?? []);
+    const recoverySafety = this.deps.agentClassService.deriveRecoverySafety(
+      recoverySubtask?.requiredCapabilities ?? [],
+    );
     return {
       schemaVersion: 5,
       type: 'dispatch',
@@ -1073,6 +1074,9 @@ export class KernelExecutionRuntime {
   prepareExecution(input: KernelExecutionRuntimeInput): PreparedKernelExecutionInput {
     const task = this.deps.taskRuntimeService.findTask(input.taskId);
     if (!task) throw new Error(`task not found: ${input.taskId}`);
+    if (input.request.executionMode === 'resume-blocked' && input.request.recoveryTrigger) {
+      this.applyExplicitBlockedRecovery(task.id, input.request.recoveryTrigger);
+    }
     const graph = this.deps.workGraphRuntimeService.apply({
       task,
       userPrompt: input.request.userPrompt,
@@ -1089,6 +1093,28 @@ export class KernelExecutionRuntime {
         ? graph.reason === 'missing_graph' ? 'missing' : 'conflict'
         : 'ready',
     };
+  }
+
+  private applyExplicitBlockedRecovery(
+    taskId: string,
+    trigger: NonNullable<QueuedExecutionRequest['recoveryTrigger']>,
+  ): void {
+    const blockedSubtasks = this.deps.subtaskRepo.listActiveByTask(taskId)
+      .filter(subtask => subtask.status === 'blocked');
+    for (const subtask of blockedSubtasks) {
+      this.deps.subtaskRepo.updateStatus(subtask.id, 'ready', { error: null });
+      this.recordTaskEvent(taskId, subtask.id, 'subtask_recovered', trigger.triggerReason, {
+        recoveryKind: trigger.kind,
+        previousError: subtask.error,
+      });
+    }
+    if (this.deps.taskRuntimeService.findTask(taskId)?.status === 'blocked') {
+      this.deps.taskRuntimeService.unblockTask(taskId);
+      this.recordTaskEvent(taskId, null, 'task_recovered', trigger.triggerReason, {
+        recoveryKind: trigger.kind,
+        recoveredSubtaskIds: blockedSubtasks.map(subtask => subtask.id),
+      });
+    }
   }
 
   async execute(input: PreparedKernelExecutionInput): Promise<void> {
@@ -1230,17 +1256,17 @@ export class KernelExecutionRuntime {
       );
       if (outcomes.length === 0) return;
       let integrated = false;
+      let stale = false;
       for (const outcome of outcomes) {
-        if (outcome.type === 'conflicted') {
-          await input.workflow.submit(outcome.event);
-          await this.attemptSupervisor.drain(input.taskId);
-          break;
-        }
         if (outcome.type === 'cancelled') continue;
+        if (outcome.type === 'stale') {
+          stale = true;
+          continue;
+        }
         integrated = true;
         this.projectIntegratedPublication(outcome);
       }
-      if (integrated) {
+      if (integrated || stale) {
         const lastIntegrated = [...outcomes].reverse().find(
           (outcome): outcome is Extract<WorkspacePublicationOutcome, { type: 'integrated' }> => (
             outcome.type === 'integrated'
@@ -1256,7 +1282,9 @@ export class KernelExecutionRuntime {
           occurredAt: new Date().toISOString(),
           sessionId: this.deps.sessionId,
           taskId: input.taskId,
-          reason: 'candidate publication released downstream frontier',
+          reason: stale
+            ? 'stale candidate returned to its Executor for local-main synchronization'
+            : 'candidate publication released downstream frontier',
         });
         await this.attemptSupervisor.drain(input.taskId);
       }

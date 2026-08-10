@@ -14,7 +14,7 @@ import {
   lstat,
   writeFile,
 } from 'node:fs/promises';
-import { dirname, join, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export type WorkspaceKind = 'git' | 'directory';
@@ -68,6 +68,14 @@ function safeIdentitySegment(value: string, label: string): string {
     throw new Error(`${label} is not a safe workspace identity segment`);
   }
   return normalized;
+}
+
+function isPathWithin(root: string, candidate: string): boolean {
+  const pathFromRoot = relative(root, candidate);
+  return pathFromRoot === ''
+    || (!pathFromRoot.startsWith(`..${sep}`)
+      && pathFromRoot !== '..'
+      && !isAbsolute(pathFromRoot));
 }
 
 async function sha256File(path: string): Promise<{ hash: string; size: number }> {
@@ -133,7 +141,11 @@ export class WorkspaceStore {
     const sourceRoot = await realpath(sourcePath);
     const sourceInfo = await stat(sourceRoot);
     if (!sourceInfo.isDirectory()) throw new Error('workspace seed source must be a directory');
-    await this.copyDirectory(sourceRoot, sourceRoot, workspace.filesPath);
+    const managedStoreRoot = await realpath(this.rootPath);
+    if (isPathWithin(managedStoreRoot, sourceRoot)) {
+      throw new Error('workspace seed source cannot be inside the managed workspace store');
+    }
+    await this.copyDirectory(sourceRoot, sourceRoot, workspace.filesPath, [managedStoreRoot]);
   }
 
   async prepareForSandbox(workspace: WorkspaceHandle, uid = 1000, gid = 1000): Promise<void> {
@@ -284,17 +296,23 @@ export class WorkspaceStore {
     return join(this.objectsPath, hash.slice(0, 2), hash);
   }
 
-  private async copyDirectory(sourceRoot: string, current: string, destinationRoot: string): Promise<void> {
+  private async copyDirectory(
+    sourceRoot: string,
+    current: string,
+    destinationRoot: string,
+    excludedRoots: readonly string[],
+  ): Promise<void> {
     for (const entry of await readdir(current, { withFileTypes: true })) {
       if (['.git', 'node_modules', 'dist', '.metaclaw'].includes(entry.name)) continue;
       const source = join(current, entry.name);
+      if (excludedRoots.some(root => isPathWithin(root, source))) continue;
       const relativePath = relative(sourceRoot, source);
       const destination = this.resolveWorkspaceRelative(destinationRoot, relativePath);
       const info = await lstat(source);
       if (info.isSymbolicLink()) throw new Error(`workspace seed rejects symlink: ${relativePath}`);
       if (info.isDirectory()) {
         await mkdir(destination, { recursive: true });
-        await this.copyDirectory(sourceRoot, source, destinationRoot);
+        await this.copyDirectory(sourceRoot, source, destinationRoot, excludedRoots);
       } else if (info.isFile()) {
         await mkdir(dirname(destination), { recursive: true });
         await copyFile(source, destination);

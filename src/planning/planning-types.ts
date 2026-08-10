@@ -1,6 +1,6 @@
 import type {
   PlannerExecutorCatalog,
-} from '../executor/builtin-executor-catalog.js';
+} from '../executor/executor-registry-types.js';
 import type { WorkGraphProposal, WorkGraphSubtask } from '../work-graph/index.js';
 
 export type PlanningAction =

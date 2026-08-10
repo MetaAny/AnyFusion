@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { getPlannerExecutorCatalog } from '../../src/executor/builtin-executor-catalog.js';
+import { testPlannerExecutorCatalog } from '../support/executor-registry.js';
 import { validatePlanningAgentPlan } from '../../src/planning/planning-agent-plan-validator.js';
 import type { PlanningAgentPlan, SubtaskProposal } from '../../src/planning/planning-types.js';
 
-const catalog = getPlannerExecutorCatalog();
+const catalog = testPlannerExecutorCatalog();
 
 function subtask(overrides: Partial<SubtaskProposal> = {}): SubtaskProposal {
   return {
@@ -86,7 +86,7 @@ describe('validatePlanningAgentPlan', () => {
 
     expect(validatePlanningAgentPlan(candidate, catalog).errors).toEqual(expect.arrayContaining([
       'subtask impl AgentClass pi-agent does not cover required capabilities: workspace-engineering',
-      'subtask impl preferred AgentClass set must equal eligible canonical set: codex-cli',
+      'subtask impl preferred AgentClass set must equal eligible verified set: codex-cli',
     ]));
   });
 
@@ -100,7 +100,7 @@ describe('validatePlanningAgentPlan', () => {
     const candidate = plan();
 
     expect(validatePlanningAgentPlan(candidate, expandedCatalog).errors).toContain(
-      'subtask impl preferred AgentClass set must equal eligible canonical set: codex-cli, pi-agent',
+      'subtask impl preferred AgentClass set must equal eligible verified set: codex-cli, pi-agent',
     );
 
     candidate.workGraph!.subtasks[0].preferredAgentClassList = ['pi-agent', 'codex-cli'];

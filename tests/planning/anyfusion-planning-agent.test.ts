@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { getPlannerExecutorCatalog } from '../../src/executor/builtin-executor-catalog.js';
+import { testPlannerExecutorCatalog } from '../support/executor-registry.js';
 import { AnyFusionPlanningAgent } from '../../src/planning/anyfusion-planning-agent.js';
 import type { PlannerProposalResult } from '../../src/planning/planner-proposal.js';
 import type { PlanningContext } from '../../src/planning/planning-types.js';
@@ -9,7 +9,7 @@ function context(overrides: Partial<PlanningContext> = {}): PlanningContext {
     userInput: '实现一个功能',
     request: { sessionId: 'session_test', source: 'test' },
     pendingAuthorizationRequest: null,
-    executorCatalog: getPlannerExecutorCatalog(),
+    executorCatalog: testPlannerExecutorCatalog(),
     timeoutMs: 5_000,
     ...overrides,
   };

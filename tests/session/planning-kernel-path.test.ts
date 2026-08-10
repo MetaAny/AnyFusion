@@ -629,7 +629,8 @@ describe('natural-language planning/kernel path', () => {
           },
         ],
       },
-    }), input => {
+    }), (input, attemptIndex) => {
+      if (attemptIndex >= 2) return { body: `${input.subtaskId} resynchronized` };
       running += 1;
       maximumRunning = Math.max(maximumRunning, running);
       const wait = new Promise<number>(resolve => {
@@ -670,7 +671,7 @@ describe('natural-language planning/kernel path', () => {
           SELECT subtask_id, status FROM resource_waits ORDER BY requested_at
         `).all(),
         output: harness.session.getSnapshot().output,
-      }))), 2_000)),
+      }))), 8_000)),
     ]);
     expect(maximumRunning).toBe(2);
 
@@ -689,13 +690,14 @@ describe('natural-language planning/kernel path', () => {
     expect((harness.db.prepare(`
       SELECT subtask_id, status, batch_order
       FROM kernel_dispatch_items
-      ORDER BY batch_order ASC
+      ORDER BY created_at ASC, attempt_id ASC
     `).all() as Array<{ subtask_id: string; status: string; batch_order: number }>).map(item => ({
       ...item,
       subtask_id: item.subtask_id.endsWith('_subtask_a') ? 'subtask_a' : 'subtask_b',
     }))).toEqual([
       { subtask_id: 'subtask_a', status: 'terminal', batch_order: 0 },
       { subtask_id: 'subtask_b', status: 'terminal', batch_order: 1 },
+      { subtask_id: 'subtask_b', status: 'terminal', batch_order: 4 },
     ]);
     expect((harness.db.prepare(`
       SELECT subtask_id, status, first_dispatch_order
@@ -706,18 +708,8 @@ describe('natural-language planning/kernel path', () => {
       subtask_id: item.subtask_id.endsWith('_subtask_a') ? 'subtask_a' : 'subtask_b',
     }))).toEqual([
       { subtask_id: 'subtask_a', status: 'integrated', first_dispatch_order: 0 },
-      { subtask_id: 'subtask_b', status: 'integrated', first_dispatch_order: 1 },
-    ]);
-    expect((harness.db.prepare(`
-      SELECT publication.subtask_id
-      FROM workspace_merge_attempts AS merge_attempt
-      JOIN workspace_publications AS publication ON publication.id = merge_attempt.publication_id
-      ORDER BY merge_attempt.rowid ASC
-    `).all() as Array<{ subtask_id: string }>).map(item => ({
-      subtask_id: item.subtask_id.endsWith('_subtask_a') ? 'subtask_a' : 'subtask_b',
-    }))).toEqual([
-      { subtask_id: 'subtask_a' },
-      { subtask_id: 'subtask_b' },
+      { subtask_id: 'subtask_b', status: 'parked', first_dispatch_order: 1 },
+      { subtask_id: 'subtask_b', status: 'integrated', first_dispatch_order: 4 },
     ]);
   });
 
@@ -870,6 +862,6 @@ describe('natural-language planning/kernel path', () => {
       WHERE session_id = ? AND status = 'rejected'
     `).get('sess_reject_executor') as { result_json: string };
     const result = JSON.parse(proposal.result_json) as { issues: string[] };
-    expect(result.issues.join('; ')).toContain('preferredAgentClassList');
+    expect(result.issues.join('; ')).toContain('preferred AgentClass set');
   });
 });

@@ -107,7 +107,10 @@ describe('TaskCancellationCoordinator', () => {
       subtaskId: 'publishing',
       sourceAttemptId: 'attempt-publishing',
       agentClassName: 'codex-cli',
+      mainBaseCommit: 'main',
       candidateCommit: 'candidate',
+      permissionRequestId: 'permission-cancel',
+      changedPaths: [],
       completion: {
         body: 'candidate',
         artifacts: [],
@@ -119,6 +122,7 @@ describe('TaskCancellationCoordinator', () => {
       firstDispatchOrder: 4,
       createdAt: now,
     });
+    publications.markApproved('publication-cancel', now);
     publications.markApplying('publication-cancel', now);
 
     const sandboxRepo = new SqliteAttemptSandboxRepository(db);

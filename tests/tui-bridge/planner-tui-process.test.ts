@@ -22,6 +22,7 @@ describe('runPlannerTuiProcess', () => {
       writeFileSync(process.argv[2], JSON.stringify({
         anyfusion: process.env.ANYFUSION_PLANNER_SESSION_ID,
         metaclaw: process.env.METACLAW_PLANNER_SESSION_ID,
+        workspace: process.env.ANYFUSION_PLANNER_WORKSPACE,
       }));
     `);
 
@@ -39,6 +40,7 @@ describe('runPlannerTuiProcess', () => {
     expect(JSON.parse(await readFile(outputPath, 'utf8'))).toEqual({
       anyfusion: 'session-authoritative',
       metaclaw: 'session-authoritative',
+      workspace: directory,
     });
   });
 });

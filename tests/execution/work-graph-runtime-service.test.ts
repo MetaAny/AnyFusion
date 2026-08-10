@@ -21,7 +21,8 @@ function createDb(): Database.Database {
 
 function task(id = 'task_1'): Task {
   return {
-    id, title: 'Task', goal: 'Do work', status: 'running', summary: '', snapshots: [],
+    id, projectId: 'project_test', title: 'Task', goal: 'Do work', source: 'user', smokeRunId: null,
+    status: 'running', summary: '', snapshots: [],
     resources: [], artifacts: [], dependencies: [],
     prioritySignals: { dueAt: null, isReady: true, progressRatio: 0, blocksOthers: false, idleHours: 0 },
     injectedPreferences: [], lastSchedulingReason: '', lastInterruptionReason: '', interruptionCount: 0,

@@ -9,15 +9,12 @@ import { TaskRuntimeService } from '../../src/task/task-runtime-service.js';
 import { WorkspacePublicationRepo } from '../../src/storage/workspace-publication-repo.js';
 
 describe('WorkspacePublicationWorker cancellation fence', () => {
-  it('keeps an observed integration commit as audit only when cancellation wins before publication', async () => {
+  it('cancels an approved publication without touching Git when Task cancellation already won', async () => {
     const db = new Database(':memory:');
     db.pragma('foreign_keys = ON');
     runMigrations(db);
     const taskEngine = new TaskEngine(new TaskRepo(db), '/tmp/publication-cancel');
-    const taskRuntime = new TaskRuntimeService({
-      taskEngine,
-      taskRepo: new TaskRepo(db),
-    });
+    const taskRuntime = new TaskRuntimeService({ taskEngine, taskRepo: new TaskRepo(db) });
     const task = taskEngine.create({
       id: 'task-publication-cancel',
       title: 'Publication cancellation',
@@ -50,16 +47,19 @@ describe('WorkspacePublicationWorker cancellation fence', () => {
     });
     const publications = new WorkspacePublicationRepo(db);
     publications.insertCandidate({
-      id: 'publication-cancel-race',
+      id: 'publication-cancel',
       taskId: task.id,
       generationId: 'generation-publication-cancel',
       subtaskId: 'subtask-publication-cancel',
       sourceAttemptId: 'attempt-source',
       agentClassName: 'codex-cli',
+      mainBaseCommit: 'main-commit',
       candidateCommit: 'candidate-commit',
+      permissionRequestId: 'permission-cancel',
+      changedPaths: [],
       completion: {
         body: 'must not become visible',
-        artifacts: ['result.md'],
+        artifacts: [],
         warnings: [],
         handoffs: [],
         completionSchemaVersion: 3,
@@ -68,80 +68,30 @@ describe('WorkspacePublicationWorker cancellation fence', () => {
       firstDispatchOrder: 0,
       createdAt: now,
     });
-    const release = vi.fn();
+    publications.markApproved('publication-cancel', now);
+    taskEngine.cancel(task.id, 'cancel before publication');
     const worker = new WorkspacePublicationWorker({
       db,
-      sessionId: 'session-publication-cancel',
       sourceRoot: '/tmp/source',
       workspaceStore: { rootPath: '/tmp/workspace-publication-test' } as never,
-      workspaceRepository: {
-        findByIdentity: vi.fn().mockReturnValue(null),
-      } as never,
+      workspaceRepository: { findByIdentity: vi.fn().mockReturnValue(null) } as never,
       subtaskRepo: subtasks,
-      attemptReceiptRepo: {
-        findByAttemptId: vi.fn().mockReturnValue({ workUnitId: 'work-unit-source' }),
-      } as never,
-      resourceLeaseService: {
-        claim: vi.fn().mockReturnValue({ type: 'claimed', leases: [] }),
-        release,
-      } as never,
-      dispatchItemRepo: {
-        listByTask: vi.fn().mockReturnValue([]),
-      } as never,
+      attemptReceiptRepo: { findByAttemptId: vi.fn() } as never,
       taskRuntimeService: taskRuntime,
     });
-    Object.defineProperty(worker, 'git', {
-      value: {
-        ensure: vi.fn().mockResolvedValue({ id: 'integration-workspace' }),
-        describeCandidate: vi.fn().mockResolvedValue({
-          changedPaths: [],
-          filePolicy: {},
-        }),
-        mergeCandidate: vi.fn(async () => {
-          publications.requestCancellation({
-            taskId: task.id,
-            generationId: 'generation-publication-cancel',
-            subtaskIds: ['subtask-publication-cancel'],
-            decisionId: 'decision-cancel-race',
-            now,
-          });
-          taskEngine.cancel(task.id, 'cancel during merge');
-          return {
-            type: 'integrated',
-            baseCommit: 'base',
-            oursCommit: 'ours',
-            theirsCommit: 'theirs',
-            integrationCommit: 'observed-integration-commit',
-            filePolicy: {},
-          };
-        }),
-      },
-    });
+    const ensure = vi.fn();
+    Object.defineProperty(worker, 'git', { value: { ensure } });
 
-    const outcomes = await worker.drain(task.id, 'generation-publication-cancel');
-
-    expect(outcomes).toEqual([{
+    await expect(worker.drain(task.id, 'generation-publication-cancel')).resolves.toEqual([{
       type: 'cancelled',
-      publicationId: 'publication-cancel-race',
+      publicationId: 'publication-cancel',
       taskId: task.id,
       subtaskId: 'subtask-publication-cancel',
-      observedIntegrationCommit: 'observed-integration-commit',
+      observedIntegrationCommit: null,
     }]);
-    expect(publications.find('publication-cancel-race')).toMatchObject({
-      status: 'cancelled',
-      integrationCommit: null,
-      observedIntegrationCommit: 'observed-integration-commit',
-    });
-    expect(subtasks.findById('subtask-publication-cancel')).toMatchObject({
-      status: 'awaiting_integration',
-      result: '',
-      artifacts: [],
-    });
-    expect(db.prepare('SELECT COUNT(*) AS count FROM subtask_handoffs').get()).toEqual({
-      count: 0,
-    });
-    expect(release).toHaveBeenCalledOnce();
+    expect(publications.find('publication-cancel')?.status).toBe('cancelled');
+    expect(ensure).not.toHaveBeenCalled();
   });
 });
 
-const now = '2026-07-28T00:00:00.000Z';
+const now = '2026-08-10T00:00:00.000Z';

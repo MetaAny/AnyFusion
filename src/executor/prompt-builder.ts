@@ -12,6 +12,9 @@ export function buildExecutorContextPrompt(input: ExecutorInput): string {
     '- Other graph nodes are out of scope. Do not execute or anticipate their full goals.',
     '- Dependency data is available only through incomingHandoffs.',
     '- Work only within the default authorized workspace boundary. If an operation outside it is required, call request_capability with one exact resource and operation; never work around a denial.',
+    '- Stay on the assigned Git branch and in the assigned worktree. Do not switch branches or worktrees, and do not modify the Project main worktree.',
+    '- Before reporting completion, commit the complete result, merge the current local main branch into the assigned branch, resolve and commit any conflicts, and leave the assigned worktree clean.',
+    '- Do not fetch, pull, push, rebase, or use any remote Git operation.',
     '- A granted request returns a grantId. Every broker-mediated use must call use_capability with that grantId and the exact operation payload so Runtime can enforce TTL, call, and byte budgets. A grant never permits direct access.',
     '- Finish with non-empty Markdown followed by exactly one completion marker and strict JSON until EOF.',
     '',
@@ -71,7 +74,8 @@ export function buildExecutorContextPrompt(input: ExecutorInput): string {
     'Return only evidence and noChangeReason. Runtime derives changed files and injects schema identity, attempt/work-unit/subtask IDs, acceptance keys, and handoff identities from the bound contract.',
     'For edit delivery, set noChangeReason to null when files changed; when no files need to change, provide a concise non-empty reason. For report delivery it must be null and the workspace must remain unchanged.',
     'If the Subtask cannot be completed, return {"failure":{"kind":"task_failed","code":"<stable_code>","summary":"<concise explanation>"}} instead.',
-    'The marker shown above is illustrative. Emit it exactly once, only at the end of your final response.',
+    'The marker shown above is literal, not illustrative. Emit it exactly once.',
+    'Your final response must end with the literal marker followed by one strict JSON object. Do not write anything after that JSON object.',
   ];
   return lines.join('\n');
 }

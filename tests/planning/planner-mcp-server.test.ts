@@ -1,11 +1,11 @@
 import Database from 'better-sqlite3';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { AgentClassService } from '../../src/executor/agent-class-service.js';
 import { PlannerDataReader } from '../../src/planning/planner-mcp-server.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
+import { createTestExecutorRegistrySnapshot } from '../../src/executor/test-executor-registry.js';
 
 function createHarness(sessionId = 'sess_current') {
   const db = new Database(':memory:');
@@ -13,7 +13,8 @@ function createHarness(sessionId = 'sess_current') {
   runMigrations(db);
   const taskRepo = new TaskRepo(db);
   const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-planner-mcp');
-  return { db, taskRepo, taskEngine, reader: new PlannerDataReader(db, sessionId) };
+  const snapshot = createTestExecutorRegistrySnapshot();
+  return { db, taskRepo, taskEngine, reader: new PlannerDataReader(db, sessionId, () => snapshot) };
 }
 
 describe('PlannerDataReader', () => {
@@ -29,6 +30,25 @@ describe('PlannerDataReader', () => {
     expect(result.count).toBe(20);
     expect(result.tasks).toHaveLength(20);
     expect(String(result.tasks[0]?.summary).length).toBeLessThanOrEqual(320);
+  });
+
+  it('hides system smoke Tasks from ordinary search and runtime state', () => {
+    const { taskEngine, reader } = createHarness();
+    taskEngine.create({
+      title: 'hidden smoke task',
+      goal: 'diagnostic only',
+      source: 'system_smoke',
+      smokeRunId: 'smoke-hidden',
+    });
+    const userTask = taskEngine.create({ title: 'visible user task', goal: 'ordinary work' });
+    taskEngine.transition(userTask.id, 'ready');
+
+    expect(reader.searchTasks({ query: 'smoke' })).toMatchObject({ count: 0, tasks: [] });
+    expect(reader.getRuntimeState()).toMatchObject({
+      taskCounts: { ready: 1 },
+      activeTasks: [expect.objectContaining({ id: userTask.id })],
+    });
+    expect(JSON.stringify(reader.getRuntimeState())).not.toContain('hidden smoke task');
   });
 
   it('truncates model-generated priority reasons in planner task reads', () => {
@@ -151,14 +171,6 @@ describe('PlannerDataReader', () => {
         id, last_focused_task_id, last_completed_task_id, last_session_id, updated_at
       ) VALUES ('global', ?, NULL, 'sess_current', ?)
     `).run(task.id, '2026-07-10T00:00:00.000Z');
-    const agentClassService = new AgentClassService({ db });
-    agentClassService.seedDefaults();
-    agentClassService.upsert({
-      ...agentClassService.findByName('codex-cli')!,
-      name: 'research-bot',
-      runtimeCommand: 'C:\\private\\codex.exe',
-      runtimeArgs: ['--token', 'sensitive-runtime-token'],
-    });
     const now = '2026-07-10T00:00:00.000Z';
     db.prepare(`
       INSERT INTO kernel_executor_status (
@@ -197,7 +209,6 @@ describe('PlannerDataReader', () => {
   it('returns bounded executor probe failures only when explicitly queried', () => {
     const { db, reader } = createHarness();
     const now = '2026-07-29T00:00:00.000Z';
-    new AgentClassService({ db }).seedDefaults();
     db.prepare(`
       INSERT INTO work_units (
         id, agent_class_name, agent_class_kind, state, heartbeat_at,

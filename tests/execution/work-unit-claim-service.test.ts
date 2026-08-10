@@ -1,41 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
-import { AgentClassRepo } from '../../src/storage/agent-class-repo.js';
 import { WorkUnitRepo } from '../../src/storage/work-unit-repo.js';
 import { WorkUnitClaimService } from '../../src/execution/work-unit-claim-service.js';
-import type { AgentClass, WorkUnit } from '../../src/core/types.js';
+import type { WorkUnit } from '../../src/core/types.js';
 
 function createDb(): Database.Database {
   const db = new Database(':memory:');
   runMigrations(db);
   return db;
-}
-
-function agentClass(name = 'codex-cli'): AgentClass {
-  return {
-    name,
-    kind: 'executor',
-    domains: ['software'],
-    capabilities: ['coding'],
-    inputTypes: ['text'],
-    outputTypes: ['markdown'],
-    strengths: [],
-    weaknesses: [],
-    primaryUseCases: [],
-    avoidUseCases: [],
-    intentAffinity: {},
-    riskLevel: 'medium',
-    harness: 'cli',
-    model: null,
-    skills: [],
-    mcpServers: [],
-    plugins: [],
-    runtimeCommand: null,
-    runtimeArgs: [],
-    runtimeCheckCommand: null,
-    projectUrl: null,
-  };
 }
 
 function workUnit(): WorkUnit {
@@ -57,7 +30,6 @@ function workUnit(): WorkUnit {
 describe('WorkUnitClaimService', () => {
   it('claims and releases an idle executor work unit', async () => {
     const db = createDb();
-    new AgentClassRepo(db).upsert(agentClass());
     const repo = new WorkUnitRepo(db);
     repo.upsert(workUnit());
 
@@ -102,7 +74,6 @@ describe('WorkUnitClaimService', () => {
 
   it('marks expired claimed work units as heartbeat_lost', () => {
     const db = createDb();
-    new AgentClassRepo(db).upsert(agentClass());
     const repo = new WorkUnitRepo(db);
     repo.upsert({
       ...workUnit(),
@@ -130,7 +101,6 @@ describe('WorkUnitClaimService', () => {
 
   it('does not let a stale attempt release a WorkUnit that has been claimed by another attempt', async () => {
     const db = createDb();
-    new AgentClassRepo(db).upsert(agentClass());
     const repo = new WorkUnitRepo(db);
     repo.upsert(workUnit());
     const claim = await new WorkUnitClaimService(repo).claim({
@@ -166,7 +136,6 @@ describe('WorkUnitClaimService', () => {
 
   it('enforces one active attempt per Subtask at the database boundary', () => {
     const db = createDb();
-    new AgentClassRepo(db).upsert(agentClass());
     const repo = new WorkUnitRepo(db);
     repo.upsert(workUnit());
     repo.upsert({ ...workUnit(), id: 'executor-2' });
@@ -184,7 +153,6 @@ describe('WorkUnitClaimService', () => {
 
   it('provisions and claims an executor only after a successful runtime probe', async () => {
     const db = createDb();
-    new AgentClassRepo(db).upsert(agentClass());
     const repo = new WorkUnitRepo(db);
     const probe = vi.fn().mockResolvedValue(true);
 
@@ -208,9 +176,6 @@ describe('WorkUnitClaimService', () => {
 
   it('falls back through planner candidates and preserves failed probes', async () => {
     const db = createDb();
-    const classes = new AgentClassRepo(db);
-    classes.upsert(agentClass('first-executor'));
-    classes.upsert(agentClass('second-executor'));
     const repo = new WorkUnitRepo(db);
     const probe = vi.fn(async (name: string) => name === 'second-executor');
 
@@ -233,9 +198,6 @@ describe('WorkUnitClaimService', () => {
 
   it('returns no claim when every planned executor probe fails', async () => {
     const db = createDb();
-    const classes = new AgentClassRepo(db);
-    classes.upsert(agentClass('first-executor'));
-    classes.upsert(agentClass('second-executor'));
     const repo = new WorkUnitRepo(db);
 
     const claim = await new WorkUnitClaimService(repo, 60_000, async () => false).claim({
@@ -254,7 +216,6 @@ describe('WorkUnitClaimService', () => {
 
   it('persists the concrete executor probe error for later diagnostics', async () => {
     const db = createDb();
-    new AgentClassRepo(db).upsert(agentClass());
     const repo = new WorkUnitRepo(db);
 
     const claim = await new WorkUnitClaimService(repo, 60_000, async () => {
