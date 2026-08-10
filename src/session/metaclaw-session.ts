@@ -819,7 +819,7 @@ export class MetaclawSession {
       throw new Error('Planner TUI commands must start with /');
     }
     const outputStart = this.output.length;
-    const result = await this.inputController.submit(command, { awaitAsyncWork: true });
+    const result = await this.inputController.submit(command, { awaitAsyncWork: false });
     return {
       exitRequested: result.exitRequested,
       output: this.output.slice(outputStart),

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
+import { SubtaskRepo } from '../../src/storage/subtask-repo.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
@@ -626,6 +627,9 @@ describe('Round 3 task boundary acceptance', () => {
       type: 'manual',
       description: '执行器权限受限，请确认已授予所需目录访问权限后重试',
       status: 'waiting',
+    });
+    new SubtaskRepo(db).updateStatus(`${blockedTask.id}_execute`, 'blocked', {
+      error: '执行器权限受限',
     });
 
     const beforeCount = taskRepo.findAll().length;

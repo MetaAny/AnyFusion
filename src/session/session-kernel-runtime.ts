@@ -160,11 +160,24 @@ export class SessionKernelRuntime {
     if (!task) throw new Error(`task not found: ${taskCommand.taskId}`);
     this.deps.callbacks.setCurrentTaskId(task.id);
     this.deps.callbacks.setFocusContext({ kind: 'task', taskId: task.id });
+    const executionMode = task.status === 'blocked' ? 'resume-blocked' : 'resume-parked';
     this.deps.callbacks.prepareTaskExecution(task.id, buildExecutionRequest({
       userInput,
       taskId: task.id,
-      executionMode: task.status === 'blocked' ? 'resume-blocked' : 'resume-parked',
+      executionMode,
       decision,
+      recoveryTrigger: taskCommand.control === 'recover_blocked'
+        ? {
+            kind: 'natural-language-resume',
+            blockedReason: task.dependencies
+              .filter(dependency => dependency.status === 'waiting')
+              .map(dependency => dependency.description)
+              .filter(Boolean)
+              .join('；') || '未知原因',
+            triggerReason: decision.reason,
+            sourceInputExcerpt: userInput.replace(/\s+/g, ' ').trim().slice(0, 80),
+          }
+        : undefined,
     }));
   }
 
@@ -217,6 +230,7 @@ function buildExecutionRequest(input: {
   taskId: string;
   executionMode: QueuedExecutionRequest['executionMode'];
   decision: KernelDecision;
+  recoveryTrigger?: QueuedExecutionRequest['recoveryTrigger'];
 }): QueuedExecutionRequest {
   return {
     userPrompt: input.userInput,
@@ -224,6 +238,7 @@ function buildExecutionRequest(input: {
     executionMode: input.executionMode,
     kernelDecisionId: input.decision.id,
     schedulingReason: input.decision.reason,
+    recoveryTrigger: input.recoveryTrigger,
   };
 }
 

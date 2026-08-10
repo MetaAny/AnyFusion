@@ -3,6 +3,99 @@ import { KernelExecutionRuntime } from '../../src/execution/kernel-execution-run
 import { ControlKernel, type KernelSnapshot } from '../../src/kernel/control-kernel.js';
 
 describe('KernelExecutionRuntime dispatch snapshots', () => {
+  it('restores blocked Subtasks only for an explicit blocked-task recovery', () => {
+    const task = {
+      id: 'task_1', title: 'Task', goal: 'Goal', status: 'blocked',
+      updatedAt: '2026-08-10T00:00:00.000Z',
+    };
+    const blockedSubtask = {
+      id: 'subtask_blocked',
+      taskId: task.id,
+      status: 'blocked',
+      error: 'completion contract exhausted',
+    };
+    const findTask = vi.fn()
+      .mockReturnValueOnce(task)
+      .mockReturnValueOnce(task);
+    const updateStatus = vi.fn();
+    const unblockTask = vi.fn();
+    const record = vi.fn();
+    const runtime = new KernelExecutionRuntime({
+      taskRuntimeService: { findTask, unblockTask },
+      subtaskRepo: {
+        listActiveByTask: vi.fn().mockReturnValue([blockedSubtask]),
+        updateStatus,
+      },
+      workGraphRuntimeService: {
+        apply: vi.fn().mockReturnValue({
+          outcome: 'recovered', workGraph: { reason: 'existing', subtasks: [] }, subtasks: [],
+        }),
+      },
+      taskEventRepo: { record },
+      dispatchItemRepo: {},
+      maxConcurrentAttempts: 4,
+    } as never);
+
+    runtime.prepareExecution({
+      taskId: task.id,
+      request: {
+        userPrompt: task.goal,
+        contextTaskId: task.id,
+        executionMode: 'resume-blocked',
+        recoveryTrigger: {
+          kind: 'natural-language-resume',
+          blockedReason: 'completion contract exhausted',
+          triggerReason: 'task control authorized',
+        },
+      },
+    });
+
+    expect(updateStatus).toHaveBeenCalledWith(blockedSubtask.id, 'ready', { error: null });
+    expect(unblockTask).toHaveBeenCalledWith(task.id);
+    expect(record).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: task.id,
+      subtaskId: blockedSubtask.id,
+      eventType: 'subtask_recovered',
+    }));
+  });
+
+  it('does not restore blocked Subtasks during a system recovery drain', () => {
+    const task = {
+      id: 'task_1', title: 'Task', goal: 'Goal', status: 'blocked',
+      updatedAt: '2026-08-10T00:00:00.000Z',
+    };
+    const updateStatus = vi.fn();
+    const unblockTask = vi.fn();
+    const runtime = new KernelExecutionRuntime({
+      taskRuntimeService: { findTask: vi.fn().mockReturnValue(task), unblockTask },
+      subtaskRepo: {
+        listActiveByTask: vi.fn().mockReturnValue([{ id: 'subtask_blocked', status: 'blocked' }]),
+        updateStatus,
+      },
+      workGraphRuntimeService: {
+        apply: vi.fn().mockReturnValue({
+          outcome: 'recovered', workGraph: { reason: 'existing', subtasks: [] }, subtasks: [],
+        }),
+      },
+      taskEventRepo: {},
+      dispatchItemRepo: {},
+      maxConcurrentAttempts: 4,
+    } as never);
+
+    runtime.prepareExecution({
+      taskId: task.id,
+      request: {
+        userPrompt: task.goal,
+        contextTaskId: task.id,
+        executionMode: 'resume-blocked',
+        origin: 'system',
+      },
+    });
+
+    expect(updateStatus).not.toHaveBeenCalled();
+    expect(unblockTask).not.toHaveBeenCalled();
+  });
+
   it('reads the Task before and after durable recovery', async () => {
     const task = {
       id: 'task_1', title: 'Task', goal: 'Goal', status: 'blocked',

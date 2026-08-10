@@ -1074,6 +1074,9 @@ export class KernelExecutionRuntime {
   prepareExecution(input: KernelExecutionRuntimeInput): PreparedKernelExecutionInput {
     const task = this.deps.taskRuntimeService.findTask(input.taskId);
     if (!task) throw new Error(`task not found: ${input.taskId}`);
+    if (input.request.executionMode === 'resume-blocked' && input.request.recoveryTrigger) {
+      this.applyExplicitBlockedRecovery(task.id, input.request.recoveryTrigger);
+    }
     const graph = this.deps.workGraphRuntimeService.apply({
       task,
       userPrompt: input.request.userPrompt,
@@ -1090,6 +1093,28 @@ export class KernelExecutionRuntime {
         ? graph.reason === 'missing_graph' ? 'missing' : 'conflict'
         : 'ready',
     };
+  }
+
+  private applyExplicitBlockedRecovery(
+    taskId: string,
+    trigger: NonNullable<QueuedExecutionRequest['recoveryTrigger']>,
+  ): void {
+    const blockedSubtasks = this.deps.subtaskRepo.listActiveByTask(taskId)
+      .filter(subtask => subtask.status === 'blocked');
+    for (const subtask of blockedSubtasks) {
+      this.deps.subtaskRepo.updateStatus(subtask.id, 'ready', { error: null });
+      this.recordTaskEvent(taskId, subtask.id, 'subtask_recovered', trigger.triggerReason, {
+        recoveryKind: trigger.kind,
+        previousError: subtask.error,
+      });
+    }
+    if (this.deps.taskRuntimeService.findTask(taskId)?.status === 'blocked') {
+      this.deps.taskRuntimeService.unblockTask(taskId);
+      this.recordTaskEvent(taskId, null, 'task_recovered', trigger.triggerReason, {
+        recoveryKind: trigger.kind,
+        recoveredSubtaskIds: blockedSubtasks.map(subtask => subtask.id),
+      });
+    }
   }
 
   async execute(input: PreparedKernelExecutionInput): Promise<void> {
