@@ -32,6 +32,7 @@ const PLAIN_SOURCE_EXCLUDED_TOP_LEVEL = new Set([
 
 export interface ManagedGitWorkspace extends WorkspaceHandle {
   kind: 'git';
+  projectRoot: string;
   repositoryPath: string;
   branch: string;
   sourceCommit: string;
@@ -115,7 +116,7 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-/** Host-side Git controller. It never writes the user's repository or refs. */
+/** Host-side Git controller for Runtime-managed Project branches and approved main promotion. */
 export class ManagedGitWorkspaceService {
   readonly repositoriesPath: string;
   private readonly repositoryOperations = new Map<string, Promise<void>>();
@@ -137,72 +138,44 @@ export class ManagedGitWorkspaceService {
   async ensure(identity: WorkspaceIdentity, sourcePath: string): Promise<ManagedGitWorkspace> {
     await this.store.initialize();
     const detectedSource = await this.detectSource(sourcePath);
-    const sourceRoot = detectedSource?.root ?? await realpath(sourcePath);
-    const sourceInfo = await stat(sourceRoot);
-    if (!sourceInfo.isDirectory()) throw new Error('managed Git source must be a directory');
-    const managedStoreRoot = await realpath(this.store.rootPath);
-    if (isPathWithin(managedStoreRoot, sourceRoot)) {
-      throw new Error('managed Git source cannot be inside the runtime workspace store');
+    if (!detectedSource) throw new Error(`Project path is not a Git repository: ${sourcePath}`);
+    const sourceRoot = await realpath(sourcePath);
+    if (detectedSource.root !== sourceRoot) {
+      throw new Error(`Project path must equal its Git top-level directory: ${detectedSource.root}`);
     }
-    const managedRuntimeRoot = basename(managedStoreRoot) === 'workspace-store'
-      ? dirname(managedStoreRoot)
-      : managedStoreRoot;
-    await mkdir(this.repositoriesPath, { recursive: true });
+    const branchAtRoot = await git(['-C', sourceRoot, 'branch', '--show-current']);
+    if (branchAtRoot !== 'main') throw new Error(`Project repository must have main checked out; found ${branchAtRoot}`);
+    const projectStatus = await git(['-C', sourceRoot, 'status', '--porcelain']);
+    if (projectStatus) throw new Error('Project main worktree must be clean before creating a Subtask worktree');
+    const sourceCommit = await git(['-C', sourceRoot, 'rev-parse', 'main']);
     const workspace = await this.store.ensureWorkspace(identity, 'git');
-    const repositoryPath = join(
-      this.repositoriesPath,
-      safeRefSegment(identity.taskId),
-      `${safeRefSegment(identity.generationId)}.git`,
-    );
-    const branch = `metaclaw/${safeRefSegment(identity.taskId)}/${safeRefSegment(identity.generationId)}/${safeRefSegment(identity.subtaskId)}`;
+    const commonDir = await git(['-C', sourceRoot, 'rev-parse', '--git-common-dir']);
+    const repositoryPath = await realpath(resolve(sourceRoot, commonDir));
+    const branch = `anyfusion/task/${safeRefSegment(identity.taskId)}/subtask/${safeRefSegment(identity.subtaskId)}`;
     const gitMetadataPath = join(workspace.filesPath, '.git');
 
     await this.withRepositoryOperation(repositoryPath, async () => {
-      if (!(await exists(repositoryPath))) {
-        await mkdir(dirname(repositoryPath), { recursive: true });
-        if (detectedSource) {
-          await git(['clone', '--bare', '--no-hardlinks', detectedSource.root, repositoryPath]);
-        } else {
-          await this.importPlainSource(sourceRoot, repositoryPath, [managedRuntimeRoot]);
-        }
-      }
-      const sourceCommit = detectedSource?.commit
-        ?? await git(['--git-dir', repositoryPath, 'rev-parse', 'HEAD']);
       if (!(await exists(gitMetadataPath))) {
-        await git(['--git-dir', repositoryPath, 'worktree', 'add', '-B', branch, workspace.filesPath, sourceCommit]);
-        if (detectedSource) await this.store.seedDirectory(workspace, detectedSource.root);
-        await git(['-C', workspace.filesPath, 'config', 'user.name', 'MetaClaw Runtime']);
-        await git(['-C', workspace.filesPath, 'config', 'user.email', 'runtime@metaclaw.local']);
-        const commonDir = await git(['-C', workspace.filesPath, 'rev-parse', '--git-common-dir']);
-        const excludePath = resolve(workspace.filesPath, commonDir, 'info', 'exclude');
+        await git(['-C', sourceRoot, 'worktree', 'add', '-B', branch, workspace.filesPath, sourceCommit]);
+        await git(['-C', workspace.filesPath, 'config', 'user.name', 'AnyFusion Executor']);
+        await git(['-C', workspace.filesPath, 'config', 'user.email', 'executor@anyfusion.local']);
+        const workspaceCommonDir = await git(['-C', workspace.filesPath, 'rev-parse', '--git-common-dir']);
+        const excludePath = resolve(workspace.filesPath, workspaceCommonDir, 'info', 'exclude');
         const existingExclude = await readFile(excludePath, 'utf8').catch(() => '');
         if (!existingExclude.split(/\r?\n/u).includes('.metaclaw/')) {
           await writeFile(excludePath, `${existingExclude.replace(/\s*$/u, '')}\n.metaclaw/\n`, 'utf8');
         }
-        await git(['-C', workspace.filesPath, 'add', '-A']);
-        if (await git(['-C', workspace.filesPath, 'status', '--porcelain'])) {
-          await git(['-C', workspace.filesPath, 'commit', '-m', 'chore: capture task generation baseline']);
-        }
       }
     });
 
-    const sourceCommit = detectedSource?.commit
-      ?? await git(['--git-dir', repositoryPath, 'rev-parse', 'HEAD']);
     const baselineCommit = await git(['-C', workspace.filesPath, 'rev-parse', 'HEAD']);
-    const sourceDiff = detectedSource
-      ? await git(['-C', detectedSource.root, 'diff', '--binary', 'HEAD'])
-      : '';
-    const untracked = detectedSource
-      ? await git(['-C', detectedSource.root, 'ls-files', '--others', '--exclude-standard'])
-      : '';
     const sourceDiffHash = createHash('sha256')
-      .update(detectedSource ? sourceDiff : sourceCommit)
-      .update('\0')
-      .update(untracked)
+      .update(sourceCommit)
       .digest('hex');
     return {
       ...workspace,
       kind: 'git',
+      projectRoot: sourceRoot,
       repositoryPath,
       branch,
       sourceCommit,
@@ -210,6 +183,72 @@ export class ManagedGitWorkspaceService {
       sourceDiffHash,
       gitMetadataPath,
     };
+  }
+
+  async validateExecutorCandidate(workspace: ManagedGitWorkspace): Promise<{
+    candidateCommit: string;
+    mainCommit: string;
+    changedPaths: string[];
+  }> {
+    const actualRoot = await realpath(await git(['-C', workspace.filesPath, 'rev-parse', '--show-toplevel']));
+    if (actualRoot !== await realpath(workspace.filesPath)) throw new Error('managed worktree root mismatch');
+    const branch = await git(['-C', workspace.filesPath, 'branch', '--show-current']);
+    if (branch !== workspace.branch) {
+      throw new Error(`Executor must remain on assigned branch ${workspace.branch}; found ${branch || 'detached HEAD'}`);
+    }
+    const status = await git(['-C', workspace.filesPath, 'status', '--porcelain']);
+    if (status) throw new Error('Executor must commit all changes and leave the assigned worktree clean');
+    const projectBranch = await git(['-C', workspace.projectRoot, 'branch', '--show-current']);
+    if (projectBranch !== 'main') throw new Error(`Project repository must remain on main; found ${projectBranch}`);
+    const projectStatus = await git(['-C', workspace.projectRoot, 'status', '--porcelain']);
+    if (projectStatus) throw new Error('Project main worktree must remain clean while validating a candidate');
+    const mainCommit = await git(['-C', workspace.projectRoot, 'rev-parse', 'main']);
+    const candidateCommit = await git(['-C', workspace.filesPath, 'rev-parse', 'HEAD']);
+    await git(['-C', workspace.filesPath, 'merge-base', '--is-ancestor', mainCommit, candidateCommit])
+      .catch(() => {
+        throw new Error('Executor candidate must merge the current local main before completion');
+      });
+    const changedPaths = splitLines(await git([
+      '-C', workspace.filesPath, 'diff', '--name-only', `${mainCommit}..${candidateCommit}`,
+    ]));
+    return { candidateCommit, mainCommit, changedPaths };
+  }
+
+  async promoteCandidate(input: {
+    workspace: ManagedGitWorkspace;
+    candidateCommit: string;
+    approvedMainCommit: string;
+  }): Promise<{ integrationCommit: string; changedPaths: string[] }> {
+    const projectBranch = await git(['-C', input.workspace.projectRoot, 'branch', '--show-current']);
+    if (projectBranch !== 'main') throw new Error(`Project repository must remain on main; found ${projectBranch}`);
+    const status = await git(['-C', input.workspace.projectRoot, 'status', '--porcelain']);
+    if (status) throw new Error('Project main worktree must be clean before approved publication');
+    const currentMain = await git(['-C', input.workspace.projectRoot, 'rev-parse', 'main']);
+    if (currentMain !== input.approvedMainCommit) {
+      throw new Error('Project main changed after publication approval was requested');
+    }
+    await git(['-C', input.workspace.projectRoot, 'merge-base', '--is-ancestor', currentMain, input.candidateCommit])
+      .catch(() => {
+        throw new Error('Approved candidate no longer contains the current local main');
+      });
+    const changedPaths = splitLines(await git([
+      '-C', input.workspace.projectRoot, 'diff', '--name-only', `${currentMain}..${input.candidateCommit}`,
+    ]));
+    await git([
+      '-C', input.workspace.projectRoot, 'merge', '--no-ff', '--no-edit', input.candidateCommit,
+    ]);
+    return {
+      integrationCommit: await git(['-C', input.workspace.projectRoot, 'rev-parse', 'main']),
+      changedPaths,
+    };
+  }
+
+  async removePublishedWorkspace(workspace: ManagedGitWorkspace): Promise<void> {
+    await this.withRepositoryOperation(workspace.repositoryPath, async () => {
+      await git(['-C', workspace.projectRoot, 'worktree', 'remove', '--force', workspace.filesPath]);
+      await git(['-C', workspace.projectRoot, 'branch', '-D', workspace.branch]);
+      await rm(workspace.rootPath, { recursive: true, force: true });
+    });
   }
 
   private async withRepositoryOperation<T>(

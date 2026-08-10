@@ -52,8 +52,9 @@ fail() {
 show_help() {
   cat <<'EOF'
 Usage:
-  anyfusion                         Build both repositories and start the native TUI
-  anyfusion --script <file>         Run a scripted flow on the native Runtime
+  anyfusion [--project <dir>]       Build both repositories and start the native TUI
+  anyfusion --project <dir> --script <file>
+                                    Run a scripted flow on the native Runtime
   anyfusion smoke [smoke options]   Run the native Planner-to-Executor smoke
   anyfusion build                   Build AnyFusion and AnyFusion-Pi
   anyfusion --no-build [args...]    Reuse existing build outputs
@@ -62,6 +63,8 @@ Usage:
   anyfusion --launcher-help         Show this help
 
 Runtime:
+  - Project defaults to ~/AnyFusionProjects/default when --project is omitted.
+  - The Project must be one clean top-level Git repository on main.
   - Runtime and AnyFusion-Pi are separate host Node.js processes.
   - Codex and Pi use the existing host-installed commands.
   - Executor attempts use managed Git worktrees and isolated temporary homes.
@@ -272,7 +275,6 @@ main() {
     shift
     export METACLAW_SMOKE_NATIVE=true
     export METACLAW_SMOKE_REPO_ROOT="$REPO_ROOT"
-    export METACLAW_SMOKE_WORKDIR="$INVOKE_CWD"
     cd "$REPO_ROOT"
     exec node "$REPO_ROOT/scripts/smoke-metaclaw-real-task.mjs" "$@"
   fi

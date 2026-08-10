@@ -1,4 +1,5 @@
 export interface CliArgs {
+  projectPath?: string;
   scriptPath?: string;
   gateway?: boolean;
   connect?: boolean;
@@ -21,6 +22,11 @@ export function parseCliArgs(argv: string[]): CliArgs {
     };
   }
   const gatewaySubcommand = parseGatewaySubcommand(argv);
+  const projectFlagIndex = argv.findIndex(arg => arg === '--project');
+  const projectPath = projectFlagIndex === -1 ? undefined : argv[projectFlagIndex + 1];
+  if (projectFlagIndex !== -1 && (!projectPath || projectPath.startsWith('--'))) {
+    throw new Error('缺少项目路径。用法: anyfusion --project <项目目录>');
+  }
   const gateway = argv.includes('--gateway') || gatewaySubcommand?.command === 'run';
   const connect = argv.includes('--connect');
   const scriptFlagIndex = argv.findIndex(arg => arg === '--script');
@@ -28,6 +34,7 @@ export function parseCliArgs(argv: string[]): CliArgs {
     return {
       gateway,
       connect,
+      ...(projectPath ? { projectPath } : {}),
       ...(gatewaySubcommand ? { gatewayCommand: gatewaySubcommand.command } : {}),
       ...gatewaySubcommand?.pairing,
     };
@@ -42,6 +49,7 @@ export function parseCliArgs(argv: string[]): CliArgs {
     scriptPath,
     gateway,
     connect,
+    ...(projectPath ? { projectPath } : {}),
     ...(gatewaySubcommand ? { gatewayCommand: gatewaySubcommand.command } : {}),
     ...gatewaySubcommand?.pairing,
   };

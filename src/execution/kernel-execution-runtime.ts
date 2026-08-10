@@ -1231,17 +1231,17 @@ export class KernelExecutionRuntime {
       );
       if (outcomes.length === 0) return;
       let integrated = false;
+      let stale = false;
       for (const outcome of outcomes) {
-        if (outcome.type === 'conflicted') {
-          await input.workflow.submit(outcome.event);
-          await this.attemptSupervisor.drain(input.taskId);
-          break;
-        }
         if (outcome.type === 'cancelled') continue;
+        if (outcome.type === 'stale') {
+          stale = true;
+          continue;
+        }
         integrated = true;
         this.projectIntegratedPublication(outcome);
       }
-      if (integrated) {
+      if (integrated || stale) {
         const lastIntegrated = [...outcomes].reverse().find(
           (outcome): outcome is Extract<WorkspacePublicationOutcome, { type: 'integrated' }> => (
             outcome.type === 'integrated'
@@ -1257,7 +1257,9 @@ export class KernelExecutionRuntime {
           occurredAt: new Date().toISOString(),
           sessionId: this.deps.sessionId,
           taskId: input.taskId,
-          reason: 'candidate publication released downstream frontier',
+          reason: stale
+            ? 'stale candidate returned to its Executor for local-main synchronization'
+            : 'candidate publication released downstream frontier',
         });
         await this.attemptSupervisor.drain(input.taskId);
       }

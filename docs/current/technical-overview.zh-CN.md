@@ -2,9 +2,10 @@
 
 [English Technical Overview](technical-overview.md) | [中文首页](../../README.zh-CN.md)
 
-> 当前实现基线（2026-08-08）：PlanningAgentPlan v7、Work Graph
+> 当前实现基线（2026-08-10）：PlanningAgentPlan v7、Work Graph
 > v6、Kernel event/snapshot/decision contract v5、Completion Protocol v3，
-> fresh-only SQLite schema v32，以及来自
+> fresh-only SQLite schema v33、一个显式 Project 仓库、用户审批后的整分支
+> 发布，以及来自
 > `$ANYFUSION_CONFIG_HOME/executors.yaml` 的 digest-bound Executor Registry
 > Snapshot。`KernelWorkflow` 串行完成
 > event、Decision 和 application，attempt supervisor 在单一活跃顶层 Task
@@ -65,7 +66,7 @@ flowchart LR
   Attempt --> Context[SubtaskExecutionContext<br/>直接 handoff 与选定 evidence]
   Context --> Executors[ExecutionRuntime<br/>verified registry driver]
   Executors --> Verify[Completion Protocol v3<br/>delta、receipt 与 candidate commit]
-  Verify --> Publish[Git publication gate<br/>稳定顺序集成]
+  Verify --> Publish[用户审批 Git publication<br/>完整 candidate 分支]
   Publish --> Delivery[交付和 UI<br/>TUI 进度、飞书、文件、预览链接]
   Conversation --> Delivery
   Clarify --> Delivery
@@ -73,14 +74,21 @@ flowchart LR
   Stop --> Delivery
   Delivery --> User
 
-  Session <--> Store[(本地 SQLite schema 32<br/>任务、verification/audit、<br/>work units、events、memory)]
+  Session <--> Store[(本地 SQLite schema 33<br/>Project、任务、审批、<br/>work units、events、memory)]
   Workflow -. audit .-> Decisions[(kernel_decisions)]
   TaskOS <--> Store
   Graph <--> Store
   Attempt <--> Store
 ```
 
-所有自然语言输入统一进入隔离的 AnyFusion-Pi `PlanningAgent`，产出严格 v7 `PlanningAgentPlan`。Work Graph 使用 v6 契约，Planner 不枚举资源 claim 或 execution layer。`ControlKernel` 根据 frontier、pending/active item、AgentClass、资源和 slot 事实授权确定性 batch；Execution 并行运行 attempt，并由 publication worker 按拓扑层、首次授权顺序和 Subtask ID 发布成果。
+所有自然语言输入统一进入隔离的 AnyFusion-Pi `PlanningAgent`，产出严格 v7 `PlanningAgentPlan`。Work Graph 使用 v6 契约，Planner 不枚举资源 claim、宿主路径、分支名或 execution layer。`ControlKernel` 根据 frontier、pending/active item、AgentClass、资源和 slot 事实授权确定性 batch；Execution 并行运行 attempt，并由 publication worker 在用户审批后发布完整候选分支。
+
+启动时通过 `anyfusion --project <path>` 选择 Project；未指定时使用
+`~/AnyFusionProjects/default`。该路径必须恰好是普通 Git 仓库顶层，不能位于
+更高层 Git 仓库内部。已有仓库必须干净、位于 `main`，且不能包含嵌套仓库或
+submodule；非 Git 目录由 Runtime 初始化并提交到 `main`。Runtime 将解析后的
+Project 根目录显式传给 Session、Planner 和 Gateway，不再把启动目录推断为
+Task 源目录。
 
 AnyFusion-Pi `PlanningAgent` 使用专用 process runner，而不复用 Executor adapter。一个活动 MetaClaw session 对应一个持久 Pi session 文件。非交互入口以 `--mode rpc` 启动 Planner，通过 stdin/stdout 交换 JSONL；同一 session 的 turn 串行执行，避免多个进程并发写入 session 文件。Planner fork 管理对话历史和固定 system instructions；MetaClaw 不再从 SQLite interaction 重建提示词。Provider/Model 与 Planner 工具由 AnyFusion 固定管理。每个语义 turn 通过受限原生 `submit_planning_proposal({ plan })` 工具提交；runtime 注入 session、turn、user input 和 deterministic submission identity。rejection 是当前 ReAct turn 的结构化反馈，transport uncertain 与 rejection 严格分离；不存在 assistant 文本 proposal parser、proposal 专用 retry、repair prompt 或外层 validation loop。
 
@@ -137,10 +145,12 @@ flowchart LR
   Batch --> Attempt[Attempt supervisor<br/>独立 claim 与运行]
   Attempt --> Run[ExecutionRuntime<br/>传输并执行]
   Run --> Verify[Completion Protocol v3<br/>delta、receipt 与 candidate]
-  Verify --> Publish[Git publication gate]
-  Publish --> Done{是否集成？}
-  Done -->|是| Result[原子发布 result、handoff、<br/>artifact、workspace state 与 done]
-  Done -->|冲突| Repair[Kernel 授权原 AgentClass repair]
+  Verify --> Approval[repository_promotion<br/>用户审批]
+  Approval -->|通过| Publish[完整 candidate 分支<br/>合并到 Project main]
+  Approval -->|拒绝| Block[阻塞并保留<br/>branch/worktree]
+  Publish -->|base 未变化| Result[原子发布 result、handoff、<br/>artifact、workspace state 与 done]
+  Publish -->|main 已变化| Resync[保留 worktree；<br/>Executor 重新同步 main]
+  Resync --> Approval
 ```
 
 这就是 Task OS 路径。任务状态、恢复上下文、Kernel 授权、Subtask 状态、WorkUnit/resource lease、产物捕获、验收和 Git publication 都在这里发生。ADR-0011 仍保持一个已接纳的顶层任务，但该 Task 内互不依赖的 Subtasks 已可并行。
@@ -877,10 +887,10 @@ AnyFusion 当前只调度一个活跃顶层 Task。Work Graph 纯函数从依赖
 Work Graph、Registry digest、Executor membership、Capability 覆盖、健康和
 scheduling snapshot，也唯一决定 batch dispatch、Task/Subtask 取消、显式
 部分接受、generation replan、deferred availability、Executor recovery、
-retry/fallback、merge repair/conflict replan、permission
+retry/fallback、permission
 grant/deny/escalate、partition wait 和 sandbox recovery。
 
-`DurableKernelWorkflow` 负责 event inbox、Decision/application 原子 issuance、幂等 Runtime apply 和 observation drain。`WorkGraphRuntimeService` 只持久化或投影 Kernel 授权的 v6 Work Graph revision。`KernelExecutionRuntime` 构造快照并应用授权；`AttemptSupervisor` 管理 durable child launch；`SubtaskAttemptRunner` 负责 attempt-aware claim、唯一 context、Completion Protocol、receipt 和 candidate commit；`WorkspacePublicationWorker` 负责稳定 Git 集成与原子 completion 发布。
+`DurableKernelWorkflow` 负责 event inbox、Decision/application 原子 issuance、幂等 Runtime apply 和 observation drain。`WorkGraphRuntimeService` 只持久化或投影 Kernel 授权的 v6 Work Graph revision。`KernelExecutionRuntime` 构造快照并应用授权；`AttemptSupervisor` 管理 durable child launch；`SubtaskAttemptRunner` 负责 attempt-aware claim、唯一 context、Completion Protocol、receipt 和精确 candidate commit；`WorkspacePublicationWorker` 负责应用用户审批的 Project `main` promotion 并原子发布 completion facts。
 
 旧版 `ExecutorRouter`、`ExecutorRoutingCoordinator`、`ExecutionPolicyPlanner` 以及 `IntentOrchestrator` 路由子系统已整体删除——不再有独立的 executor-selection 层。`repo_execution`、`research_workflow` 等旧 route intent 名称仅作为 agent class 排序的 affinity key 保留。
 
@@ -892,19 +902,24 @@ AnyFusion 可以把复杂需求表示成 work graph，而不是把整段需求�
 
 在 active session path 中，proposal 只有在 `ControlKernel` 授权并创建 durable
 application 后才会成为持久化 Work Graph v6 `Subtask` revision。未发布产品
-使用 fresh-only SQLite schema v32；所有 v31 或更早预发布 schema 都会带
-精确路径拒绝，不提供迁移、自动删除或双读。Schema 32 删除
-`agent_classes`，新增 digest-bound Executor verification、轮转 smoke
-audit、最小 Task purge audit，以及 Task `source`/`smoke_run_id`；同时保留
+使用 fresh-only SQLite schema v33；所有 v32 或更早预发布 schema 都会带
+精确路径拒绝，不提供迁移、自动删除或双读。Schema 33 保留 schema 32 的
+Executor Registry 与 purge 基线，新增持久 Project、必需的 Task
+`project_id`，以及精确 publication base、permission request、changed paths
+和 approval status；同时保留
 Planner proposal、durable workflow、graph revision、
 resource/workspace/permission/sandbox、dispatch/publication/immutable merge
 audit、cancellation cleanup、lease revocation、generation replan、deferred
 availability、bounded recovery 和 partial completion 事实。普通运行期间
 Kernel 与 Task 事件保留完整历史；Skill 过程事件只保留为 attempt 生命周期
 内的 verifier evidence，只有终态事件落库并原子更新 effect summary。下游
-只有在直接依赖 publication 成功后才进入 frontier，并合并其完整 Git
-ancestry；integration branch 不会隐式成为 sibling 基线。Executor 成功先
-进入 `awaiting_integration`，publication 成功后才原子发布 completion facts。
+只有在直接依赖获得审批并合并到 Project `main` 后才进入 frontier，并从更新
+后的 `main` 创建自己的 worktree。Executor 必须提交全部改动、合并当前本地
+`main`、自行解决冲突并保持分支干净；Runtime 校验 assigned branch 与
+`main` ancestry 后创建 `awaiting_approval` 的 `repository_promotion` 请求。
+审批通过后完整分支合并到 `main` 并删除 worktree/branch；拒绝则阻塞并保留。
+若审批期间 `main` 已变化，Runtime 保留 worktree，让 Executor 重新同步后再
+生成新的审批。当前不执行 remote Git 操作，也不做按文件选择性发布。
 
 已经脱离生产链路的 `ExecutionStrategyPlanner`、`ExecutionPolicy`、`MultiExecutorOrchestrator` 和 `AgenticLoopController` 实现已删除。work graph 与 work unit dispatch 成为权威路径后，这些旧实现不再参与运行时。`ExecutionAggregator` 继续供验证流水线执行结构化的多结果证据检查。
 

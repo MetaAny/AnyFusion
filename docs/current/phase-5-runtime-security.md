@@ -4,13 +4,15 @@
 
 The default backend runs the driver from a verified Executor Registry binding
 as a trusted child process of the Runtime. On the supported Linux server path,
-Runtime, Planner and Executors are host processes. The child working directory
-is the existing private Subtask Git worktree. Its driver materializes a separate
+Runtime, Planner and Executors are host processes. Startup resolves one explicit
+Project repository, and the child working directory is the Subtask's persistent
+branch worktree from that repository. Its driver materializes a separate
 attempt-private runtime home and exposes only declared environment-file sources
 and inherited variable names. Capability, evidence and model-gateway services
-use loopback addresses when the binding's driver supports them. This is the
-minimal worktree boundary and does not claim a second OS-level sandbox for the
-child process.
+use loopback addresses when the binding's driver supports them. `cwd` and prompt
+constraints are behavioral controls only: the native child still runs as the
+Runtime user and this design does not claim filesystem isolation from Project
+`main`, sibling worktrees or other host paths.
 
 The compatibility backend runs every attempt in a new Docker container. In that mode, the control plane,
 `metaclaw-egress` proxy and attempt containers share the Docker-internal
@@ -89,16 +91,15 @@ unchecked Executors.
 ## Mount and persistence contract
 
 - Worktree mode starts the child with `cwd` set to the managed
-  `<task>/<generation>/<subtask>` Git worktree and does not mount a second
-  workspace. The registry driver, not the Executor ID, selects arguments,
-  session continuation, evidence affordance, result collector and private-home
-  materializer.
+  Project branch worktree and does not mount a second workspace. The registry
+  driver, not the Executor ID, selects arguments, session continuation,
+  evidence affordance, result collector and private-home materializer.
 - Docker mode exposes `/workspace` as the only writable bind-mounted tree; `/source`, `/inputs`, `/handoffs` and a Git worktree's `/workspace/.git` are read-only mounts, with a read-only root filesystem, UID/GID 1000, dropped Linux capabilities and `no-new-privileges`.
 - A dedicated Codex Docker driver may run its own `workspace-write` sandbox
   with fail-closed non-interactive approval. Any compatibility image exception
   must remain tied to the verified driver/image binding; generic images cannot
   request it.
-- Workspaces persist under `${METACLAW_HOME}/workspace-store/workspaces/<task>/<generation>/<subtask>`; only the child process or compatibility container is disposable.
+- Workspaces persist under `${METACLAW_HOME}/project-worktrees/<project>/workspaces/<task>/<generation>/<subtask>/files`. One Subtask keeps the same branch and physical worktree across retry, fallback and review; approved publication, cancellation or purge performs cleanup.
 - Checkpoints are immutable manifests. File bodies live in the SHA-256 CAS; SQLite stores URI, hash, size and reference metadata.
 - Cancelled or archived Task workspaces receive a seven-day cleanup deadline. CAS objects are removed only after the last checkpoint reference disappears. Files explicitly exported outside the managed workspace/CAS roots are not removed.
 
@@ -115,9 +116,9 @@ deletion; filesystem cleanup runs only after commit.
 
 Default profile operations do not request permission. An Executor calls `request_capability` only for a concrete out-of-profile operation. Runtime canonicalizes and persists the request, pauses the attempt, checkpoints the now-quiescent workspace, and submits `permission_requested` to the durable Kernel workflow. The Kernel returns grant, deny-to-Executor, or deny-and-escalate-to-Planner. Grants are attempt-bound and budgeted; user authorization is a durable fact from `/permission approve|deny <requestId>`, a gateway action, or a precise Planner interpretation.
 
-The Runtime supplies `permission-profile-v1` rules to both the live attempt and authorization-recovery workflows. Exact Task-registered partitions may receive `additional_read_resource` grants. Only `public-web-research` may receive a `network_target` grant after the target is normalized as credential-free public HTTP(S). Docker compatibility attempts use the egress proxy; worktree demo attempts use the Runtime's normal network namespace. No profile rule permits secrets, external mutation or repository promotion.
+The Runtime supplies `permission-profile-v1` rules to both the live attempt and authorization-recovery workflows. Exact Task-registered partitions may receive `additional_read_resource` grants. Only `public-web-research` may receive a `network_target` grant after the target is normalized as credential-free public HTTP(S). Docker compatibility attempts use the egress proxy; worktree demo attempts use the Runtime's normal network namespace. No Executor profile rule permits secrets, external mutation or repository promotion. `repository_promotion` is a separate Runtime-created request for one exact candidate commit and Project-main base; it authorizes Runtime publication, not additional Executor access.
 
-A granted response includes a `grantId`, but neither the request nor grant changes sandbox authority. `use_capability` accepts the operation payload, measures its UTF-8 bytes and atomically consumes attempt identity, expiry, call count and byte count. Read/network grants retain the 100-call/100-MiB audit budget; one-shot sensitive and logical requests allow one control payload up to 1 MiB. Budget rejection fails closed.
+A granted response includes a `grantId`, but neither the request nor grant changes sandbox authority. `use_capability` accepts the operation payload, measures its UTF-8 bytes and atomically consumes attempt identity, expiry, call count and byte count. Read/network grants retain the 100-call/100-MiB audit budget; one-shot sensitive and logical requests allow one control payload up to 1 MiB. Budget rejection fails closed. Publication approval instead causes Runtime to revalidate the exact base and candidate, merge the complete branch into local Project `main`, and delete the Subtask worktree/branch only after success. Denial preserves them and blocks the Task/Subtask.
 
 This initial model is a sandbox profile plus an authorization/audit budget. It does not provide a universal operation broker and does not claim fine-grained enforcement over every native file, network or external operation. A consumed grant proves budgeted authorization was recorded, not that an arbitrary native tool call was mediated. Requests for privileged mode, Docker/host sockets, devices, host namespaces, policy mutation, credential probing, cross-Task data or proxy bypass are always denied by the profile boundary. Future external-mutation or repository-promotion support requires a separately implemented and tested provider adapter/outbox; a grant never exposes raw host credentials or host write access to the attempt container.
 

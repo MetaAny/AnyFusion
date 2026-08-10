@@ -34,6 +34,7 @@ Key recent ADRs:
 - [ADR-0024: Resource Partition, Sandbox And Runtime Elevation](adr/0024-resource-partition-sandbox-and-runtime-elevation.md): Phase 5 resource identities, Docker attempts, persistent workspaces, leases and structured permission elevation.
 - [ADR-0025: Single-Task Concurrency And Git Publication](adr/0025-single-task-concurrency-and-git-publication.md): Phase 6 runnable frontier, batch dispatch, asynchronous attempts, Git-backed workspaces and publication.
 - [ADR-0026: Phase 6 Single-Task Reliability Closure](adr/0026-phase-6-single-task-reliability-closure.md): final Phase 6 scope, reliable Task termination/recovery closure and deferral of multi-Task scheduling.
+- [ADR-0027: Project Workspaces And User-Approved Branch Publication](adr/0027-project-workspaces-and-user-approved-branch-publication.md): explicit Project repositories, one Subtask worktree per branch, local-main synchronization and approval-gated whole-branch publication.
 
 [ADR-0021: Work Graph v4 And Subtask Execution Contract](adr/0021-work-graph-v4-subtask-execution-contract.md)
 is the foundational dependency/handoff/completion contract. ADR-0025/0026
@@ -51,6 +52,7 @@ replacing those semantics.
 
 ## Active Delivery
 
+- [Project workspaces and approved publication](plans/2026-08-10-project-workspaces-and-approved-publication.md): removes launch-cwd workspace inference and adds persistent Project repositories, Runtime-generated Subtask worktrees and user-approved whole-branch promotion to local `main`.
 - [Native Linux server launcher](plans/2026-07-23-linux-host-launcher.md): runs Runtime, AnyFusion-Pi and verified registry-bound worktree Executors as isolated host processes on the current server without requiring Docker.
 - [Node 22 single runtime image migration](plans/2026-08-05-node-22-single-runtime-image-migration.md): unifies MetaClaw and AnyFusion-Pi on one Node 22.19+ image and executable while preserving separate processes and dependency trees.
 - [Active permission review](plans/2026-08-04-active-permission-review.md): projects current-session durable permission requests to a transient Pi native Selector while preserving Kernel authorization and non-interactive natural-language resolution.

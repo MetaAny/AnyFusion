@@ -7,7 +7,7 @@ import type { Task } from '../core/types.js';
 
 const TERMINAL_STATUSES = new Set(['done', 'archived', 'cancelled']);
 const ACTIVE_DISPATCH_STATUSES = ['pending_launch', 'launching', 'running', 'cancelling', 'uncertain'];
-const ACTIVE_PUBLICATION_STATUSES = ['pending', 'applying', 'conflicted', 'cancelling', 'uncertain'];
+const ACTIVE_PUBLICATION_STATUSES = ['awaiting_approval', 'pending', 'applying', 'conflicted', 'cancelling', 'uncertain'];
 const ACTIVE_WORK_UNIT_STATES = ['starting', 'claimed', 'running', 'waiting', 'draining'];
 
 export interface TaskPurgeResult {

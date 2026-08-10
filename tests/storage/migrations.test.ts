@@ -10,8 +10,9 @@ describe('current SQLite baseline', () => {
     expect(() => runMigrations(db)).not.toThrow();
 
     expect(db.prepare('SELECT version FROM schema_version').all())
-      .toEqual([{ version: 32 }]);
+      .toEqual([{ version: 33 }]);
     for (const table of [
+      'projects',
       'tasks',
       'subtasks',
       'work_graph_revisions',
@@ -67,6 +68,12 @@ describe('current SQLite baseline', () => {
       .map(column => column.name)).toEqual(expect.arrayContaining([
       'source_skill_usage_event_id',
     ]));
+    expect((db.prepare('PRAGMA table_info(workspace_publications)').all() as Array<{ name: string }>)
+      .map(column => column.name)).toEqual(expect.arrayContaining([
+      'main_base_commit',
+      'permission_request_id',
+      'changed_paths_json',
+    ]));
     expect(db.prepare(`
       SELECT name FROM sqlite_master
       WHERE type = 'index' AND name = 'idx_planner_proposal_submissions_turn'
@@ -91,7 +98,7 @@ describe('current SQLite baseline', () => {
     `);
 
     expect(() => runMigrations(db)).toThrow(
-      'unsupported pre-release SQLite schema (30) at (unknown path); back up and create a fresh database for schema 32',
+      'unsupported pre-release SQLite schema (30) at (unknown path); back up and create a fresh database for schema 33',
     );
     expect(db.prepare('SELECT version FROM schema_version').all())
       .toEqual([{ version: 30 }]);

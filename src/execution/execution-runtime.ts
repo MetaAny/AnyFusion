@@ -254,7 +254,9 @@ export class ExecutionRuntime implements ActiveExecutionControl {
   }
 
   supportsResponseOnly(name: string): boolean {
-    return typeof this.registry.resolve(name)?.executeResponseOnly === 'function';
+    const executor = this.registry.resolve(name);
+    return executor?.supportsResponseOnly === true
+      && typeof executor.executeResponseOnly === 'function';
   }
 
   supportsContinuation(name: string): boolean {

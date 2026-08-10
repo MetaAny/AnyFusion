@@ -127,7 +127,7 @@ yet been confirmed.
 4. Start the TUI or run an end-to-end gate:
 
 ```bash
-anyfusion
+anyfusion --project /path/to/project
 anyfusion smoke --scenario artifact
 anyfusion smoke --executor pi --scenario pi-research --timeout 300
 ```
@@ -149,7 +149,7 @@ backend.
 | Deployment | Limited internal pilot use |
 | Task scope | One active top-level task with dependency-aware subtasks |
 | Dispatch | Deterministic batches with up to four concurrent isolated attempts inside the active top-level Task |
-| Persistence | Fresh-only SQLite schema 32; schema 31 and older databases are rejected without migration or automatic deletion |
+| Persistence | Fresh-only SQLite schema 33; schema 32 and older databases are rejected without migration or automatic deletion |
 | Executor authority | Digest-bound host Registry; only enabled, verified, digest-matched bindings are routable |
 | Compatibility | CLI, configuration, and runtime contracts may evolve before a stable release |
 

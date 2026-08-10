@@ -16,6 +16,7 @@ interface FocusContext {
 
 export interface SessionKernelRuntimeDeps {
   sessionId: string;
+  projectId: string;
   newTaskMetadata?: {
     source: Task['source'];
     smokeRunId: string | null;
@@ -178,6 +179,7 @@ export class SessionKernelRuntime {
       ? this.deps.taskRuntimeService.findTask(command.taskId)
       : this.deps.taskRuntimeService.createTask({
           id: decision.action.taskId,
+          projectId: this.deps.projectId,
           title: (command.title ?? inline.normalizedGoal).slice(0, 50),
           goal: command.goal ?? inline.normalizedGoal,
           resources: inline.resources,

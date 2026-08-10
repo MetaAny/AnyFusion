@@ -177,11 +177,13 @@ describe('TaskPurgeService', () => {
     db.prepare(`
       INSERT INTO workspace_publications (
         id, task_id, generation_id, subtask_id, source_attempt_id,
-        agent_class_name, candidate_commit, original_completion_json,
+        agent_class_name, main_base_commit, candidate_commit,
+        permission_request_id, changed_paths_json, original_completion_json,
         topology_layer, first_dispatch_order, status, created_at, updated_at
       ) VALUES (
         'publication_1', ?, 'generation_1', 'subtask_1', 'attempt_1',
-        'repo-codex', 'candidate', '{}', 0, 0, 'integrated', ?, ?
+        'repo-codex', 'main', 'candidate', 'permission_1', '[]', '{}',
+        0, 0, 'integrated', ?, ?
       )
     `).run(taskId, now, now);
     db.prepare(`

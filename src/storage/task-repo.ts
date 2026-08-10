@@ -4,6 +4,7 @@ import type { TaskSearchIndexRepo } from './task-search-index-repo.js';
 
 interface TaskRow {
   id: string;
+  project_id: string;
   title: string;
   goal: string;
   source: Task['source'];
@@ -26,6 +27,7 @@ interface TaskRow {
 function rowToTask(row: TaskRow): Task {
   return {
     id: row.id,
+    projectId: row.project_id,
     title: row.title,
     goal: row.goal,
     source: row.source,
@@ -56,12 +58,12 @@ export class TaskRepo {
 
   insert(task: Task): void {
     this.db.prepare(`
-      INSERT INTO tasks (id, title, goal, source, smoke_run_id, status, summary, snapshot_json, resources_json, artifacts_json,
+      INSERT INTO tasks (id, project_id, title, goal, source, smoke_run_id, status, summary, snapshot_json, resources_json, artifacts_json,
         dependencies_json, priority_json, injected_prefs_json, last_scheduling_reason,
         last_interruption_reason, interruption_count, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      task.id, task.title, task.goal, task.source, task.smokeRunId, task.status, task.summary,
+      task.id, task.projectId, task.title, task.goal, task.source, task.smokeRunId, task.status, task.summary,
       JSON.stringify(task.snapshots), JSON.stringify(task.resources),
       JSON.stringify(task.artifacts),
       JSON.stringify(task.dependencies), JSON.stringify(task.prioritySignals),

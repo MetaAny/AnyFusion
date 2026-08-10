@@ -138,9 +138,8 @@ describe('smoke-metaclaw-real-task helpers', () => {
     const smoke = await loadSmokeScript();
     const metaclawHome = join(tempRoot, 'metaclaw-home');
 
-    expect(smoke.smokeTaskOwnedRuntimePaths(metaclawHome, 'task-1')).toEqual([
-      join(metaclawHome, 'workspace-store', 'workspaces', 'task-1'),
-      join(metaclawHome, 'workspace-store', 'repositories', 'task-1'),
+    expect(smoke.smokeTaskOwnedRuntimePaths(metaclawHome, 'project-1', 'task-1')).toEqual([
+      join(metaclawHome, 'project-worktrees', 'project-1', 'workspaces', 'task-1'),
     ]);
   });
 
@@ -189,6 +188,7 @@ describe('smoke-metaclaw-real-task helpers', () => {
 
     expect(script).toContain('Runtime will provide the exact authorized target directory');
     expect(script).toContain('do not ask me for a path');
+    expect(script).toContain(smoke.smokeApprovalDirective);
     expect(script).not.toContain('in the current directory');
   });
 
@@ -208,22 +208,24 @@ describe('smoke-metaclaw-real-task helpers', () => {
     const smoke = await loadSmokeScript();
     const turns = smoke.buildScenarioScript('python-hello').trim().split('\n');
 
-    expect(turns).toHaveLength(2);
+    expect(turns).toHaveLength(3);
     expect(turns[0]).toContain('hello.py');
     expect(turns[0]).toContain('print("Hello world")');
     expect(turns[0]).toContain('python3');
-    expect(turns[1]).toBe('/exit');
+    expect(turns[1]).toBe(smoke.smokeApprovalDirective);
+    expect(turns[2]).toBe('/exit');
   });
 
   it('uses a web-search-only turn for the Pi research smoke', async () => {
     const smoke = await loadSmokeScript();
     const turns = smoke.buildScenarioScript('pi-research').trim().split('\n');
 
-    expect(turns).toHaveLength(2);
+    expect(turns).toHaveLength(3);
     expect(turns[0]).toContain('web_search');
     expect(turns[0]).toContain('创建一个持久调研任务');
     expect(turns[0]).toContain('不要修改工作区');
-    expect(turns[1]).toBe('/exit');
+    expect(turns[1]).toBe(smoke.smokeApprovalDirective);
+    expect(turns[2]).toBe('/exit');
   });
 
   it('keeps the shared Executor Registry visible without overriding Runtime HOME for Pi smoke', async () => {

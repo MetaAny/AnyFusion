@@ -37,6 +37,7 @@ export class TaskRuntimeService {
 
   createTask(input: {
     id?: string;
+    projectId?: string;
     title: string;
     goal: string;
     resources?: string[];

@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -43,11 +44,19 @@ function setup(rawResponse: string) {
   const taskRepo = new TaskRepo(db);
   db.prepare(`
     INSERT INTO tasks (
-      id, title, goal, status, summary, snapshot_json, resources_json, artifacts_json,
+      id, project_id, title, goal, status, summary, snapshot_json, resources_json, artifacts_json,
       dependencies_json, priority_json, injected_prefs_json, last_scheduling_reason,
       last_interruption_reason, interruption_count, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, '', '[]', '[]', '[]', '[]', '{}', '[]', '', '', 0, ?, ?)
-  `).run('task_phase2', 'Phase 2', 'complete the graph', 'running', '2026-07-17T00:00:00.000Z', '2026-07-17T00:00:00.000Z');
+    ) VALUES (?, ?, ?, ?, ?, '', '[]', '[]', '[]', '[]', '{}', '[]', '', '', 0, ?, ?)
+  `).run(
+    'task_phase2',
+    'project_phase2',
+    'Phase 2',
+    'complete the graph',
+    'running',
+    '2026-07-17T00:00:00.000Z',
+    '2026-07-17T00:00:00.000Z',
+  );
   const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-phase2-attempt-runner');
   const taskRuntimeService = new TaskRuntimeService({
     taskEngine,
@@ -69,13 +78,23 @@ function setup(rawResponse: string) {
     heartbeatAt: null, leaseExpiresAt: null,
     createdAt: '2026-07-17T00:00:00.000Z', updatedAt: '2026-07-17T00:00:00.000Z',
   });
-  const executionRuntime = {
-    run: vi.fn().mockResolvedValue({
+  const run = vi.fn().mockResolvedValue({
       taskId: 'task_phase2', executionId: 'exec_1', status: 'success', executorName: 'codex-cli',
       output: rawResponse, error: null, artifacts: [], subtaskResults: [], durationMs: 10,
-    }),
+  });
+  const runResponseOnly = vi.fn();
+  const runtimeForRunner = {
+    run: async (invocation: {
+      executorInput?: { sandbox?: { workspacePath?: string } };
+    }) => {
+      const result = await run(invocation);
+      if (result.status === 'success' && invocation.executorInput?.sandbox?.workspacePath) {
+        prepareGitCandidate(invocation.executorInput.sandbox.workspacePath);
+      }
+      return result;
+    },
     supportsResponseOnly: vi.fn().mockReturnValue(true),
-    runResponseOnly: vi.fn(),
+    runResponseOnly,
   };
   const attemptSandbox: AttemptSandboxPort = {
     resolveImage: vi.fn(), create: vi.fn(), start: vi.fn(), wait: vi.fn(), logs: vi.fn(),
@@ -85,6 +104,11 @@ function setup(rawResponse: string) {
   const sourceRoot = join(fixtureRoot, 'source');
   mkdirSync(sourceRoot, { recursive: true });
   writeFileSync(join(sourceRoot, 'README.md'), 'fixture\n');
+  execFileSync('git', ['init', '-b', 'main', sourceRoot]);
+  execFileSync('git', ['-C', sourceRoot, 'config', 'user.name', 'AnyFusion Test']);
+  execFileSync('git', ['-C', sourceRoot, 'config', 'user.email', 'test@anyfusion.local']);
+  execFileSync('git', ['-C', sourceRoot, 'add', '-A']);
+  execFileSync('git', ['-C', sourceRoot, 'commit', '-m', 'test: initialize project']);
   const workspaceStore = new WorkspaceStore(join(fixtureRoot, 'store'));
   const attemptRunner = new SubtaskAttemptRunner({
     db,
@@ -92,7 +116,7 @@ function setup(rawResponse: string) {
     taskRuntimeService,
     subtaskRepo,
     workUnitClaimService: new WorkUnitClaimService(workUnitRepo),
-    executionRuntime: executionRuntime as never,
+    executionRuntime: runtimeForRunner as never,
     agentClassService: {
       listAgentClasses: () => testExecutorAgentClasses(),
       deriveRecoverySafety: () => 'workspace_reconcilable',
@@ -172,7 +196,11 @@ function setup(rawResponse: string) {
     taskRuntimeService,
     subtaskRepo,
     workUnitRepo,
-    executionRuntime,
+    executionRuntime: {
+      run,
+      runResponseOnly,
+      supportsResponseOnly: runtimeForRunner.supportsResponseOnly,
+    },
     dispatchItems,
     workflow: new KernelWorkflowRepo(db),
     a,
@@ -218,6 +246,15 @@ function validResponse(): string {
   })}`;
 }
 
+function prepareGitCandidate(workspacePath: string): void {
+  const prefix = ['-c', `safe.directory=${workspacePath}`, '-C', workspacePath];
+  execFileSync('git', [...prefix, 'config', 'user.name', 'AnyFusion Test Executor']);
+  execFileSync('git', [...prefix, 'config', 'user.email', 'test-executor@anyfusion.local']);
+  execFileSync('git', [...prefix, 'add', '-A']);
+  execFileSync('git', [...prefix, 'commit', '--allow-empty', '-m', 'test: executor result']);
+  execFileSync('git', [...prefix, 'merge', '--no-edit', 'main']);
+}
+
 describe('SubtaskAttemptRunner', () => {
   it('atomically records a candidate receipt without publishing handoffs before integration', async () => {
     const setupResult = setup(validResponse());
@@ -240,7 +277,7 @@ describe('SubtaskAttemptRunner', () => {
     `).get()).toEqual({
       subtask_id: setupResult.a.id,
       source_attempt_id: 'attempt_1',
-      status: 'pending',
+      status: 'awaiting_approval',
     });
     expect(setupResult.dispatchItems.find('attempt_1')?.status).toBe('terminal');
     expect(setupResult.workflow.findEvent('event_attempt_1_execution_outcome')).toMatchObject({
@@ -487,6 +524,54 @@ describe('SubtaskAttemptRunner', () => {
       SELECT COUNT(*) AS count FROM resource_leases
       WHERE attempt_id = 'attempt_terminal_blocked' AND released_at IS NULL
     `).get()).toEqual({ count: setupResult.defaultResourceGrant.length });
+    expect(setupResult.db.prepare(`
+      SELECT status, decision_reason FROM permission_requests
+      WHERE attempt_id = 'attempt_terminal_blocked'
+    `).get()).toEqual({
+      status: 'denied',
+      decision_reason: 'candidate terminal landing failed before publication became durable',
+    });
+  });
+
+  it('withdraws the publication approval when cancellation wins after request creation', async () => {
+    const setupResult = setup(validResponse());
+    setupResult.db.exec(`
+      CREATE TRIGGER cancel_after_repository_promotion_escalation
+      AFTER UPDATE OF status ON permission_requests
+      WHEN NEW.attempt_id = 'attempt_cancel_after_approval'
+        AND NEW.status = 'escalated'
+      BEGIN
+        UPDATE tasks SET status = 'cancelled' WHERE id = NEW.task_id;
+        UPDATE subtasks SET status = 'cancelled', error = 'cancelled during approval creation'
+        WHERE id = NEW.subtask_id;
+      END
+    `);
+
+    const outcome = await setupResult.runner.run({
+      attemptId: 'attempt_cancel_after_approval',
+      executionId: 'exec_cancel_after_approval',
+      taskId: 'task_phase2',
+      subtaskId: setupResult.a.id,
+      agentClassName: 'codex-cli',
+      executionMode: 'fresh',
+      defaultResourceGrant: setupResult.defaultResourceGrant,
+    });
+
+    expect(outcome).toMatchObject({
+      outcome: 'cancelled_or_stale',
+      reason: 'Cancellation fence won before attempt terminal landing',
+    });
+    expect(setupResult.db.prepare(`
+      SELECT status, decision_reason FROM permission_requests
+      WHERE attempt_id = 'attempt_cancel_after_approval'
+    `).get()).toEqual({
+      status: 'denied',
+      decision_reason: 'candidate publication was cancelled before terminal landing',
+    });
+    expect(setupResult.db.prepare(`
+      SELECT COUNT(*) AS count FROM workspace_publications
+      WHERE source_attempt_id = 'attempt_cancel_after_approval'
+    `).get()).toEqual({ count: 0 });
   });
 
   it('runs a Kernel-authorized fallback from awaiting_decision without treating it as stale', async () => {
@@ -539,12 +624,13 @@ describe('SubtaskAttemptRunner', () => {
       taskId: 'task_phase2', subtaskId: setupResult.a.id, agentClassName: 'codex-cli',
       completionContract: first.completionContract, violations: first.violations,
     });
-
     expect(corrected).toMatchObject({ outcome: 'completed', output: 'A completed.' });
     expect(setupResult.executionRuntime.runResponseOnly).toHaveBeenCalledTimes(1);
     const correctionPrompt = setupResult.executionRuntime.runResponseOnly.mock.calls[0][1];
     expect(correctionPrompt).toContain('first malformed response');
     expect(correctionPrompt).toContain('{"evidence":["<concise evidence>"],"noChangeReason":null}');
+    expect(correctionPrompt).toContain('The marker must appear before the JSON object.');
+    expect(correctionPrompt).toContain('Do not wrap the JSON in a Markdown code fence.');
     expect(correctionPrompt).not.toContain('Completion contract:');
     expect(correctionPrompt).not.toContain('task_phase2_a');
     expect(correctionPrompt).not.toContain('acceptanceEvidence');
@@ -560,7 +646,7 @@ describe('SubtaskAttemptRunner', () => {
     });
     expect(setupResult.db.prepare(`
       SELECT source_attempt_id, status FROM workspace_publications
-    `).get()).toEqual({ source_attempt_id: 'attempt_correction', status: 'pending' });
+    `).get()).toEqual({ source_attempt_id: 'attempt_correction', status: 'awaiting_approval' });
   });
 
   it('wires exact Task resource rules into the production permission workflow', async () => {

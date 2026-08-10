@@ -37,6 +37,7 @@ import type {
 import {
   captureWorkspaceState,
   deriveWorkspaceDelta,
+  deriveGitCommitDelta,
   type WorkspaceDelta,
   type WorkspaceState,
 } from './workspace-change-tracker.js';
@@ -86,6 +87,7 @@ export interface SubtaskAttemptRunnerDeps {
   kernelWorkflowStore: KernelWorkflowStore;
   workspaceRepository: WorkspaceRepositoryPort;
   sourceRoot: string;
+  autoApproveRepositoryPromotions?: boolean;
   controlNetwork: string;
 }
 
@@ -276,6 +278,7 @@ export class SubtaskAttemptRunner {
       const allSubtasks = activeSubtasks.length > 0 ? activeSubtasks : this.deps.subtaskRepo.listByTask(input.taskId);
       const workspaceIdentity = {
         taskId: task.id,
+        projectId: task.projectId,
         generationId: subtask.generationId,
         subtaskId: subtask.id,
       };
@@ -346,7 +349,11 @@ export class SubtaskAttemptRunner {
         updatedAt: workspaceNow,
       });
       await mkdir(join(workspace.filesPath, '.metaclaw', 'results'), { recursive: true });
-      await this.deps.workspaceStore.prepareForSandbox(workspace);
+      if (this.deps.attemptSandbox.pathMode === 'native' && process.getuid && process.getgid) {
+        await this.deps.workspaceStore.prepareForSandbox(workspace, process.getuid(), process.getgid());
+      } else {
+        await this.deps.workspaceStore.prepareForSandbox(workspace);
+      }
       const inputsPath = join(workspace.rootPath, 'inputs');
       const handoffsPath = join(workspace.rootPath, 'handoffs');
       await Promise.all([mkdir(inputsPath, { recursive: true }), mkdir(handoffsPath, { recursive: true })]);
@@ -560,10 +567,12 @@ export class SubtaskAttemptRunner {
             };
       }
 
-      workspaceDelta = deriveWorkspaceDelta(
-        workspaceBaseline,
-        captureWorkspaceState(workspace.filesPath),
-      );
+      const candidate = mergeRepair
+        ? null
+        : await this.managedGitWorkspace.validateExecutorCandidate(gitWorkspace);
+      workspaceDelta = candidate
+        ? deriveGitCommitDelta(gitWorkspace.filesPath, candidate.mainCommit, candidate.candidateCommit)
+        : deriveWorkspaceDelta(workspaceBaseline, captureWorkspaceState(workspace.filesPath));
       this.attemptRuntimeRepo.recordWorkspaceDelta(
         attemptId,
         workspaceDelta,
@@ -728,10 +737,20 @@ export class SubtaskAttemptRunner {
       }
 
       const completedAt = new Date().toISOString();
-      const managedCommit = await this.managedGitWorkspace.commit(
-        gitWorkspace,
-        `feat: capture ${subtask.id} result`,
-      );
+      if (!candidate) throw new Error('Executor candidate validation was not completed');
+      const permissionRequestId = await this.requestRepositoryPromotion({
+        taskId: task.id,
+        projectId: task.projectId,
+        generationId: subtask.generationId,
+        subtaskId: subtask.id,
+        attemptId,
+        agentClassName: agentClass.name,
+        permissionProfileId: agentClass.permissionProfileId ?? 'restricted-custom',
+        workspaceId: workspace.id,
+        mainCommit: candidate.mainCommit,
+        candidateCommit: candidate.candidateCommit,
+        changedPaths: candidate.changedPaths,
+      });
       const dispatchItem = this.dispatchItemRepo.find(attemptId);
       const publicationCompletion: WorkspacePublicationCompletion = {
         body: completion.body,
@@ -743,8 +762,10 @@ export class SubtaskAttemptRunner {
       if (!dispatchItem) {
         throw new Error(`authorized dispatch item not found: ${attemptId}`);
       }
-      const landing = this.terminalService.land({
-        receipt: buildReceipt({
+      let landing;
+      try {
+        landing = this.terminalService.land({
+          receipt: buildReceipt({
           attemptId,
           executionId: input.executionId,
           taskId: task.id,
@@ -767,7 +788,10 @@ export class SubtaskAttemptRunner {
           subtaskId: subtask.id,
           sourceAttemptId: attemptId,
           agentClassName: agentClass.name,
-          candidateCommit: managedCommit.commit,
+          mainBaseCommit: candidate.mainCommit,
+          candidateCommit: candidate.candidateCommit,
+          permissionRequestId,
+          changedPaths: candidate.changedPaths,
           completion: publicationCompletion,
           topologyLayer: deriveTopologyLayer(subtask.id, allSubtasks),
           firstDispatchOrder: dispatchItem.batchOrder,
@@ -790,15 +814,29 @@ export class SubtaskAttemptRunner {
           sourceAttemptId: dispatchItem.sourceAttemptId,
           failure: null,
         },
-        now: completedAt,
-      });
+          now: completedAt,
+        });
+      } catch (error) {
+        this.withdrawRepositoryPromotion(
+          permissionRequestId,
+          'candidate terminal landing failed before publication became durable',
+        );
+        throw error;
+      }
       if (landing.cancellationWon) {
+        this.withdrawRepositoryPromotion(
+          permissionRequestId,
+          'candidate publication was cancelled before terminal landing',
+        );
         finalCheckpointReason = 'cancelled';
         return {
           outcome: 'cancelled_or_stale',
           attemptId,
           reason: 'Cancellation fence won before attempt terminal landing',
         };
+      }
+      if (this.deps.autoApproveRepositoryPromotions) {
+        this.publicationRepo.markApproved(`publication_${attemptId}`, completedAt);
       }
       if (workspace) {
         this.deps.workspaceRepository.upsert({
@@ -814,8 +852,8 @@ export class SubtaskAttemptRunner {
             sourceDiffHash: gitWorkspace!.sourceDiffHash,
           },
           managedRepositoryUri: pathToFileURL(gitWorkspace!.repositoryPath).href,
-          managedBranch: managedCommit.branch,
-          headCommit: managedCommit.commit,
+          managedBranch: gitWorkspace.branch,
+          headCommit: candidate.candidateCommit,
           currentCheckpointId: null,
           status: 'active',
           cleanupAfter: null,
@@ -1006,16 +1044,30 @@ export class SubtaskAttemptRunner {
       }
       const completedEnvelope = completion.envelope;
       const completedAt = new Date().toISOString();
-      const managedCommit = await this.managedGitWorkspace.commit(
-        gitWorkspace,
-        `feat: capture corrected ${subtask.id} result`,
-      );
+      const candidate = await this.managedGitWorkspace.validateExecutorCandidate(gitWorkspace);
+      const permissionRequestId = await this.requestRepositoryPromotion({
+        taskId: task.id,
+        projectId: task.projectId,
+        generationId: subtask.generationId,
+        subtaskId: subtask.id,
+        attemptId: input.attemptId,
+        agentClassName: input.agentClassName,
+        permissionProfileId: this.deps.agentClassService.listAgentClasses()
+          .find(candidate => candidate.name === input.agentClassName)?.permissionProfileId
+          ?? 'restricted-custom',
+        workspaceId: gitWorkspace.id,
+        mainCommit: candidate.mainCommit,
+        candidateCommit: candidate.candidateCommit,
+        changedPaths: candidate.changedPaths,
+      });
       const dispatchItem = this.dispatchItemRepo.find(input.attemptId);
       if (!dispatchItem) {
         throw new Error(`authorized dispatch item not found: ${input.attemptId}`);
       }
-      const landing = this.terminalService.land({
-        receipt: buildReceipt({
+      let landing;
+      try {
+        landing = this.terminalService.land({
+          receipt: buildReceipt({
           attemptId: input.attemptId, executionId: input.executionId, taskId: task.id, subtaskId: subtask.id,
           workUnitId: claim.workUnit.id, agentClassName: input.agentClassName, startedAt,
           terminalState: 'completed', rawResponse: result.output, completionSchemaVersion: 3, warnings: completion.warnings,
@@ -1030,7 +1082,10 @@ export class SubtaskAttemptRunner {
           subtaskId: subtask.id,
           sourceAttemptId: input.attemptId,
           agentClassName: input.agentClassName,
-          candidateCommit: managedCommit.commit,
+          mainBaseCommit: candidate.mainCommit,
+          candidateCommit: candidate.candidateCommit,
+          permissionRequestId,
+          changedPaths: candidate.changedPaths,
           completion: {
             body: completion.body,
             artifacts: completion.normalizedArtifacts,
@@ -1059,14 +1114,28 @@ export class SubtaskAttemptRunner {
           sourceAttemptId: dispatchItem.sourceAttemptId,
           failure: null,
         },
-        now: completedAt,
-      });
+          now: completedAt,
+        });
+      } catch (error) {
+        this.withdrawRepositoryPromotion(
+          permissionRequestId,
+          'corrected candidate terminal landing failed before publication became durable',
+        );
+        throw error;
+      }
       if (landing.cancellationWon) {
+        this.withdrawRepositoryPromotion(
+          permissionRequestId,
+          'corrected candidate publication was cancelled before terminal landing',
+        );
         return {
           outcome: 'cancelled_or_stale',
           attemptId: input.attemptId,
           reason: 'Cancellation fence won before correction terminal landing',
         };
+      }
+      if (this.deps.autoApproveRepositoryPromotions) {
+        this.publicationRepo.markApproved(`publication_${input.attemptId}`, completedAt);
       }
       const workspaceRecord = this.deps.workspaceRepository.findByIdentity(
         task.id,
@@ -1076,7 +1145,7 @@ export class SubtaskAttemptRunner {
       if (workspaceRecord) {
         this.deps.workspaceRepository.upsert({
           ...workspaceRecord,
-          headCommit: managedCommit.commit,
+          headCommit: candidate.candidateCommit,
           status: 'active',
           updatedAt: completedAt,
         });
@@ -1105,6 +1174,77 @@ export class SubtaskAttemptRunner {
         claim.release();
       }
     }
+  }
+
+  private async requestRepositoryPromotion(input: {
+    taskId: string;
+    projectId: string;
+    generationId: string;
+    subtaskId: string;
+    attemptId: string;
+    agentClassName: string;
+    permissionProfileId: 'workspace-engineering' | 'public-web-research' | 'restricted-custom';
+    workspaceId: string;
+    mainCommit: string;
+    candidateCommit: string;
+    changedPaths: string[];
+  }): Promise<string> {
+    const workflow = new PermissionWorkflowService({
+      context: {
+        sessionId: this.deps.sessionId,
+        taskId: input.taskId,
+        generationId: input.generationId,
+        subtaskId: input.subtaskId,
+        attemptId: input.attemptId,
+        agentClassName: input.agentClassName,
+        permissionProfileId: input.permissionProfileId,
+        containerId: '',
+        workspaceId: input.workspaceId,
+        checkpointId: null,
+      },
+      repository: this.deps.permissionRepository,
+      resolver: new RegisteredCapabilityResourceResolver(new Map([
+        [this.deps.sourceRoot, { kind: 'repository' as const, repositoryId: input.projectId }],
+      ])),
+      sandbox: this.deps.attemptSandbox,
+      workflowStore: this.deps.kernelWorkflowStore,
+      rules: buildPermissionRules({
+        permissionProfileId: input.permissionProfileId,
+        additionalReadPartitions: [],
+      }),
+      hooks: {
+        checkpoint: async () => null,
+        onEscalation: async () => undefined,
+        onRecoveryAuthorized: async () => undefined,
+      },
+    });
+    const result = await workflow.request({
+      capability: 'repository_promotion',
+      resource: this.deps.sourceRoot,
+      operation: `promote_commit:${input.candidateCommit}`,
+      reason: [
+        `Merge Subtask ${input.subtaskId} into Project main.`,
+        `Approved main base: ${input.mainCommit}.`,
+        `Candidate: ${input.candidateCommit}.`,
+        `Changed paths (${input.changedPaths.length}): ${input.changedPaths.join(', ') || '(none)'}.`,
+      ].join(' '),
+      suggestedScope: 'once',
+    }, { suspendAttempt: false });
+    if (result.status !== 'escalated') {
+      throw new Error(`repository promotion request did not enter user review: ${result.status}`);
+    }
+    return result.requestId;
+  }
+
+  private withdrawRepositoryPromotion(requestId: string, reason: string): void {
+    const record = this.deps.permissionRepository.findRequest(requestId);
+    if (!record || !['pending', 'escalated'].includes(record.status)) return;
+    this.deps.permissionRepository.deny({
+      decisionId: `permission_withdrawal_${requestId}`,
+      request: record.request,
+      reason,
+      deniedAt: new Date().toISOString(),
+    });
   }
 
   private isStillCurrent(taskId: string, subtaskId: string, attemptId: string, workUnitId: string): boolean {
@@ -1396,8 +1536,11 @@ function buildCorrectionPrompt(
   const guidance = [...new Set(violations.map(violation => correctionGuidance(violation.code)))];
   return [
     'Correct only the final response format. Do not execute the task, use tools, inspect files, or change the workspace.',
-    'Return non-empty Markdown followed by exactly one completion trailer.',
-    `Trailer marker: ${COMPLETION_MARKER_V3}`,
+    'Return non-empty Markdown followed by exactly one completion trailer using this exact order:',
+    '<non-empty Markdown body>',
+    COMPLETION_MARKER_V3,
+    '<one strict JSON object>',
+    'The marker must appear before the JSON object. Do not wrap the JSON in a Markdown code fence. The JSON object must be the final bytes of the response.',
     'Successful report schema: {"evidence":["<concise evidence>"],"noChangeReason":null}',
     'Failure report schema: {"failure":{"kind":"task_failed","code":"<stable_code>","summary":"<concise explanation>"}}',
     'Do not return schema/status identity, Task/Subtask/attempt/WorkUnit IDs, acceptance keys, or handoff identities. Runtime owns and injects them.',

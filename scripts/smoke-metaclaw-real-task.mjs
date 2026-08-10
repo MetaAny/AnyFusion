@@ -21,6 +21,7 @@ const pythonHelloFileName = 'hello.py';
 const pythonHelloSource = 'print("Hello world")';
 const pythonHelloOutput = 'Hello world';
 export const plannerMemoryMarker = 'planner-memory-sunrise';
+export const smokeApprovalDirective = '@smoke-approve-repository-promotion';
 const scenarioNames = new Set(['planner-session', 'artifact', 'python-hello', 'pi-research']);
 
 export function readOption(args, name) {
@@ -114,6 +115,7 @@ export function buildScenarioScript(scenario) {
   if (scenario === 'artifact') {
     return [
       `Create a file named smoke-result.md inside MetaClaw's managed Task workspace. The Runtime will provide the exact authorized target directory to the Executor, so do not ask me for a path. Its content must include this exact line: ${artifactExpectedLine} After creating it, tell me the absolute file path.`,
+      smokeApprovalDirective,
       '/exit',
       '',
     ].join('\n');
@@ -122,6 +124,7 @@ export function buildScenarioScript(scenario) {
   if (scenario === 'pi-research') {
     return [
       '请创建一个持久调研任务，不要直接回复：使用 web_search 和 web_fetch 核验 Node.js 官方首页域名、页面标题和首页对 Node.js 的描述，给出带来源引用的调研报告。不要修改工作区。',
+      smokeApprovalDirective,
       '/exit',
       '',
     ].join('\n');
@@ -129,6 +132,7 @@ export function buildScenarioScript(scenario) {
 
   return [
     `请在当前工作区新建 ${pythonHelloFileName}，内容严格为一行 ${pythonHelloSource}。使用 python3 运行该文件，并确认标准输出严格为 ${pythonHelloOutput}。`,
+    smokeApprovalDirective,
     '/exit',
     '',
   ].join('\n');
@@ -453,7 +457,7 @@ function waitSync(milliseconds) {
 
 function smokeTaskRow(db, smokeRunId) {
   return db.prepare(`
-    SELECT id, source, smoke_run_id AS smokeRunId, status
+    SELECT id, project_id AS projectId, source, smoke_run_id AS smokeRunId, status
     FROM tasks WHERE smoke_run_id = ?
   `).get(smokeRunId);
 }
@@ -466,7 +470,9 @@ function smokeTaskQuiescence(db, taskId) {
     `).get(taskId).count),
     publications: Number(db.prepare(`
       SELECT COUNT(*) AS count FROM workspace_publications
-      WHERE task_id = ? AND status IN ('pending', 'applying', 'conflicted', 'cancelling', 'uncertain')
+      WHERE task_id = ? AND status IN (
+        'awaiting_approval', 'pending', 'applying', 'conflicted', 'cancelling', 'uncertain'
+      )
     `).get(taskId).count),
     sandboxes: Number(db.prepare(`
       SELECT COUNT(*) AS count FROM attempt_sandboxes
@@ -491,7 +497,11 @@ function runSmokeCommandScript(input, lines, label) {
   const scriptPath = join(input.scriptDir, `${label}.txt`);
   const logPath = join(input.scriptDir, `${label}.log`);
   writeFileSync(scriptPath, [...lines, '/exit', ''].join('\n'));
-  const result = run('node', [join(input.repoRoot, 'dist/index.js'), '--script', scriptPath], {
+  const result = run('node', [
+    join(input.repoRoot, 'dist/index.js'),
+    '--project', input.workdir,
+    '--script', scriptPath,
+  ], {
     cwd: input.workdir,
     env: input.childEnv,
     logPath,
@@ -503,11 +513,9 @@ function runSmokeCommandScript(input, lines, label) {
   return output;
 }
 
-export function smokeTaskOwnedRuntimePaths(metaclawHome, taskId) {
-  const workspaceStoreRoot = join(metaclawHome, 'workspace-store');
+export function smokeTaskOwnedRuntimePaths(metaclawHome, projectId, taskId) {
   return [
-    join(workspaceStoreRoot, 'workspaces', taskId),
-    join(workspaceStoreRoot, 'repositories', taskId),
+    join(metaclawHome, 'project-worktrees', projectId, 'workspaces', taskId),
   ];
 }
 
@@ -589,7 +597,7 @@ export function finalizeSmokeTask(input) {
       if (existsSync(path)) throw new Error(`Smoke purge left workspace path: ${path}`);
     }
   }
-  for (const path of smokeTaskOwnedRuntimePaths(input.metaclawHome, taskId)) {
+  for (const path of smokeTaskOwnedRuntimePaths(input.metaclawHome, task.projectId, taskId)) {
     if (existsSync(path)) throw new Error(`Smoke purge left task-owned runtime path: ${path}`);
   }
   return { taskId, purged: true, diagnostics: quiescence.checks };
@@ -769,7 +777,11 @@ export function runSmoke(rawArgs = process.argv.slice(2), env = process.env) {
     }
     const plannerSessionDir = join(metaclawHome, 'anyfusion-planner', 'sessions');
 
-    const runResult = run('node', [join(repoRoot, 'dist/index.js'), '--script', scriptPath], {
+    const runResult = run('node', [
+      join(repoRoot, 'dist/index.js'),
+      '--project', workdir,
+      '--script', scriptPath,
+    ], {
       cwd: workdir,
       env: childEnv,
       logPath: outputPath,

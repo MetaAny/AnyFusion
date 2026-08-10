@@ -6,9 +6,10 @@ AnyFusion is a local AI Task OS for agentic work. It turns natural-language requ
 
 It is built for teams who need agents to do more than answer the current turn. AnyFusion gives long-running AI work a task state machine, memory boundary, unified ControlKernel decision plane, work-unit dispatch runtime, verification loop, local Gateway, Feishu delivery path, and real end-to-end smoke gate.
 
-> Current implementation baseline (2026-08-08): PlanningAgentPlan v7, Work
+> Current implementation baseline (2026-08-10): PlanningAgentPlan v7, Work
 > Graph v6, Kernel event/snapshot/decision contract v5, Completion Protocol v3,
-> fresh-only SQLite schema v32 with no pre-release upgrade path, and one
+> fresh-only SQLite schema v33 with no pre-release upgrade path, one explicit
+> Project repository, user-approved whole-branch publication, and one
 > digest-bound Executor Registry Snapshot sourced from
 > `$ANYFUSION_CONFIG_HOME/executors.yaml`.
 
@@ -58,17 +59,25 @@ flowchart LR
   Attempt --> Context[SubtaskExecutionContext<br/>direct handoffs and selected evidence]
   Context --> Executors[ExecutionRuntime<br/>one worktree Executor process]
   Executors --> Verify[Completion Protocol v3<br/>evidence, no-change reason,<br/>authoritative workspace delta]
-  Verify --> Publication[Git publication gate<br/>stable integration order]
+  Verify --> Publication[User-approved Git publication<br/>whole candidate branch]
   Publication --> Delivery[Delivery and UI<br/>TUI progress, Feishu, files, preview links]
   Delivery --> User
 
-  Session <--> Store[(Local SQLite schema 32<br/>tasks, verification/audits,<br/>work units, events, memory)]
+  Session <--> Store[(Local SQLite schema 33<br/>projects, tasks, approvals,<br/>work units, events, memory)]
   Loop --> Decisions[(kernel_decisions)]
   Graph <--> Store
   Attempt <--> Store
 ```
 
-Every natural-language input becomes `plan_proposed`; deterministic commands become versioned Kernel events; attempts return capacity, structured outcome, publication conflict, permission, partition, sandbox or contract facts. `ControlKernel` validates Planning admission, derives one deterministic dispatch batch from the runnable frontier, and remains the sole authority for recovery, retry, fallback, merge repair, replan, partition waiting, permission decisions and derived availability. Runtime applies no unpersisted strategy.
+Every natural-language input becomes `plan_proposed`; deterministic commands become versioned Kernel events; attempts return capacity, structured outcome, publication conflict, permission, partition, sandbox or contract facts. `ControlKernel` validates Planning admission, derives one deterministic dispatch batch from the runnable frontier, and remains the sole authority for recovery, retry, fallback, replan, partition waiting, permission decisions and derived availability. Runtime applies no unpersisted strategy.
+
+Startup resolves one Project with `anyfusion --project <path>` or the default
+`~/AnyFusionProjects/default`. The path must be the exact top-level ordinary Git
+repository and may not be nested in another repository. Existing repositories
+must be clean on `main` and contain no nested repositories or submodules;
+non-Git directories are initialized and committed on `main`. Runtime passes the
+resolved Project root explicitly to Session, Planner and Gateway, so the launch
+directory is never inferred as Task source.
 
 The AnyFusion-Pi `PlanningAgent` uses a dedicated process runner rather than an Executor adapter. One live MetaClaw session maps to one persisted Pi session file. Non-interactive surfaces launch the Planner with `--mode rpc`, exchange JSONL over stdin/stdout, and serialize turns targeting the same session so only one process writes that file at a time. Native TUI and RPC use one Planner bootstrap. The fork owns dialogue history, a small stable system prompt and exactly one fixed `metaclaw-planner/SKILL.md`; MetaClaw does not rebuild history from SQLite interactions. Dynamic facts are queried through exactly seven read-only MCP tools: `search_tasks`, `get_task_context`, `get_current_session_context`, `get_planning_context`, `get_runtime_state`, `list_executor_status` and `get_executor_diagnostics`. Repository inspection is limited to Pi-native `read`, `grep`, `find` and `ls` rooted at `/workspace`; `bash`, `edit` and `write` remain disabled. Provider/model selection, external Skills/extensions/MCP configuration, prompt templates, installation and updates are fixed or disabled by AnyFusion. Every semantic turn uses the restricted native `submit_planning_proposal({ plan })` tool. Runtime identity is injected outside the model, rejection is structured feedback in the current ReAct turn, and proposal-host transport uncertainty remains distinct from MCP unavailability. A missing fixed MCP tool fails startup; mid-turn MCP loss locks proposal submission and aborts that loop, then reconnects before the next turn. There is no assistant-text proposal parser, proposal-specific retry count, repair prompt or outer validation loop.
 
@@ -128,10 +137,12 @@ flowchart LR
   Batch --> Attempt[Attempt supervisor<br/>claim and run independently]
   Attempt --> Run[ExecutionRuntime<br/>transport and execute]
   Run --> Verify[Completion Protocol v3<br/>delta, receipt and candidate commit]
-  Verify --> Integrate[Git publication gate<br/>deterministic order]
-  Integrate --> Done{Integrated?}
-  Done -->|yes| Result[Atomically publish result,<br/>handoffs, artifacts and done]
-  Done -->|conflict| Repair[Kernel-authorized merge repair]
+  Verify --> Approval[repository_promotion<br/>user review]
+  Approval -->|approved| Integrate[Merge complete candidate<br/>into Project main]
+  Approval -->|denied| Block[Block and preserve<br/>branch/worktree]
+  Integrate -->|base unchanged| Result[Atomically publish result,<br/>handoffs, artifacts and done]
+  Integrate -->|main changed| Resync[Preserve worktree;<br/>Executor resynchronizes main]
+  Resync --> Approval
 ```
 
 This is the Task OS path. It is where task state, resume context, policy authorization, subtask state, work-unit leases, artifact capture, verification and Git publication matter. ADR-0011 still keeps one admitted top-level task, but independent Subtasks inside that Task now run concurrently.
@@ -825,9 +836,9 @@ Natural-language dispatch is split into Planner understanding, kernel authorizat
 - `direct_reply`, `clarification`, `task_control`, or `no_action`: no executor work unit should be claimed unless the kernel rewrites the plan into executable work.
 - `plan_work_graph`: the planner must propose a non-empty capability-minimal work graph whose nodes are future `Subtask` records. Each proposal carries dependencies, acceptance criteria, `deliveryKind: edit | report`, non-empty controlled `requiredCapabilities`, and the complete ordered set of eligible Executor IDs from the current Planner registry projection in `preferredAgentClassList`.
 
-`ControlKernel` exposes only `decide(event, snapshot)`. Kernel contract v5 validates Planning proposals, single-active-Task admission, graph structure, registry digest, Executor membership, capability coverage and health, then decides batch dispatch, capacity handling, execution landing, Task/Subtask cancellation, partial-result acceptance, generation replan, deferred availability, Executor recovery, merge repair/conflict replan, timer rechecks, contract correction, permission grant/deny/escalation, partition waiting and sandbox recovery without reading repositories, clocks, adapters or raw logs. Every event/snapshot/decision uses a versioned discriminated union, and decision and attempt identities are deterministic from the event and batch item.
+`ControlKernel` exposes only `decide(event, snapshot)`. Kernel contract v5 validates Planning proposals, single-active-Task admission, graph structure, registry digest, Executor membership, capability coverage and health, then decides batch dispatch, capacity handling, execution landing, Task/Subtask cancellation, partial-result acceptance, generation replan, deferred availability, Executor recovery, timer rechecks, contract correction, permission grant/deny/escalation, partition waiting and sandbox recovery without reading repositories, clocks, adapters or raw logs. Every event/snapshot/decision uses a versioned discriminated union, and decision and attempt identities are deterministic from the event and batch item.
 
-`DurableKernelWorkflow` first writes every event to `kernel_events`, atomically issues one immutable `kernel_decisions` authorization plus a pending application, then invokes an idempotent Runtime handler. Stable observations return to the inbox. Duplicate events resume the existing application instead of issuing a second Decision, and startup reconciles applications, child dispatch items, sandbox records and publication state before accepting input. Planner runs and bounded redacted tool summaries remain audited separately. `WorkGraphRuntimeService` derives graph facts without selecting strategy. `KernelExecutionRuntime` builds snapshots and applies decisions; `AttemptSupervisor` owns child launch; `SubtaskAttemptRunner` produces receipts and candidate commits; `WorkspacePublicationWorker` owns ordered integration and atomic completion publication.
+`DurableKernelWorkflow` first writes every event to `kernel_events`, atomically issues one immutable `kernel_decisions` authorization plus a pending application, then invokes an idempotent Runtime handler. Stable observations return to the inbox. Duplicate events resume the existing application instead of issuing a second Decision, and startup reconciles applications, child dispatch items, sandbox records and publication state before accepting input. Planner runs and bounded redacted tool summaries remain audited separately. `WorkGraphRuntimeService` derives graph facts without selecting strategy. `KernelExecutionRuntime` builds snapshots and applies decisions; `AttemptSupervisor` owns child launch; `SubtaskAttemptRunner` produces receipts and exact candidate commits; `WorkspacePublicationWorker` applies user-approved Project-main promotions and atomically publishes completion facts.
 
 The older `ExecutorRouter`, `ExecutorRoutingCoordinator`, `ExecutionPolicyPlanner`, and the `IntentOrchestrator` routing subsystem have been removed entirely — there is no separate executor-selection layer. Legacy route-intent names such as `repo_execution` and `research_workflow` survive only as affinity keys for ranking agent classes.
 
@@ -837,11 +848,12 @@ AnyFusion can represent complex requests as a work graph instead of a single und
 
 In the active session path, proposed nodes become persisted Work Graph v6
 `Subtask` records only after a durable `authorize_task_plan` application. The
-unreleased product uses fresh-only SQLite schema v32; every v31 or older
+unreleased product uses fresh-only SQLite schema v33; every v32 or older
 pre-release schema is rejected with its exact path, with no migration,
-automatic deletion or dual-read path. Schema 32 removes `agent_classes` and
-adds digest-bound Executor verification, rotating smoke audits, minimal Task
-purge audits, and Task `source`/`smoke_run_id` facts while preserving the
+automatic deletion or dual-read path. Schema 33 retains the schema 32 Executor
+Registry and purge baseline, adds durable Projects, requires Task `project_id`,
+and records exact publication base, permission request, changed paths and
+approval status while preserving the
 durable inbox/application/outbox, graph revisions,
 resource/workspace/permission/sandbox records, dispatch/publication/immutable
 merge audit, cancellation cleanup, lease revocation, generation replan,
@@ -850,13 +862,13 @@ Kernel and Task event logs retain complete history during ordinary operation.
 Skill progress remains attempt-lifetime verifier evidence; only terminal Skill
 outcomes are persisted and atomically update effect summaries. `dependencies`
 is the only topology and typed handoff source. Downstream work becomes runnable
-only after direct dependencies are published, receives their immutable
-handoffs and full Git ancestry, and never absorbs sibling or integration-branch
-state implicitly.
+only after direct dependencies are approved and merged into Project `main`,
+receives their immutable handoffs and starts its own worktree from that updated
+baseline.
 
 `SubtaskExecutionContext` is the only production Executor input. Task title/goal are background, the current Subtask goal is the sole operational instruction, siblings expose only titles as out of scope, and Planner-selected evidence has deterministic per-reference and total preview budgets. Runtime keeps Task/Subtask/attempt/WorkUnit identities and acceptance/handoff keys outside the model-facing prompt and report. Ordinary assistant/Executor history never enters the context. Codex and Pi may access eligible Task evidence through the same attempt-bound read-only authorization; unsupported Adapters receive only selected previews.
 
-Every Executor response must end with Completion Protocol v3. The model-facing strict JSON report contains only `evidence` and nullable `noChangeReason`, or a controlled `failure`; identity fields and model-authored artifacts are rejected. After Executor success and before completion validation, Runtime computes and persists one authoritative workspace delta. `report` requires an empty delta and null reason; changed `edit` requires a null reason; zero-delta `edit` requires a non-empty reason. Runtime derives artifacts from created/modified files, excludes deletions from the artifact list, reuses the source attempt delta for response-only correction, and fails closed on truncated or indeterminate delta. It then materializes the internal acceptance/handoff envelope, strips the machine report and checks budgets and direct-edge aggregate limits. Success persists the terminal receipt and candidate commit, then enters `awaiting_integration`. The publication worker merges candidates into a MetaClaw-managed integration branch in stable topology/authorization/ID order and only then atomically publishes normalized handoffs, clean body, artifacts, workspace state and `done`. Text may use Git three-way merge; binary paths require exclusive publication leases and never auto-merge. Conflicts return to the original AgentClass for three scoped repairs, then one independent conflict replan, then park. User repositories and branches are never mutated or pushed.
+Every Executor response must end with Completion Protocol v3. The model-facing strict JSON report contains only `evidence` and nullable `noChangeReason`, or a controlled `failure`; identity fields and model-authored artifacts are rejected. After Executor success and before completion validation, Runtime computes and persists one authoritative commit-derived workspace delta. `report` requires an empty delta and null reason; changed `edit` requires a null reason; zero-delta `edit` requires a non-empty reason. Runtime derives artifacts from created/modified files, excludes deletions from the artifact list, reuses the source attempt delta for response-only correction, and fails closed on truncated or indeterminate delta. The Executor must commit all changes, merge current local `main`, resolve conflicts and leave the assigned branch clean. Runtime then validates the assigned branch and `main` ancestry, materializes the internal acceptance/handoff envelope, strips the machine report, checks budgets, and persists the exact candidate in `awaiting_approval` with a `repository_promotion` request. Approval merges the complete branch into Project `main`; denial blocks and preserves the worktree. If `main` moved after review began, Runtime preserves the worktree and reruns the Executor to synchronize before creating a new approval. Successful promotion atomically publishes normalized handoffs, clean body, artifacts, workspace state and `done`, then deletes the Subtask worktree and branch. No remote Git operation or file-selective publication occurs.
 
 The retired `ExecutionStrategyPlanner`, `ExecutionPolicy`, `MultiExecutorOrchestrator`, and `AgenticLoopController` implementations have been removed. They were no longer connected to the production path after work-graph and work-unit dispatch became authoritative. `ExecutionAggregator` remains available to the verification pipeline for structured multi-result evidence checks.
 

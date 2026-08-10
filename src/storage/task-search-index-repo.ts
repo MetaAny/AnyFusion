@@ -219,6 +219,7 @@ export class TaskSearchIndexRepo {
 
       const tasks = this.db.prepare('SELECT * FROM tasks ORDER BY updated_at DESC').all() as Array<{
         id: string;
+        project_id: string;
         title: string;
         goal: string;
         source: Task['source'];
@@ -242,6 +243,7 @@ export class TaskSearchIndexRepo {
         if (row.source === 'system_smoke') continue;
         this.indexTask({
           id: row.id,
+          projectId: row.project_id,
           title: row.title,
           goal: row.goal,
           source: row.source,

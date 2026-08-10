@@ -1,6 +1,9 @@
 // Session facade that wires MetaClaw's task OS modules and exposes the user-facing session snapshot.
 import type Database from 'better-sqlite3';
 import { resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import type {
   Config,
   GuidanceProposal,
@@ -104,6 +107,7 @@ import {
 } from '../executor/executor-registration-service.js';
 import type { TuiExecutorRegistryEntry } from '../executor/executor-registry-types.js';
 import { SmokeRunAuditRepo, type SmokeRunAudit } from '../storage/smoke-run-audit-repo.js';
+import type { Project } from '../project/types.js';
 
 export interface PlannerHostRegistrar {
   registerSession(sessionId: string, session: MetaclawSession): () => void;
@@ -119,6 +123,7 @@ export interface MetaclawSessionDeps {
   contextRecaller: ContextRecaller;
   planningAgent?: PlanningAgent;
   notifier?: NotificationService;
+  project?: Project;
   sourceRoot?: string;
   attemptSandbox?: AttemptSandboxPort;
   plannerHost?: PlannerHostRegistrar;
@@ -349,6 +354,18 @@ export class MetaclawSession {
   private unregisterPlannerHost: (() => void) | null = null;
 
   constructor(private deps: MetaclawSessionDeps) {
+    const usingTestProjectFallback = !deps.project
+      && !deps.sourceRoot
+      && process.env.NODE_ENV === 'test';
+    const sourceRoot = deps.project?.rootPath ?? deps.sourceRoot
+      ?? (usingTestProjectFallback
+        ? createTestProjectRoot(deps.sessionId)
+        : (() => { throw new Error('MetaclawSession requires an explicit Project'); })());
+    const projectId = deps.project?.id
+      ?? (usingTestProjectFallback ? `project_test_${deps.sessionId}` : 'project_test_default');
+    const workspaceStoreRoot = process.env.NODE_ENV === 'test' && !deps.project
+      ? resolve(`${sourceRoot}.anyfusion-runtime`, 'project-worktrees', projectId)
+      : resolve(resolveMetaclawDir(), 'project-worktrees', projectId);
     this.notifier = deps.notifier ?? new NoopNotificationService();
     this.sessionStateRepo = new SessionStateRepo(deps.db);
     this.plannerProposalRepo = new PlannerProposalRepo(deps.db);
@@ -372,7 +389,7 @@ export class MetaclawSession {
     this.permissionRepository = new SqlitePermissionRepository(deps.db);
     this.attemptSandboxRepository = new SqliteAttemptSandboxRepository(deps.db);
     this.workspaceRepository = new SqliteWorkspaceRepository(deps.db);
-    this.workspaceStore = new WorkspaceStore(resolve(resolveMetaclawDir(), 'workspace-store'));
+    this.workspaceStore = new WorkspaceStore(workspaceStoreRoot);
     this.workspaceRetentionService = new WorkspaceRetentionService(
       this.workspaceRepository,
       this.workspaceStore,
@@ -455,10 +472,6 @@ export class MetaclawSession {
       waitForAsyncWork: () => this.waitForAsyncWork(),
       handleSubmitError: (error: unknown) => this.appendOutput(`错误: ${(error as Error).message}`),
     });
-    const sourceRoot = deps.sourceRoot
-      ?? (process.env.NODE_ENV === 'test'
-        ? resolve(process.cwd(), 'tests', 'fixtures', 'workspace-source')
-        : process.cwd());
     const resourceLeaseService = new ResourceLeaseService(new SqliteResourceLeaseRepository(deps.db));
     const dispatchItemRepo = new KernelDispatchItemRepo(deps.db);
     this.publicationRepo = new WorkspacePublicationRepo(deps.db);
@@ -493,6 +506,7 @@ export class MetaclawSession {
       kernelWorkflowStore: this.kernelWorkflowRepo,
       workspaceRepository: this.workspaceRepository,
       sourceRoot,
+      autoApproveRepositoryPromotions: usingTestProjectFallback,
       controlNetwork: process.env.METACLAW_CONTROL_NETWORK ?? 'metaclaw-control',
     });
     this.kernelExecutionRuntime = new KernelExecutionRuntime({
@@ -516,14 +530,11 @@ export class MetaclawSession {
       maxConcurrentAttempts: deps.config.orchestration.max_concurrent_attempts,
       publicationWorker: new WorkspacePublicationWorker({
         db: deps.db,
-        sessionId: deps.sessionId,
         sourceRoot,
         workspaceStore: this.workspaceStore,
         workspaceRepository: this.workspaceRepository,
         subtaskRepo: this.subtaskRepo,
         attemptReceiptRepo: this.attemptReceiptRepo,
-        resourceLeaseService,
-        dispatchItemRepo,
         taskRuntimeService: this.taskRuntimeService,
       }),
       publicationRepo: this.publicationRepo,
@@ -564,6 +575,7 @@ export class MetaclawSession {
     });
     this.sessionKernelRuntime = new SessionKernelRuntime({
       sessionId: deps.sessionId,
+      projectId,
       newTaskMetadata: deps.newTaskMetadata,
       taskRuntimeService: this.taskRuntimeService,
       memoryContextService: this.memoryContextService,
@@ -1840,6 +1852,12 @@ export class MetaclawSession {
   }): Promise<void> {
     const record = this.permissionRepository.findRequest(input.requestId);
     if (!record) throw new Error(`permission request not found: ${input.requestId}`);
+    const publication = record.request.capability === 'repository_promotion'
+      ? this.publicationRepo.findByPermissionRequestId(input.requestId)
+      : null;
+    if (record.request.capability === 'repository_promotion' && !publication) {
+      throw new Error(`repository promotion publication not found: ${input.requestId}`);
+    }
     const sandbox = this.attemptSandboxRepository.find(record.request.attemptId);
     const workspaceId = sandbox?.workspaceId
       ?? `workspace:${record.request.taskId}:${record.request.generationId}:${record.request.subtaskId}`;
@@ -1875,6 +1893,19 @@ export class MetaclawSession {
         onEscalation: async () => undefined,
         onRecoveryAuthorized: async ({ request }) => {
           if (!task || !request) return;
+          if (request.capability === 'repository_promotion') {
+            if (!publication || !this.publicationRepo.markApproved(publication.id, new Date().toISOString())) {
+              throw new Error(`repository promotion is no longer awaiting approval: ${input.requestId}`);
+            }
+            await this.prepareTaskExecution(task.id, {
+              userPrompt: task.goal,
+              contextTaskId: task.id,
+              executionMode: 'follow-up',
+              schedulingReason: `repository promotion ${input.requestId} approved`,
+              origin: 'system',
+            });
+            return;
+          }
           await this.prepareTaskExecution(task.id, {
             userPrompt: task.goal,
             contextTaskId: task.id,
@@ -1890,6 +1921,15 @@ export class MetaclawSession {
       source: input.source,
       plannerPlanId: input.plannerPlanId ?? null,
     });
+    if (publication && input.resolution === 'deny') {
+      const now = new Date().toISOString();
+      if (this.publicationRepo.markDenied(publication.id, 'user denied repository promotion', now)) {
+        this.subtaskRepo.updateStatus(publication.subtaskId, 'blocked', {
+          error: 'user denied repository promotion',
+        });
+        if (task?.status === 'running') this.taskRuntimeService.transitionTask(task.id, 'blocked');
+      }
+    }
   }
 
   private formatTaskRecovery(taskId: string): string {
@@ -2398,4 +2438,15 @@ export class MetaclawSession {
     });
   }
 
+}
+
+function createTestProjectRoot(sessionId: string): string {
+  const root = mkdtempSync(resolve(tmpdir(), `anyfusion-test-project-${sessionId}-`));
+  writeFileSync(resolve(root, 'README.md'), 'AnyFusion test Project\n');
+  execFileSync('git', ['init', '-b', 'main', root]);
+  execFileSync('git', ['-C', root, 'config', 'user.name', 'AnyFusion Test']);
+  execFileSync('git', ['-C', root, 'config', 'user.email', 'test@anyfusion.local']);
+  execFileSync('git', ['-C', root, 'add', '-A']);
+  execFileSync('git', ['-C', root, 'commit', '-m', 'test: initialize project']);
+  return root;
 }

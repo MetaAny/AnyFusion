@@ -1,10 +1,19 @@
 import type Database from 'better-sqlite3';
 
-const CURRENT_SCHEMA_VERSION = 32;
+const CURRENT_SCHEMA_VERSION = 33;
 
 const CURRENT_SCHEMA_SQL = `
+CREATE TABLE projects (
+          id TEXT PRIMARY KEY,
+          root_path TEXT NOT NULL UNIQUE,
+          main_branch TEXT NOT NULL DEFAULT 'main' CHECK(main_branch = 'main'),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
 CREATE TABLE tasks (
           id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL DEFAULT 'project_default',
           title TEXT NOT NULL,
           goal TEXT,
           source TEXT NOT NULL DEFAULT 'user' CHECK(source IN ('user', 'system_smoke')),
@@ -693,7 +702,10 @@ CREATE TABLE "workspace_publications" (
             subtask_id TEXT NOT NULL,
             source_attempt_id TEXT NOT NULL,
             agent_class_name TEXT NOT NULL,
+            main_base_commit TEXT NOT NULL,
             candidate_commit TEXT NOT NULL,
+            permission_request_id TEXT NOT NULL UNIQUE,
+            changed_paths_json TEXT NOT NULL DEFAULT '[]',
             original_completion_json TEXT NOT NULL,
             topology_layer INTEGER NOT NULL,
             first_dispatch_order INTEGER NOT NULL,
@@ -703,7 +715,7 @@ CREATE TABLE "workspace_publications" (
             integration_commit TEXT,
             observed_integration_commit TEXT,
             status TEXT NOT NULL CHECK(status IN (
-              'pending', 'applying', 'conflicted', 'integrated', 'parked',
+              'awaiting_approval', 'pending', 'applying', 'conflicted', 'integrated', 'parked', 'denied',
               'cancelling', 'cancelled', 'uncertain'
             )),
             applying_at TEXT,
@@ -714,7 +726,6 @@ CREATE TABLE "workspace_publications" (
             error_summary TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
-            UNIQUE(task_id, generation_id, subtask_id),
             FOREIGN KEY (task_id) REFERENCES tasks(id),
             FOREIGN KEY (subtask_id) REFERENCES subtasks(id)
           );
@@ -744,6 +755,8 @@ CREATE TABLE generation_replan_requests (
           );
 
 CREATE INDEX idx_tasks_status ON tasks(status);
+
+CREATE INDEX idx_tasks_project ON tasks(project_id, status, updated_at);
 
 CREATE INDEX idx_tasks_source ON tasks(source, status, updated_at);
 

@@ -41,6 +41,7 @@ export class TaskEngine {
    */
   create(input: {
     id?: string;
+    projectId?: string;
     title: string;
     goal: string;
     resources?: string[];
@@ -51,6 +52,7 @@ export class TaskEngine {
     const taskId = input.id?.trim() ? input.id : generateTaskId();
     const task: Task = {
       id: taskId,
+      projectId: input.projectId ?? 'project_default',
       title: input.title,
       goal: input.goal,
       source: input.source ?? 'user',

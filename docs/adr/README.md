@@ -27,10 +27,15 @@ ADR-0025 is the current authority for Phase 6A single-Task runnable frontier, Ke
 
 ADR-0026 fixes Phase 6's final scope to reliable asynchronous concurrency inside one top-level Task. It preserves ADR-0011; multi-Task scheduling is a future independent roadmap rather than Phase 6 work.
 
+ADR-0027 replaces process-cwd workspace inference with explicit Project
+repositories, one branch/worktree per Subtask and user-approved whole-branch
+publication to local `main`.
+
 ## Current authority matrix
 
 | Topic | Current authority | What it decides |
 | --- | --- | --- |
+| Project workspaces and approved publication | [ADR-0027](0027-project-workspaces-and-user-approved-branch-publication.md) | Project selection, Subtask branches/worktrees, local-main synchronization, approval-gated merge and cleanup |
 | Single-Task concurrency and Git publication | [ADR-0025](0025-single-task-concurrency-and-git-publication.md) | Runnable frontier, dispatch batches, attempt supervision, Git workspace ownership, publication gate and conflict repair |
 | Phase 6 single-Task reliability closure | [ADR-0026](0026-phase-6-single-task-reliability-closure.md) | Task termination, multi-attempt recovery/completion closure, and deferral of multi-Task scheduling |
 | Resource partitions and sandboxed attempts | [ADR-0024](0024-resource-partition-sandbox-and-runtime-elevation.md) | Partition identity/conflicts, persistent workspace, Docker attempt boundary, leases, elevation and recovery |

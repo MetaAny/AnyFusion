@@ -124,7 +124,7 @@ anyfusion executor list
 4. 启动 TUI 或运行端到端 gate：
 
 ```bash
-anyfusion
+anyfusion --project /path/to/project
 anyfusion smoke --scenario artifact
 anyfusion smoke --executor pi --scenario pi-research --timeout 300
 ```
@@ -145,7 +145,7 @@ compatibility backend。
 | 部署状态 | 已部署至内部服务器进行小范围试用 |
 | 任务范围 | 一个活跃顶层任务，内部支持具备依赖关系的多个 Subtask |
 | 调度方式 | 单一活跃顶层 Task 内按确定性 batch 并行运行最多四个隔离 attempt |
-| 持久化 | fresh-only SQLite schema 32；schema 31 及更旧数据库无迁移直接拒绝 |
+| 持久化 | fresh-only SQLite schema 33；schema 32 及更旧数据库无迁移直接拒绝 |
 | Executor 权威源 | digest-bound 主机 Registry；只有 enabled、verified、digest-matched binding 可路由 |
 | 兼容性 | CLI、配置和 Runtime contract 在稳定版前可能继续演进 |
 

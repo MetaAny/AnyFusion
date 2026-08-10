@@ -17,6 +17,21 @@ describe('parseCliArgs', () => {
     });
   });
 
+  it('parses an explicit Project path in interactive and script modes', () => {
+    expect(parseCliArgs(['--project', '/tmp/project'])).toEqual({
+      projectPath: '/tmp/project',
+      gateway: false,
+      connect: false,
+    });
+    expect(parseCliArgs(['--project', '/tmp/project', '--script', '/tmp/flow.txt'])).toEqual({
+      projectPath: '/tmp/project',
+      scriptPath: '/tmp/flow.txt',
+      gateway: false,
+      connect: false,
+    });
+    expect(() => parseCliArgs(['--project'])).toThrow('缺少项目路径');
+  });
+
   it('parses gateway and connect modes from argv', () => {
     expect(parseCliArgs(['--gateway'])).toEqual({
       gateway: true,

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
+import { ProjectRepo } from '../../src/storage/project-repo.js';
 import { SubtaskRepo } from '../../src/storage/subtask-repo.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import type { Task } from '../../src/core/types.js';
@@ -17,6 +18,7 @@ describe('SubtaskRepo', () => {
     const now = '2026-07-02T00:00:00.000Z';
     const task: Task = {
       id: 'task_1',
+      projectId: 'project_1',
       title: 'Task',
       goal: 'Do work',
       source: 'user',
@@ -35,6 +37,13 @@ describe('SubtaskRepo', () => {
       createdAt: now,
       updatedAt: now,
     };
+    new ProjectRepo(db).upsert({
+      id: task.projectId,
+      rootPath: '/tmp/project_1',
+      mainBranch: 'main',
+      createdAt: now,
+      updatedAt: now,
+    });
     new TaskRepo(db).insert(task);
     const repo = new SubtaskRepo(db);
     repo.upsert({
