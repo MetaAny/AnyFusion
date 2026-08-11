@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ControlKernel, type KernelEvent, type KernelSnapshot } from '../../src/kernel/control-kernel.js';
-import { getPlannerExecutorCatalog } from '../../src/executor/builtin-executor-catalog.js';
+import { testPlannerExecutorCatalog } from '../support/executor-registry.js';
 import { workGraphPlan } from '../support/planning-agent-plans.js';
 import { capabilityRequestFingerprint, type NormalizedCapabilityRequest } from '../../src/resource/index.js';
 
@@ -40,7 +40,7 @@ const snapshot: KernelSnapshot = {
   type: 'plan_admission',
   tasks: [],
   runningTaskId: null,
-  executorCatalog: getPlannerExecutorCatalog(),
+  executorCatalog: testPlannerExecutorCatalog(),
   executorStatuses: [],
   v5WorkGraphTaskIds: [],
   eligibleContextRefKeys: [],
@@ -592,7 +592,7 @@ describe('ControlKernel', () => {
       type: 'wait_for_partition', taskId: 'task_1', subtaskId: 'subtask_1', conflictingLeaseIds: ['lease-1'],
     });
     expect(kernel.decide(runtimeEvent({
-      type: 'sandbox_lost', attemptId: 'attempt-1', containerId: null,
+      type: 'sandbox_lost', attemptId: 'attempt-1', runtimeHandle: null,
       workspaceId: 'workspace-1', checkpointId: 'checkpoint-1',
     }), {
       schemaVersion: 5, type: 'sandbox_recovery', workspaceExists: true,

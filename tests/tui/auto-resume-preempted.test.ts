@@ -102,7 +102,7 @@ describe('App auto-resume after preemption', () => {
       body: ['first done', 'urgent done', 'resumed done', 'later done'][attemptIndex],
       wait: deferredResults[attemptIndex].promise.then(result => result.exitCode),
     }));
-    attemptSandbox.stop.mockImplementation(async containerId => {
+    attemptSandbox.stop.mockImplementation(async runtimeHandle => {
       if (!firstExecuteResolved) {
         firstExecuteResolved = true;
         firstDeferred.resolve({

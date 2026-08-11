@@ -1,4 +1,4 @@
-import type { PlannerExecutorCatalog } from '../executor/builtin-executor-catalog.js';
+import type { PlannerExecutorCatalog } from '../executor/executor-registry-types.js';
 import { validatePlanningAgentPlan } from '../planning/planning-agent-plan-validator.js';
 import type { PlanningAgentPlan } from '../planning/planning-types.js';
 import {
@@ -152,7 +152,7 @@ export type KernelEvent =
     })
   | (KernelEventEnvelope & {
       type: 'sandbox_lost';
-      containerId: string | null;
+      runtimeHandle: string | null;
       workspaceId: string;
       checkpointId: string | null;
     })

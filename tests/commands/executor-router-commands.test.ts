@@ -1,62 +1,50 @@
 import { describe, expect, it } from 'vitest';
-import Database from 'better-sqlite3';
-import { runMigrations } from '../../src/storage/migrations.js';
 import { createDefaultCommandCatalog } from '../../src/commands/command-tree.js';
-import { AgentClassService } from '../../src/executor/agent-class-service.js';
+import { createTestExecutorRegistrySnapshot } from '../../src/executor/test-executor-registry.js';
 
-function createDb(): Database.Database {
-  const db = new Database(':memory:');
-  runMigrations(db);
-  new AgentClassService({ db }).seedDefaults();
-  return db;
-}
-
-function createContext(db: Database.Database) {
+function createContext() {
+  const snapshot = createTestExecutorRegistrySnapshot();
   return {
-    db,
-    executor: { name: 'codex-cli' },
+    executorRegistry: {
+      digest: () => snapshot.configDigest,
+      list: () => snapshot.tui,
+      discover: async () => [],
+      verify: async () => snapshot.verifications.get('codex-cli'),
+      setEnabled: async () => undefined,
+      reload: () => snapshot,
+      register: async () => snapshot.verifications.get('codex-cli'),
+    },
   } as any;
 }
 
-describe('agent class and planner route commands', () => {
-  it('lists executor AgentClasses from the command surface', async () => {
-    const db = createDb();
-    const context = createContext(db);
+describe('executor registry commands', () => {
+  it('lists Executor registry projection from the command surface', async () => {
+    const context = createContext();
     const catalog = createDefaultCommandCatalog();
 
     const initial = await catalog.execute('/executor list', context);
-    expect(initial.content).toContain('Registered AgentClasses');
+    expect(initial.content).toContain('Executor registry digest:');
     expect(initial.content).toContain('codex-cli');
-    expect(initial.content).toContain('planner');
-    expect(initial.content).toContain('WorkUnits:');
-
-    expect(initial.content).toContain('health=unverified');
-    expect(initial.content).toContain('domains:');
-    expect(initial.content).toContain('capabilities:');
-    expect(initial.content).toContain('strengths:');
-    expect(initial.content).toContain('primary use cases:');
-    expect(initial.content).not.toContain('/executor register');
-    expect(initial.content).not.toContain('/executor unregister');
+    expect(initial.content).toContain('enabled / verified');
+    expect(initial.content).toContain('driver=codex');
+    expect(initial.content).toContain('binary=/usr/bin/codex');
   });
 
-  it('does not expose the removed registration commands', async () => {
-    const db = createDb();
-    const context = createContext(db);
+  it('exposes unified registration and rejects the removed unregister command', async () => {
+    const context = createContext();
     const catalog = createDefaultCommandCatalog();
 
-    for (const command of ['/executor register wizard', '/executor unregister codex-cli']) {
-      expect((await catalog.execute(command, context)).content).toContain('未知命令');
-    }
+    expect((await catalog.execute('/executor register wizard', context)).content)
+      .toContain('Usage: /executor register <id>');
+    expect((await catalog.execute('/executor unregister codex-cli', context)).content)
+      .toContain('未知命令');
   });
 
-  it('rejects removed register and unregister operations for canonical names', async () => {
-    const db = createDb();
-    const context = createContext(db);
+  it('rejects legacy registration options without a compatibility translation', async () => {
+    const context = createContext();
     const catalog = createDefaultCommandCatalog();
 
     expect((await catalog.execute('/executor register codex-cli --command custom', context)).content)
-      .toContain('未知命令');
-    expect((await catalog.execute('/executor unregister codex-cli', context)).content)
-      .toContain('未知命令');
+      .toContain('未知选项: --command');
   });
 });

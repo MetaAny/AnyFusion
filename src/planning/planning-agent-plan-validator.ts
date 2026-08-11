@@ -1,4 +1,4 @@
-import type { PlannerExecutorCatalog } from '../executor/builtin-executor-catalog.js';
+import type { PlannerExecutorCatalog } from '../executor/executor-registry-types.js';
 import { PlanningAgentPlanSchema } from './planning-agent-plan-schema.js';
 import type { PlanningAgentPlan, SubtaskProposal } from './planning-types.js';
 import { validateWorkGraph } from '../work-graph/index.js';
@@ -149,7 +149,7 @@ function validateRouting(
     for (const name of subtask.preferredAgentClassList) {
       const executor = executorsByName.get(name);
       if (!executor) {
-        errors.push(`subtask ${subtask.id} references non-canonical AgentClass: ${name}`);
+        errors.push(`subtask ${subtask.id} references unavailable Executor: ${name}`);
         continue;
       }
       const uncovered = [...required]
@@ -162,7 +162,7 @@ function validateRouting(
 
     const actualSet = [...new Set(subtask.preferredAgentClassList)].sort();
     if (!sameValues(actualSet, eligible)) {
-      errors.push(`subtask ${subtask.id} preferred AgentClass set must equal eligible canonical set: ${eligible.join(', ') || '(none)'}`);
+      errors.push(`subtask ${subtask.id} preferred AgentClass set must equal eligible verified set: ${eligible.join(', ') || '(none)'}`);
     }
   }
 }

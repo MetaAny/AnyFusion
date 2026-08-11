@@ -1,4 +1,5 @@
 import {
+  optionArg,
   optionalStringArg,
   stringArg,
   stringListArg,
@@ -445,6 +446,35 @@ export async function acceptPartialResult(
     };
   } catch (error) {
     return { type: 'text', content: `操作失败: ${(error as Error).message}` };
+  }
+}
+
+export async function purgeTask(
+  args: ResolvedCommandArgs,
+  context: CommandContext,
+): Promise<CommandResult> {
+  const taskId = stringArg(args, 'taskId');
+  const confirmation = optionArg(args, '--confirm');
+  if (!confirmation) {
+    return { type: 'text', content: `用法: /task purge ${taskId} --confirm ${taskId}` };
+  }
+  if (!context.purgeTask) {
+    return { type: 'text', content: 'Task purge is not available in this host.' };
+  }
+  try {
+    const result = await context.purgeTask({
+      taskId,
+      confirmation,
+      reason: 'explicit user Task purge command',
+    });
+    return {
+      type: 'text',
+      content: result.cleanupErrors.length > 0
+        ? `任务 #${taskId} 已清除持久化事实，但有 ${result.cleanupErrors.length} 个文件清理错误`
+        : `任务 #${taskId} 已受控清除；仅保留最小 purge audit`,
+    };
+  } catch (error) {
+    return { type: 'text', content: `操作失败: ${error instanceof Error ? error.message : String(error)}` };
   }
 }
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { PlanningContextBuilder } from '../../src/planning/planning-context-builder.js';
-import { getPlannerExecutorCatalog } from '../../src/executor/builtin-executor-catalog.js';
+import { testPlannerExecutorCatalog } from '../support/executor-registry.js';
 
 describe('PlanningContextBuilder', () => {
   it('builds host metadata without model dialogue or injected domain facts', () => {
@@ -8,13 +8,14 @@ describe('PlanningContextBuilder', () => {
       sessionId: 'sess_minimal',
       requestSource: 'interactive',
       getTimeoutMs: () => 5_000,
+      getExecutorCatalog: testPlannerExecutorCatalog,
     }).build({ userInput: 'continue' });
 
     expect(context).toEqual({
       userInput: 'continue',
       request: { sessionId: 'sess_minimal', source: 'interactive' },
       pendingAuthorizationRequest: null,
-      executorCatalog: getPlannerExecutorCatalog(),
+      executorCatalog: testPlannerExecutorCatalog(),
       timeoutMs: 5_000,
     });
     expect(context).not.toHaveProperty('recentTasks');

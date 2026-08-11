@@ -1,10 +1,13 @@
 import { vi } from 'vitest';
+import { execFile } from 'node:child_process';
+import { isAbsolute, relative } from 'node:path';
+import { promisify } from 'node:util';
 import type {
   AttemptSandboxPort,
   AttemptSandboxRecord,
   CreateAttemptSandboxInput,
 } from '../../src/execution/attempt-sandbox.js';
-import { COMPLETION_MARKER_V3 } from '../../src/execution/completion-protocol.js';
+import { COMPLETION_MARKER_V4 } from '../../src/execution/completion-protocol.js';
 
 export interface FakeAttemptSandboxResponse {
   body?: string;
@@ -32,13 +35,11 @@ export class FakeAttemptSandbox implements AttemptSandboxPort {
 
   constructor(private readonly responder: FakeAttemptSandboxResponder = () => ({})) {}
 
-  readonly resolveImage = vi.fn(async (_imageRef: string) => `sha256:${'a'.repeat(64)}`);
-
   readonly create = vi.fn(async (input: CreateAttemptSandboxInput) => {
-    const containerId = `fake-sandbox-${input.attemptId}`;
+    const runtimeHandle = `fake-sandbox-${input.attemptId}`;
     const record: AttemptSandboxRecord = {
-      containerId,
-      imageId: input.resolvedImageId,
+      runtimeHandle,
+      processId: null,
       status: 'created',
       exitCode: null,
       labels: {
@@ -46,73 +47,92 @@ export class FakeAttemptSandbox implements AttemptSandboxPort {
         'metaclaw.attempt-id': input.attemptId,
       },
     };
-    this.records.set(containerId, record);
-    this.inputs.set(containerId, input);
-    this.responses.set(containerId, await this.responder(input, this.attemptIndex++));
+    this.records.set(runtimeHandle, record);
+    this.inputs.set(runtimeHandle, input);
+    this.responses.set(runtimeHandle, await this.responder(input, this.attemptIndex++));
     return record;
   });
 
-  readonly start = vi.fn(async (containerId: string) => {
-    this.updateRecord(containerId, { status: 'running' });
+  readonly start = vi.fn(async (runtimeHandle: string) => {
+    this.updateRecord(runtimeHandle, { status: 'running', processId: 10_000 + this.attemptIndex });
+    return this.inspect(runtimeHandle) as Promise<AttemptSandboxRecord>;
   });
 
-  readonly wait = vi.fn(async (containerId: string) => {
-    const response = this.requireResponse(containerId);
+  readonly wait = vi.fn(async (runtimeHandle: string) => {
+    const response = this.requireResponse(runtimeHandle);
     const exitCode = response.wait ? await response.wait : (response.exitCode ?? 0);
-    this.updateRecord(containerId, { status: 'exited', exitCode });
+    if (exitCode === 0) {
+      const workspacePath = this.requireInput(runtimeHandle).mounts
+        .find(mount => mount.target === '/workspace' && mount.mode === 'rw')?.source;
+      if (workspacePath) await prepareGitCandidate(workspacePath);
+    }
+    this.updateRecord(runtimeHandle, { status: 'exited', exitCode });
     return exitCode;
   });
 
-  readonly logs = vi.fn(async (containerId: string) => {
-    const input = this.requireInput(containerId);
-    const response = this.requireResponse(containerId);
+  readonly logs = vi.fn(async (runtimeHandle: string) => {
+    const input = this.requireInput(runtimeHandle);
+    const response = this.requireResponse(runtimeHandle);
     if (response.rawOutput !== undefined) return response.rawOutput;
     if ((response.exitCode ?? 0) !== 0) return response.body ?? 'fake sandbox failed';
     if (response.failure) {
-      return `${response.body ?? response.failure.summary}\n\n${COMPLETION_MARKER_V3}\n${JSON.stringify({
+      return `${response.body ?? response.failure.summary}\n\n${COMPLETION_MARKER_V4}\n${JSON.stringify({
         failure: response.failure,
       })}`;
     }
     return completionResponseFromSandboxInput(input, response.body, response.artifacts);
   });
 
-  readonly pause = vi.fn(async (containerId: string) => {
-    this.updateRecord(containerId, { status: 'paused' });
+  readonly pause = vi.fn(async (runtimeHandle: string) => {
+    this.updateRecord(runtimeHandle, { status: 'paused' });
   });
 
-  readonly resume = vi.fn(async (containerId: string) => {
-    this.updateRecord(containerId, { status: 'running' });
+  readonly resume = vi.fn(async (runtimeHandle: string) => {
+    this.updateRecord(runtimeHandle, { status: 'running' });
   });
 
-  readonly inspect = vi.fn(async (containerId: string) => this.records.get(containerId) ?? null);
+  readonly inspect = vi.fn(async (runtimeHandle: string) => this.records.get(runtimeHandle) ?? null);
 
-  readonly stop = vi.fn(async (containerId: string) => {
-    this.updateRecord(containerId, { status: 'exited', exitCode: 137 });
+  readonly stop = vi.fn(async (runtimeHandle: string) => {
+    this.updateRecord(runtimeHandle, { status: 'exited', exitCode: 137 });
   });
 
-  readonly remove = vi.fn(async (containerId: string) => {
-    this.records.delete(containerId);
+  readonly stopProcess = vi.fn(async (_processId: number) => undefined);
+
+  readonly remove = vi.fn(async (runtimeHandle: string) => {
+    this.records.delete(runtimeHandle);
   });
 
   readonly listManaged = vi.fn(async () => [...this.records.values()]);
 
-  private requireInput(containerId: string): CreateAttemptSandboxInput {
-    const input = this.inputs.get(containerId);
-    if (!input) throw new Error(`unknown fake sandbox ${containerId}`);
+  private requireInput(runtimeHandle: string): CreateAttemptSandboxInput {
+    const input = this.inputs.get(runtimeHandle);
+    if (!input) throw new Error(`unknown fake sandbox ${runtimeHandle}`);
     return input;
   }
 
-  private requireResponse(containerId: string): FakeAttemptSandboxResponse {
-    const response = this.responses.get(containerId);
-    if (!response) throw new Error(`unknown fake sandbox ${containerId}`);
+  private requireResponse(runtimeHandle: string): FakeAttemptSandboxResponse {
+    const response = this.responses.get(runtimeHandle);
+    if (!response) throw new Error(`unknown fake sandbox ${runtimeHandle}`);
     return response;
   }
 
-  private updateRecord(containerId: string, changes: Partial<AttemptSandboxRecord>): void {
-    const current = this.records.get(containerId);
-    if (!current) throw new Error(`unknown fake sandbox ${containerId}`);
-    this.records.set(containerId, { ...current, ...changes });
+  private updateRecord(runtimeHandle: string, changes: Partial<AttemptSandboxRecord>): void {
+    const current = this.records.get(runtimeHandle);
+    if (!current) throw new Error(`unknown fake sandbox ${runtimeHandle}`);
+    this.records.set(runtimeHandle, { ...current, ...changes });
   }
+}
+
+const exec = promisify(execFile);
+
+async function prepareGitCandidate(workspacePath: string): Promise<void> {
+  const prefix = ['-c', `safe.directory=${workspacePath}`, '-C', workspacePath];
+  await exec('git', [...prefix, 'config', 'user.name', 'AnyFusion Test Executor']);
+  await exec('git', [...prefix, 'config', 'user.email', 'test-executor@anyfusion.local']);
+  await exec('git', [...prefix, 'add', '-A']);
+  await exec('git', [...prefix, 'commit', '--allow-empty', '-m', 'test: executor result']);
+  await exec('git', [...prefix, 'merge', '--no-edit', 'main']);
 }
 
 export function completionResponseFromSandboxInput(
@@ -120,11 +140,11 @@ export function completionResponseFromSandboxInput(
   body = 'completed',
   artifacts: string[] = [],
 ): string {
-  const isEdit = input.args.join('\n').includes('Delivery kind: edit');
-  return `${body}\n\n${COMPLETION_MARKER_V3}\n${JSON.stringify({
-    evidence: ['tests were not run: deterministic fake sandbox'],
-    noChangeReason: isEdit && artifacts.length === 0
-      ? 'The deterministic test executor made no workspace changes.'
-      : null,
+  const workspaceRoot = input.mounts.find(mount => mount.target === '/workspace')?.source ?? '';
+  const resultFilePaths = artifacts.map(path => (
+    isAbsolute(path) ? relative(workspaceRoot, path).replaceAll('\\', '/') : path
+  ));
+  return `${body}\n\n${COMPLETION_MARKER_V4}\n${JSON.stringify({
+    ...(resultFilePaths.length > 0 ? { resultFilePaths } : {}),
   })}`;
 }

@@ -21,24 +21,29 @@ ADR-0022 is the origin authority for the unified Kernel event/snapshot/decision 
 
 ADR-0023 is the current authority for the durable KernelWorkflow, structured failure and availability rules, idempotent application recovery, Work Graph revisions, continuation, outbox, manual recovery, and the 2026-07-30 deferred-availability/executor-recovery amendment.
 
-ADR-0024 is the current authority for Phase 5 resource partitions, persistent workspaces, per-attempt Docker sandboxes, durable resource leases and runtime capability elevation.
+ADR-0024 is the current authority for resource partitions, persistent worktrees, registered CLI child-process attempts, durable resource leases and runtime capability elevation.
 
 ADR-0025 is the current authority for Phase 6A single-Task runnable frontier, Kernel dispatch batches, asynchronous attempt supervision, Git-backed workspaces, deterministic publication and merge-conflict recovery.
 
 ADR-0026 fixes Phase 6's final scope to reliable asynchronous concurrency inside one top-level Task. It preserves ADR-0011; multi-Task scheduling is a future independent roadmap rather than Phase 6 work.
 
+ADR-0027 replaces process-cwd workspace inference with explicit Project
+repositories, one branch/worktree per Subtask and user-approved whole-branch
+publication to local `main`.
+
 ## Current authority matrix
 
 | Topic | Current authority | What it decides |
 | --- | --- | --- |
+| Project workspaces and approved publication | [ADR-0027](0027-project-workspaces-and-user-approved-branch-publication.md) | Project selection, Subtask branches/worktrees, local-main synchronization, approval-gated merge and cleanup |
 | Single-Task concurrency and Git publication | [ADR-0025](0025-single-task-concurrency-and-git-publication.md) | Runnable frontier, dispatch batches, attempt supervision, Git workspace ownership, publication gate and conflict repair |
 | Phase 6 single-Task reliability closure | [ADR-0026](0026-phase-6-single-task-reliability-closure.md) | Task termination, multi-attempt recovery/completion closure, and deferral of multi-Task scheduling |
-| Resource partitions and sandboxed attempts | [ADR-0024](0024-resource-partition-sandbox-and-runtime-elevation.md) | Partition identity/conflicts, persistent workspace, Docker attempt boundary, leases, elevation and recovery |
+| Resource partitions and Executor attempts | [ADR-0024](0024-resource-partition-sandbox-and-runtime-elevation.md) | Partition identity/conflicts, persistent worktree, child-process lifecycle, leases, elevation and recovery |
 | Core modules and dependencies | [ADR-0020](0020-core-module-ownership-and-dependency-direction.md) | Planner/Kernel/Runtime control loop, module owners, Application Shell, persistence adapters and phase design gates |
 | Durable Kernel workflow and recovery | [ADR-0023](0023-durable-kernel-workflow-recovery-and-availability.md) | Durable inbox/application/outbox, structured failure, retry/fallback, deferred availability, Executor recovery, continuation and revisions |
 | Unified Kernel control plane | [ADR-0022](0022-unified-kernel-control-plane-and-decision-ledger.md) | Versioned event/snapshot/decision contract, ledger-first loop, attempt landing, capacity recovery and response-only correction |
 | Work Graph and Subtask execution foundation | [ADR-0021](0021-work-graph-v4-subtask-execution-contract.md) | dependency/context/handoff/completion/evidence semantics retained by the active v5 graph; concurrent dispatch and publication amendments live in ADR-0025/0026 |
-| Static routing contracts | [ADR-0018](0018-supported-routing-contracts-and-unified-executor-definitions.md) | Routing Capability, canonical definitions, catalog projection, bindings and definition provenance |
+| Executor registry and static routing contracts | [ADR-0018](0018-supported-routing-contracts-and-unified-executor-definitions.md) | `executors.yaml`, Routing Capability, profiles, bindings, digest-bound verification and controlled projections |
 | Dynamic AgentClass status | [ADR-0017](0017-kernel-executor-status-projection.md) | bounded health/outcome/recovery projection, static/dynamic fact split, and `error` versus `disabled` semantics |
 | Planner semantics and context | [ADR-0015](0015-planner-owned-semantics-and-tool-mediated-context.md) | semantic ownership, isolated planner runner, bounded/tool-mediated read-only context and fail-closed behavior |
 | Single-active top-level Task | [ADR-0011](0011-single-active-task-admission-gate.md) | current product constraint; ADR-0020 governs final Kernel ownership of admission policy |

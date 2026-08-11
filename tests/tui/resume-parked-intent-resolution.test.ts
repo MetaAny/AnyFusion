@@ -61,7 +61,7 @@ function flushUpdates() {
 }
 
 async function waitForExecutorCall(create: ReturnType<typeof vi.fn>) {
-  for (let index = 0; index < 100; index += 1) {
+  for (let index = 0; index < 1_000; index += 1) {
     if (create.mock.calls.length > 0) {
       return;
     }

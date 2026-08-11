@@ -21,6 +21,7 @@ export async function runPlannerTuiProcess(options: PlannerTuiProcessOptions): P
     stdio: 'inherit',
     env: {
       ...env,
+      ANYFUSION_PLANNER_WORKSPACE: options.cwd,
       ANYFUSION_PLANNER_HOME: process.env.METACLAW_PLANNER_HOME,
       ANYFUSION_PLANNER_SESSION_ID: options.sessionId,
       METACLAW_PLANNER_SESSION_ID: options.sessionId,

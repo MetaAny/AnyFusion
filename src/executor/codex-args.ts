@@ -1,6 +1,7 @@
 // Builds the Codex CLI non-interactive exec arguments used by Codex integrations.
 export interface CodexNonInteractiveArgsOptions {
   ephemeral?: boolean;
+  json?: boolean;
   outputLastMessagePath?: string;
   sandbox?: 'workspace-write' | 'danger-full-access';
 }
@@ -16,6 +17,7 @@ export function buildCodexNonInteractiveArgs(
     '-c',
     'approval_policy="never"',
     '--skip-git-repo-check',
+    ...((options.json ?? false) ? ['--json'] : []),
     ...((options.ephemeral ?? true) ? ['--ephemeral'] : []),
     ...(options.outputLastMessagePath
       ? ['--output-last-message', options.outputLastMessagePath]

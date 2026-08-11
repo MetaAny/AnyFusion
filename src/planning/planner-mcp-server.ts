@@ -3,23 +3,31 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { join } from 'path';
-import { getPlannerExecutorCatalog } from '../executor/builtin-executor-catalog.js';
+import type { PlannerExecutorRegistryProjection } from '../executor/executor-registry-types.js';
 import { truncateText } from '../utils/truncate-text.js';
+import { readPlannerHostRegistryProjection } from './planner-host-registry-client.js';
 
 const MAX_RESULTS = 20;
 const DEFAULT_RESULTS = 10;
 const TASK_STATUSES = ['created', 'ready', 'running', 'parked', 'blocked', 'done', 'archived', 'cancelled'] as const;
 
 export class PlannerDataReader {
+  private readonly getExecutorRegistrySnapshot: () =>
+    PlannerExecutorRegistryProjection | Promise<PlannerExecutorRegistryProjection>;
+
   constructor(
     private readonly db: Database.Database,
     private readonly sessionId: string,
-  ) {}
+    getExecutorRegistrySnapshot: () =>
+      PlannerExecutorRegistryProjection | Promise<PlannerExecutorRegistryProjection>,
+  ) {
+    this.getExecutorRegistrySnapshot = getExecutorRegistrySnapshot;
+  }
 
   searchTasks(input: { query?: string; statuses?: string[]; limit?: number }) {
     const limit = boundedLimit(input.limit);
     const statuses = (input.statuses ?? []).filter(status => TASK_STATUSES.includes(status as typeof TASK_STATUSES[number]));
-    const clauses: string[] = [];
+    const clauses: string[] = ["source <> 'system_smoke'"];
     const params: unknown[] = [];
     if (input.query?.trim()) {
       clauses.push("LOWER(title || ' ' || COALESCE(goal, '') || ' ' || COALESCE(summary, '')) LIKE ?");
@@ -33,7 +41,7 @@ export class PlannerDataReader {
     const rows = this.db.prepare(`
       SELECT id, title, status, summary, priority_json, updated_at
       FROM tasks
-      ${clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : ''}
+      WHERE ${clauses.join(' AND ')}
       ORDER BY updated_at DESC
       LIMIT ?
     `).all(...params) as Array<Record<string, unknown>>;
@@ -156,10 +164,15 @@ export class PlannerDataReader {
 
   getRuntimeState() {
     const focus = this.db.prepare('SELECT * FROM session_state WHERE id = ?').get('global') as Record<string, unknown> | undefined;
-    const taskCounts = this.db.prepare('SELECT status, COUNT(*) AS count FROM tasks GROUP BY status').all() as Array<Record<string, unknown>>;
+    const taskCounts = this.db.prepare(`
+      SELECT status, COUNT(*) AS count FROM tasks
+      WHERE source <> 'system_smoke'
+      GROUP BY status
+    `).all() as Array<Record<string, unknown>>;
     const activeTasks = this.db.prepare(`
       SELECT id, title, status, updated_at FROM tasks
-      WHERE status IN ('created', 'ready', 'running', 'parked', 'blocked')
+      WHERE source <> 'system_smoke'
+        AND status IN ('created', 'ready', 'running', 'parked', 'blocked')
       ORDER BY updated_at DESC LIMIT ?
     `).all(MAX_RESULTS) as Array<Record<string, unknown>>;
     return {
@@ -178,28 +191,33 @@ export class PlannerDataReader {
     };
   }
 
-  listExecutorStatus() {
-    const rows = this.db.prepare(`
-      SELECT a.name, s.class_health, s.recent_attempts_json,
-             s.recent_recovery_checks_json, s.updated_at
-      FROM agent_classes a
-      LEFT JOIN kernel_executor_status s ON s.agent_class_name = a.name
-      WHERE a.kind = 'executor'
-      ORDER BY a.name ASC
-    `).all() as Array<Record<string, unknown>>;
+  async listExecutorStatus() {
+    const snapshot = await this.getExecutorRegistrySnapshot();
+    const statuses = new Map((this.db.prepare(`
+      SELECT agent_class_name, class_health, recent_attempts_json,
+             recent_recovery_checks_json, updated_at
+      FROM kernel_executor_status
+    `).all() as Array<Record<string, unknown>>).map(row => [String(row.agent_class_name), row]));
+    const rows = [...snapshot.tui]
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .map(executor => ({ executor, status: statuses.get(executor.id) }));
     return {
       count: rows.length,
-      executorStatuses: rows.map(row => ({
-        agentClassName: String(row.name),
-        classHealth: typeof row.class_health === 'string' ? row.class_health : 'unverified',
-        recentAttempts: safeJson(row.recent_attempts_json, []).slice(0, 3),
-        recentRecoveryChecks: safeJson(row.recent_recovery_checks_json, []).slice(0, 3),
-        updatedAt: typeof row.updated_at === 'string' ? row.updated_at : null,
+      configDigest: snapshot.configDigest,
+      executorStatuses: rows.map(({ executor, status }) => ({
+        agentClassName: executor.id,
+        enabled: executor.enabled,
+        verification: executor.verification,
+        classHealth: typeof status?.class_health === 'string' ? status.class_health : 'unverified',
+        recentAttempts: safeJson(status?.recent_attempts_json, []).slice(0, 3),
+        recentRecoveryChecks: safeJson(status?.recent_recovery_checks_json, []).slice(0, 3),
+        updatedAt: typeof status?.updated_at === 'string' ? status.updated_at : null,
       })),
     };
   }
 
-  getPlanningContext() {
+  async getPlanningContext() {
+    const snapshot = await this.getExecutorRegistrySnapshot();
     const preferences = this.db.prepare(`
       SELECT id, type, scope, subject, content, confirmed_at
       FROM preferences
@@ -233,7 +251,7 @@ export class PlannerDataReader {
         reason: truncateText(String(pending.reason ?? ''), 1_000),
         createdAt: pending.created_at,
       } : null,
-      routingCatalog: getPlannerExecutorCatalog(),
+      routingCatalog: snapshot.planner,
     };
   }
 
@@ -292,7 +310,7 @@ export function createPlannerMcpServer(reader: PlannerDataReader): McpServer {
   server.registerTool('get_planning_context', {
     description: 'Read current session Planner facts: bounded confirmed preferences, the exact pending authorization request, and canonical routing capabilities and AgentClasses. Call before executable planning, preference-dependent replies, or authorization resolution.',
     inputSchema: {},
-  }, async () => toolResult(reader.getPlanningContext()));
+  }, async () => toolResult(await reader.getPlanningContext()));
   server.registerTool('get_session_interaction', {
     description: 'Read one bounded interaction side by stable ID only when the current user explicitly referenced it.',
     inputSchema: {
@@ -307,7 +325,7 @@ export function createPlannerMcpServer(reader: PlannerDataReader): McpServer {
   server.registerTool('list_executor_status', {
     description: 'List bounded Kernel executor class health and three recent safe execution outcomes. Static routing capabilities are already in Planner startup context.',
     inputSchema: {},
-  }, async () => toolResult(reader.listExecutorStatus()));
+  }, async () => toolResult(await reader.listExecutorStatus()));
   server.registerTool('get_executor_diagnostics', {
     description: 'Read recent bounded executor probe failures and their persisted safe reasons when the user asks why execution is blocked or an executor is unavailable.',
     inputSchema: {
@@ -321,11 +339,17 @@ export function createPlannerMcpServer(reader: PlannerDataReader): McpServer {
 export async function runPlannerMcpServer(): Promise<void> {
   const home = process.env.METACLAW_HOME;
   const sessionId = process.env.METACLAW_PLANNER_SESSION_ID;
+  const plannerHostSocket = process.env.ANYFUSION_BRIDGE_SOCKET;
   if (!home) throw new Error('METACLAW_HOME is required');
   if (!sessionId) throw new Error('METACLAW_PLANNER_SESSION_ID is required');
+  if (!plannerHostSocket) throw new Error('ANYFUSION_BRIDGE_SOCKET is required');
   const dbPath = process.env.METACLAW_DB_PATH ?? join(home, 'metaclaw.db');
   const db = new Database(dbPath, { readonly: true, fileMustExist: true });
-  const server = createPlannerMcpServer(new PlannerDataReader(db, sessionId));
+  const server = createPlannerMcpServer(new PlannerDataReader(
+    db,
+    sessionId,
+    () => readPlannerHostRegistryProjection({ socketPath: plannerHostSocket, sessionId }),
+  ));
   await server.connect(new StdioServerTransport());
 }
 

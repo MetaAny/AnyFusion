@@ -11,7 +11,7 @@
 
 ## Context
 
-Phase 5 established durable workspaces, per-attempt sandboxes, partition leases and a single durable Kernel workflow, but production still dispatches one Subtask at a time. Attempt success also publishes completion facts immediately, and dependency workspace composition cherry-picks commits. Enabling concurrency on that path would couple outcome timing to result order, expose downstream work before integration, and make same-path writes unsafe.
+Phase 5 established durable workspaces, per-attempt runtime records, partition leases and a single durable Kernel workflow, but production still dispatches one Subtask at a time. Attempt success also publishes completion facts immediately, and dependency workspace composition cherry-picks commits. Enabling concurrency on that path would couple outcome timing to result order, expose downstream work before integration, and make same-path writes unsafe.
 
 The product must first prove concurrency inside the single active top-level Task. Multi-Task fairness is a separate policy layer and must not force a second scheduler or rewrite the attempt/publication mechanisms.
 
@@ -19,7 +19,7 @@ The product must first prove concurrency inside the single active top-level Task
 
 ### Pure scheduling authority
 
-Work Graph v6 remains the only dependency structure and does not gain execution layers. Its `deliveryKind` contract changes completion validation, not scheduling authority. A pure Work Graph function derives a runnable frontier from the current revision and immutable lifecycle facts.
+Work Graph v6 remains the only dependency structure and does not gain execution layers. Its nodes do not predict whether an Executor will change the workspace; Completion Protocol v4 accepts either outcome. A pure Work Graph function derives a runnable frontier from the current revision and immutable lifecycle facts.
 
 ControlKernel contract v4 receives a scheduling snapshot containing the frontier, pending and active dispatch items, bounded AgentClass availability, normalized resource conflicts, `maxConcurrentAttempts` and free slots. Its `dispatch_batch` Decision authorizes a deterministic ordered set of items. Each item fixes its attempt identity, AgentClass, resource grant, attempt kind and order.
 

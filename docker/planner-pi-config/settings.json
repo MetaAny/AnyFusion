@@ -1,6 +1,6 @@
 {
   "defaultProvider": "anyint",
-  "defaultModel": "gpt-5.6-terra",
+  "defaultModel": "deepseek-v4-flash",
   "quietStartup": true,
   "defaultProjectTrust": "always",
   "enableSkillCommands": false,

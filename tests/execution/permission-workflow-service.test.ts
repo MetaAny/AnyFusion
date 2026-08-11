@@ -164,7 +164,7 @@ function context() {
   return {
     sessionId: 'session_1', taskId: 'task_1', generationId: 'generation_1', subtaskId: 'subtask_1',
     attemptId: 'attempt_1', agentClassName: 'codex-cli', permissionProfileId: 'workspace-engineering' as const,
-    containerId: 'container_1', workspaceId: 'workspace_1', checkpointId: null,
+    runtimeHandle: 'worktree:attempt_1', workspaceId: 'workspace_1', checkpointId: null,
   };
 }
 

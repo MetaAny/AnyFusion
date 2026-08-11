@@ -8,10 +8,8 @@ import { KernelDispatchItemRepo } from '../../src/storage/kernel-dispatch-item-r
 import { KernelWorkflowRepo } from '../../src/storage/kernel-workflow-repo.js';
 import { SubtaskRepo } from '../../src/storage/subtask-repo.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
-import { AgentClassRepo } from '../../src/storage/agent-class-repo.js';
 import { WorkUnitRepo } from '../../src/storage/work-unit-repo.js';
 import type { Subtask } from '../../src/core/types.js';
-import { getBuiltinExecutorAgentClasses } from '../../src/executor/builtin-executor-catalog.js';
 import { WorkspacePublicationRepo } from '../../src/storage/workspace-publication-repo.js';
 
 function setup() {
@@ -40,7 +38,6 @@ function setup() {
     contextRefs: [],
     requiredCapabilities: ['workspace-engineering'],
     preferredAgentClassList: ['codex-cli'],
-    deliveryKind: 'report',
     acceptance: [{ key: 'done', description: 'done', requiredEvidence: [] }],
     riskLevel: 'low',
     result: '',
@@ -52,9 +49,6 @@ function setup() {
   };
   const subtasks = new SubtaskRepo(db);
   subtasks.upsert(subtask);
-  new AgentClassRepo(db).upsert(
-    getBuiltinExecutorAgentClasses().find(item => item.name === 'codex-cli')!,
-  );
   new WorkUnitRepo(db).upsert({
     id: 'work-unit-terminal',
     agentClassName: 'codex-cli',
@@ -215,7 +209,10 @@ describe('AttemptTerminalService', () => {
       subtaskId: 'subtask-terminal',
       sourceAttemptId: 'attempt-source',
       agentClassName: 'codex-cli',
+      mainBaseCommit: 'main-before-repair',
       candidateCommit: 'candidate-before-repair',
+      permissionRequestId: 'permission-repair-1',
+      changedPaths: ['result.txt'],
       completion: {} as never,
       topologyLayer: 0,
       firstDispatchOrder: 0,
@@ -281,7 +278,10 @@ describe('AttemptTerminalService', () => {
       subtaskId: 'subtask-terminal',
       sourceAttemptId: 'attempt-source',
       agentClassName: 'codex-cli',
+      mainBaseCommit: 'main-before-repair',
       candidateCommit: 'candidate-before-repair',
+      permissionRequestId: 'permission-repair-2',
+      changedPaths: ['result.txt'],
       completion: {} as never,
       topologyLayer: 0,
       firstDispatchOrder: 0,

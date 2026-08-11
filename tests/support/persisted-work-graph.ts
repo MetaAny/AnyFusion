@@ -34,7 +34,6 @@ export function seedPersistedWorkGraph(
     contextRefs: [{ kind: 'current_user_input' }],
     requiredCapabilities: ['workspace-engineering'],
     preferredAgentClassList: ['codex-cli'],
-    deliveryKind: 'report',
     acceptance: [{ key: 'complete', description: 'complete the resumed task', requiredEvidence: [] }],
     riskLevel: 'medium',
     result: '',

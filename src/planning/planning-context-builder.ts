@@ -1,17 +1,17 @@
 import type { PlanningContext } from './planning-types.js';
-import { getPlannerExecutorCatalog } from '../executor/builtin-executor-catalog.js';
 
 export interface PlanningContextBuilderDeps {
   sessionId: string;
   requestSource: string;
   getTimeoutMs(): number;
+  getExecutorCatalog(): PlanningContext['executorCatalog'];
 }
 
 export class PlanningContextBuilder {
   constructor(private readonly deps: PlanningContextBuilderDeps) {}
 
   getExecutorCatalog(): PlanningContext['executorCatalog'] {
-    return getPlannerExecutorCatalog();
+    return this.deps.getExecutorCatalog();
   }
 
   build(input: {

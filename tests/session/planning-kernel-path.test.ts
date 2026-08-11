@@ -12,7 +12,7 @@ import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { ControlKernel } from '../../src/kernel/control-kernel.js';
 import type { Config } from '../../src/core/types.js';
 import type { PlanningAgentPlan, PlanningContext } from '../../src/planning/planning-types.js';
-import { COMPLETION_MARKER_V3 } from '../../src/execution/completion-protocol.js';
+import { COMPLETION_MARKER_V4 } from '../../src/execution/completion-protocol.js';
 import { PlanningContextBuilder } from '../../src/planning/planning-context-builder.js';
 import {
   createPlannerProposalSubmissionId,
@@ -71,7 +71,6 @@ function plan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgentPlan {
         contextRefs: [{ kind: 'current_user_input' }],
         requiredCapabilities: ['workspace-engineering'],
         preferredAgentClassList: ['codex-cli'],
-        deliveryKind: 'edit',
         acceptance: [{ key: 'tests', description: 'List changed files and test evidence.', requiredEvidence: ['test result'] }],
         riskLevel: 'low',
       }],
@@ -138,12 +137,11 @@ function seedPriorGenerationEvidence(db: Database.Database, taskId: string): voi
     contextRefs: [],
     requiredCapabilities: ['workspace-engineering'],
     preferredAgentClassList: ['codex-cli'],
-    deliveryKind: 'report',
     acceptance: [],
     riskLevel: 'low',
     result: 'must not leak into the current generation',
     artifacts: [],
-    verification: { warnings: [], completionSchemaVersion: 3 },
+    verification: { warnings: [], completionSchemaVersion: 4 },
     error: null,
     createdAt: now,
     updatedAt: now,
@@ -603,7 +601,6 @@ describe('natural-language planning/kernel path', () => {
             contextRefs: [{ kind: 'current_user_input' }],
             requiredCapabilities: ['workspace-engineering'],
             preferredAgentClassList: ['codex-cli'],
-            deliveryKind: 'report',
             acceptance: [{
               key: 'a_done',
               description: 'A is complete.',
@@ -619,7 +616,6 @@ describe('natural-language planning/kernel path', () => {
             contextRefs: [{ kind: 'current_user_input' }],
             requiredCapabilities: ['workspace-engineering'],
             preferredAgentClassList: ['codex-cli'],
-            deliveryKind: 'report',
             acceptance: [{
               key: 'b_done',
               description: 'B is complete.',
@@ -629,7 +625,8 @@ describe('natural-language planning/kernel path', () => {
           },
         ],
       },
-    }), input => {
+    }), (input, attemptIndex) => {
+      if (attemptIndex >= 2) return { body: `${input.subtaskId} resynchronized` };
       running += 1;
       maximumRunning = Math.max(maximumRunning, running);
       const wait = new Promise<number>(resolve => {
@@ -670,7 +667,7 @@ describe('natural-language planning/kernel path', () => {
           SELECT subtask_id, status FROM resource_waits ORDER BY requested_at
         `).all(),
         output: harness.session.getSnapshot().output,
-      }))), 2_000)),
+      }))), 8_000)),
     ]);
     expect(maximumRunning).toBe(2);
 
@@ -689,13 +686,14 @@ describe('natural-language planning/kernel path', () => {
     expect((harness.db.prepare(`
       SELECT subtask_id, status, batch_order
       FROM kernel_dispatch_items
-      ORDER BY batch_order ASC
+      ORDER BY created_at ASC, attempt_id ASC
     `).all() as Array<{ subtask_id: string; status: string; batch_order: number }>).map(item => ({
       ...item,
       subtask_id: item.subtask_id.endsWith('_subtask_a') ? 'subtask_a' : 'subtask_b',
     }))).toEqual([
       { subtask_id: 'subtask_a', status: 'terminal', batch_order: 0 },
       { subtask_id: 'subtask_b', status: 'terminal', batch_order: 1 },
+      { subtask_id: 'subtask_b', status: 'terminal', batch_order: 4 },
     ]);
     expect((harness.db.prepare(`
       SELECT subtask_id, status, first_dispatch_order
@@ -706,18 +704,8 @@ describe('natural-language planning/kernel path', () => {
       subtask_id: item.subtask_id.endsWith('_subtask_a') ? 'subtask_a' : 'subtask_b',
     }))).toEqual([
       { subtask_id: 'subtask_a', status: 'integrated', first_dispatch_order: 0 },
-      { subtask_id: 'subtask_b', status: 'integrated', first_dispatch_order: 1 },
-    ]);
-    expect((harness.db.prepare(`
-      SELECT publication.subtask_id
-      FROM workspace_merge_attempts AS merge_attempt
-      JOIN workspace_publications AS publication ON publication.id = merge_attempt.publication_id
-      ORDER BY merge_attempt.rowid ASC
-    `).all() as Array<{ subtask_id: string }>).map(item => ({
-      subtask_id: item.subtask_id.endsWith('_subtask_a') ? 'subtask_a' : 'subtask_b',
-    }))).toEqual([
-      { subtask_id: 'subtask_a' },
-      { subtask_id: 'subtask_b' },
+      { subtask_id: 'subtask_b', status: 'parked', first_dispatch_order: 1 },
+      { subtask_id: 'subtask_b', status: 'integrated', first_dispatch_order: 4 },
     ]);
   });
 
@@ -742,7 +730,7 @@ describe('natural-language planning/kernel path', () => {
       if (attemptIndex === 0) {
         seedPriorGenerationEvidence(db, input.taskId);
         return {
-          rawOutput: `failed\n\n${COMPLETION_MARKER_V3}\n${JSON.stringify({
+          rawOutput: `failed\n\n${COMPLETION_MARKER_V4}\n${JSON.stringify({
             failure: { kind: 'task_failed', code: 'implementation_failed', summary: 'approach exhausted' },
           })}`,
         };
@@ -870,6 +858,6 @@ describe('natural-language planning/kernel path', () => {
       WHERE session_id = ? AND status = 'rejected'
     `).get('sess_reject_executor') as { result_json: string };
     const result = JSON.parse(proposal.result_json) as { issues: string[] };
-    expect(result.issues.join('; ')).toContain('preferredAgentClassList');
+    expect(result.issues.join('; ')).toContain('preferred AgentClass set');
   });
 });

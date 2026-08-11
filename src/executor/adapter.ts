@@ -26,9 +26,8 @@ export interface ExecutorInput {
     inputsPath: string;
     handoffsPath: string;
     gitMetadataPath: string | null;
-    controlNetwork: string;
     capabilityBinding: { mcpUrl: string; jsonUrl: string; useUrl: string; bearerToken: string } | null;
-    onContainerCreated?(containerId: string): void;
+    onRuntimeStarted?(runtimeHandle: string, processId: number | null): void;
   };
 }
 
@@ -46,6 +45,7 @@ export interface ExecutorProbeResult {
 export interface ExecutorAdapter {
   readonly name: string;
   readonly supportsContinuation?: boolean;
+  readonly supportsResponseOnly?: boolean;
   execute(input: ExecutorInput): Promise<ExecutorResult>;
   executeResponseOnly?(input: { prompt: string; maxBytes: number }): Promise<ExecutorResult>;
   probe(previousFailure?: KernelFailure | null): Promise<ExecutorProbeResult>;

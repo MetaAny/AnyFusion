@@ -3,6 +3,8 @@
 import { readFileSync } from 'fs';
 import { MetaclawSession, type MetaclawSessionDeps } from './metaclaw-session.js';
 
+export const SMOKE_APPROVE_REPOSITORY_PROMOTION_DIRECTIVE = '@smoke-approve-repository-promotion';
+
 export function parseScriptInputs(content: string): string[] {
   return content
     .split(/\r?\n/)
@@ -48,6 +50,27 @@ export async function runScriptedSession(
   let exitRequested = false;
   let lastTaskId: string | null = null;
   for (const rawLine of inputs) {
+    if (rawLine === SMOKE_APPROVE_REPOSITORY_PROMOTION_DIRECTIVE) {
+      if (!process.env.ANYFUSION_SMOKE_RUN_ID?.trim()) {
+        throw new Error('Smoke repository promotion approval requires ANYFUSION_SMOKE_RUN_ID');
+      }
+      const requests = session.getPlannerTuiPermissionRequests()
+        .filter(request => request.capability === 'repository_promotion');
+      if (requests.length !== 1) {
+        throw new Error(`Expected one pending repository promotion, found ${requests.length}`);
+      }
+      const resolution = await session.resolvePlannerTuiPermission(
+        requests[0]!.permissionRequestId,
+        'approve',
+      );
+      if (!['resolved', 'replayed'].includes(resolution.status)) {
+        throw new Error(`Smoke repository promotion approval failed: ${resolution.message}`);
+      }
+      await session.waitForAsyncWork();
+      const snapshotAfterApproval = session.getSnapshot();
+      if (snapshotAfterApproval.currentTaskId) lastTaskId = snapshotAfterApproval.currentTaskId;
+      continue;
+    }
     const snapshotBeforeSubmit = session.getSnapshot();
     const line = resolveScriptPlaceholders(rawLine, {
       lastTaskId,

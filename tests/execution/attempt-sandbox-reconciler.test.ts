@@ -3,10 +3,10 @@ import { AttemptSandboxReconciler } from '../../src/execution/attempt-sandbox-re
 import type { AttemptSandboxPersistenceRecord, AttemptSandboxRepositoryPort } from '../../src/execution/repositories.js';
 import type { AttemptSandboxPort } from '../../src/execution/attempt-sandbox.js';
 
-function persisted(attemptId: string, containerId: string): AttemptSandboxPersistenceRecord {
+function persisted(attemptId: string, runtimeHandle: string, processId: number | null = null): AttemptSandboxPersistenceRecord {
   return {
     attemptId, taskId: 'task', generationId: 'gen', subtaskId: 'subtask', workUnitId: 'worker',
-    workspaceId: 'workspace', containerId, imageRef: 'image', imageId: 'sha256:image', status: 'running',
+    workspaceId: 'workspace', runtimeHandle, processId, status: 'running',
     leaseToken: 'lease', labels: {}, exitCode: null, resultCollectedAt: null, cleanupStatus: null,
     cleanupError: null, createdAt: '2026-07-22T00:00:00.000Z', updatedAt: '2026-07-22T00:00:00.000Z',
   };
@@ -14,25 +14,26 @@ function persisted(attemptId: string, containerId: string): AttemptSandboxPersis
 
 describe('AttemptSandboxReconciler', () => {
   it('removes orphans and marks missing durable sandboxes lost', async () => {
-    const active = persisted('attempt-lost', 'missing-container');
+    const active = persisted('attempt-lost', 'missing-runtime', 456);
     const updates: Array<[string, unknown]> = [];
     const repository = {
       listActive: () => [active],
-      find: vi.fn(), findByContainerId: vi.fn(), create: vi.fn(),
+      find: vi.fn(), findByRuntimeHandle: vi.fn(), create: vi.fn(),
       update: (id: string, changes: unknown) => { updates.push([id, changes]); },
     } as unknown as AttemptSandboxRepositoryPort;
     const sandbox = {
       listManaged: vi.fn().mockResolvedValue([{
-        containerId: 'orphan', imageId: 'sha256:image', status: 'running', exitCode: null,
+        runtimeHandle: 'orphan', processId: 123, status: 'running', exitCode: null,
         labels: { 'io.metaclaw.attempt-id': 'unknown' },
       }]),
-      stop: vi.fn(), remove: vi.fn(),
+      stop: vi.fn(), stopProcess: vi.fn(), remove: vi.fn(),
     } as unknown as AttemptSandboxPort;
     const result = await new AttemptSandboxReconciler(sandbox, repository).reconcile({ checkpoint: vi.fn() });
 
-    expect(result.orphanContainerIds).toEqual(['orphan']);
+    expect(result.orphanRuntimeHandles).toEqual(['orphan']);
     expect(result.lostAttempts).toEqual([active]);
-    expect(updates).toEqual([['attempt-lost', expect.objectContaining({ status: 'lost', cleanupStatus: 'missing' })]]);
+    expect(updates).toEqual([['attempt-lost', expect.objectContaining({ status: 'lost', cleanupStatus: 'terminated' })]]);
+    expect(sandbox.stopProcess).toHaveBeenCalledWith(456);
     expect(sandbox.stop).toHaveBeenCalledWith('orphan');
     expect(sandbox.remove).toHaveBeenCalledWith('orphan');
   });
@@ -41,12 +42,12 @@ describe('AttemptSandboxReconciler', () => {
     const active = persisted('attempt-paused', 'paused-container');
     const checkpoint = vi.fn();
     const repository = {
-      listActive: () => [active], find: vi.fn(), findByContainerId: vi.fn(), create: vi.fn(), update: vi.fn(),
+      listActive: () => [active], find: vi.fn(), findByRuntimeHandle: vi.fn(), create: vi.fn(), update: vi.fn(),
     } as unknown as AttemptSandboxRepositoryPort;
     const sandbox = {
       listManaged: vi.fn().mockResolvedValue([{
-        containerId: 'paused-container', imageId: 'sha256:image', status: 'paused', exitCode: null, labels: {},
-      }]), stop: vi.fn(), remove: vi.fn(),
+        runtimeHandle: 'paused-container', processId: 789, status: 'paused', exitCode: null, labels: {},
+      }]), stop: vi.fn(), stopProcess: vi.fn(), remove: vi.fn(),
     } as unknown as AttemptSandboxPort;
     const result = await new AttemptSandboxReconciler(sandbox, repository).reconcile({ checkpoint });
 

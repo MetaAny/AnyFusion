@@ -1,50 +1,64 @@
-// Provides AgentClass persistence helpers. Runtime WorkUnits are provisioned after authorization.
-import type Database from 'better-sqlite3';
+// Projection facade for consumers that still use the AgentClass value shape.
+// Static executor definitions come only from the active registry snapshot.
 import type { AgentClass, AgentClassKind } from '../core/types.js';
-import { seedDefaultAgentClasses, seedDefaultWorkUnits } from './agent-class-seeder.js';
-import { AgentClassRepo } from '../storage/agent-class-repo.js';
-import { WorkUnitRepo } from '../storage/work-unit-repo.js';
-import { isBuiltinExecutorName } from './builtin-executor-catalog.js';
+import { executorToAgentClass, type ExecutorRegistrySnapshot } from './executor-registry-types.js';
 
 export interface AgentClassServiceDeps {
-  db: Database.Database;
+  snapshot: () => ExecutorRegistrySnapshot;
 }
 
-/** Owns the static AgentClass catalog; executor WorkUnits are provisioned by Runtime. */
 export class AgentClassService {
-  private readonly agentClassRepo: AgentClassRepo;
-  private readonly workUnitRepo: WorkUnitRepo;
+  private readonly snapshot: () => ExecutorRegistrySnapshot;
 
   constructor(deps: AgentClassServiceDeps) {
-    this.agentClassRepo = new AgentClassRepo(deps.db);
-    this.workUnitRepo = new WorkUnitRepo(deps.db);
+    this.snapshot = deps.snapshot;
   }
 
   seedDefaults(): void {
-    seedDefaultAgentClasses(this.agentClassRepo);
-    seedDefaultWorkUnits(this.workUnitRepo);
+    // Executor definitions are no longer seeded into SQLite.
   }
 
   listAgentClasses(): AgentClass[] {
-    return this.agentClassRepo.findAll();
+    return [...this.snapshot().executors.values()].map(executorToAgentClass);
   }
 
   listByKind(kind: AgentClassKind): AgentClass[] {
-    return this.agentClassRepo.findByKind(kind);
+    return kind === 'executor' ? this.listAgentClasses() : [];
   }
 
   findByName(name: string): AgentClass | null {
-    return this.agentClassRepo.findByName(name);
+    const executor = this.snapshot().executors.get(name);
+    return executor ? executorToAgentClass(executor) : null;
   }
 
-  setResolvedImageId(name: string, imageId: string): void {
-    this.agentClassRepo.setResolvedImageId(name, imageId);
-  }
-
-  upsert(agentClass: AgentClass): void {
-    if (isBuiltinExecutorName(agentClass.name)) {
-      throw new Error(`Cannot overwrite canonical Executor AgentClass: ${agentClass.name}`);
+  deriveRecoverySafety(
+    requiredCapabilities: readonly string[],
+  ): 'read_only' | 'workspace_reconcilable' | 'external_non_idempotent' {
+    let safety: 'read_only' | 'workspace_reconcilable' | 'external_non_idempotent' = 'read_only';
+    for (const capabilityId of requiredCapabilities) {
+      const capability = this.snapshot().capabilities.get(capabilityId);
+      if (!capability || capability.recoverySafety === 'external_non_idempotent') {
+        return 'external_non_idempotent';
+      }
+      if (capability.recoverySafety === 'workspace_reconcilable') safety = 'workspace_reconcilable';
     }
-    this.agentClassRepo.upsert(agentClass);
+    return safety;
+  }
+
+  supportsExecutionEvidence(executorId: string): boolean {
+    const snapshot = this.snapshot();
+    const executor = snapshot.executors.get(executorId);
+    if (!executor) return false;
+    return executor.capabilities.some(capabilityId => (
+      snapshot.capabilities.get(capabilityId)?.requiredAffordances.some(
+        affordance => affordance === 'workspace-read-write'
+          || affordance === 'public-web-search'
+          || affordance === 'public-web-fetch',
+      ) === true
+    ));
+  }
+
+  upsert(_agentClass: AgentClass): never {
+    throw new Error('Executor definitions must be registered through executors.yaml');
   }
 }

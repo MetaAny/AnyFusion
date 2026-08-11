@@ -6,8 +6,11 @@
       "apiKey": "$OPENAI_API_KEY",
       "models": [
         {
-          "id": "gpt-5.6-terra",
+          "id": "deepseek-v4-flash",
           "reasoning": true,
+          "thinkingLevelMap": {
+            "high": "max"
+          },
           "compat": {
             "supportsReasoningEffort": true
           }

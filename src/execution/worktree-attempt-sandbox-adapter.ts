@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { stat } from 'node:fs/promises';
 import type {
@@ -32,16 +31,6 @@ export class WorktreeAttemptSandboxAdapter implements AttemptSandboxPort {
   readonly pathMode = 'native' as const;
   private readonly attempts = new Map<string, WorktreeAttempt>();
 
-  async resolveImage(imageRef: string): Promise<string> {
-    if (!imageRef.trim()) throw new Error('executor runtime profile is required');
-    return `sha256:${createHash('sha256').update(`worktree:${imageRef}`).digest('hex')}`;
-  }
-
-  async probeControlNetwork(_controlNetwork: string): Promise<void> {
-    // Native Executor processes share the Runtime network namespace. The
-    // Docker-internal network check is only meaningful for container attempts.
-  }
-
   async create(input: CreateAttemptSandboxInput): Promise<AttemptSandboxRecord> {
     const workspace = input.mounts.find(mount => mount.target === '/workspace');
     if (!workspace || workspace.mode !== 'rw') {
@@ -52,7 +41,7 @@ export class WorktreeAttemptSandboxAdapter implements AttemptSandboxPort {
     if (!workspaceInfo?.isDirectory()) {
       throw new Error(`worktree workspace does not exist: ${workspace.source}`);
     }
-    const containerId = `worktree:${input.attemptId}`;
+    const runtimeHandle = `worktree:${input.attemptId}`;
     const labels = {
       [MANAGED_LABEL]: 'true',
       'io.metaclaw.execution-backend': 'worktree',
@@ -65,13 +54,13 @@ export class WorktreeAttemptSandboxAdapter implements AttemptSandboxPort {
       'io.metaclaw.idempotency-key': input.idempotencyKey,
     };
     const record: AttemptSandboxRecord = {
-      containerId,
-      imageId: await this.resolveImage(input.imageRef),
+      runtimeHandle,
+      processId: null,
       status: 'created',
       exitCode: null,
       labels,
     };
-    this.attempts.set(containerId, {
+    this.attempts.set(runtimeHandle, {
       input,
       record,
       workspacePath: workspace.source,
@@ -83,9 +72,9 @@ export class WorktreeAttemptSandboxAdapter implements AttemptSandboxPort {
     return record;
   }
 
-  async start(containerId: string): Promise<void> {
-    const attempt = this.requireAttempt(containerId);
-    if (attempt.child) return;
+  async start(runtimeHandle: string): Promise<AttemptSandboxRecord> {
+    const attempt = this.requireAttempt(runtimeHandle);
+    if (attempt.child) return { ...attempt.record, labels: { ...attempt.record.labels } };
     const child = spawn(attempt.input.command, attempt.input.args, {
       cwd: attempt.workspacePath,
       env: {
@@ -98,6 +87,7 @@ export class WorktreeAttemptSandboxAdapter implements AttemptSandboxPort {
       windowsHide: true,
     });
     attempt.child = child;
+    attempt.record.processId = child.pid ?? null;
     attempt.record.status = 'running';
     attempt.waitPromise = new Promise(resolve => {
       attempt.resolveWait = resolve;
@@ -117,10 +107,11 @@ export class WorktreeAttemptSandboxAdapter implements AttemptSandboxPort {
       if (signal) append(`\nprocess terminated by ${signal}\n`);
       this.finish(attempt, code ?? 1);
     });
+    return { ...attempt.record, labels: { ...attempt.record.labels } };
   }
 
-  async wait(containerId: string): Promise<number> {
-    const attempt = this.requireAttempt(containerId);
+  async wait(runtimeHandle: string): Promise<number> {
+    const attempt = this.requireAttempt(runtimeHandle);
     if (!attempt.waitPromise) {
       if (attempt.record.status === 'created') throw new Error('worktree attempt has not started');
       return attempt.record.exitCode ?? 1;
@@ -128,12 +119,12 @@ export class WorktreeAttemptSandboxAdapter implements AttemptSandboxPort {
     return attempt.waitPromise;
   }
 
-  async logs(containerId: string): Promise<string> {
-    return this.requireAttempt(containerId).logs;
+  async logs(runtimeHandle: string): Promise<string> {
+    return this.requireAttempt(runtimeHandle).logs;
   }
 
-  async pause(containerId: string): Promise<void> {
-    const attempt = this.requireAttempt(containerId);
+  async pause(runtimeHandle: string): Promise<void> {
+    const attempt = this.requireAttempt(runtimeHandle);
     const pid = attempt.child?.pid;
     if (!pid || attempt.record.status !== 'running') return;
     if (process.platform === 'win32') throw new Error('worktree attempt pause is unavailable on Windows');
@@ -141,8 +132,8 @@ export class WorktreeAttemptSandboxAdapter implements AttemptSandboxPort {
     attempt.record.status = 'paused';
   }
 
-  async resume(containerId: string): Promise<void> {
-    const attempt = this.requireAttempt(containerId);
+  async resume(runtimeHandle: string): Promise<void> {
+    const attempt = this.requireAttempt(runtimeHandle);
     const pid = attempt.child?.pid;
     if (!pid || attempt.record.status !== 'paused') return;
     if (process.platform === 'win32') throw new Error('worktree attempt resume is unavailable on Windows');
@@ -150,13 +141,13 @@ export class WorktreeAttemptSandboxAdapter implements AttemptSandboxPort {
     attempt.record.status = 'running';
   }
 
-  async inspect(containerId: string): Promise<AttemptSandboxRecord | null> {
-    const attempt = this.attempts.get(containerId);
+  async inspect(runtimeHandle: string): Promise<AttemptSandboxRecord | null> {
+    const attempt = this.attempts.get(runtimeHandle);
     return attempt ? { ...attempt.record, labels: { ...attempt.record.labels } } : null;
   }
 
-  async stop(containerId: string): Promise<void> {
-    const attempt = this.requireAttempt(containerId);
+  async stop(runtimeHandle: string): Promise<void> {
+    const attempt = this.requireAttempt(runtimeHandle);
     const pid = attempt.child?.pid;
     if (!pid || ['created', 'exited', 'missing'].includes(attempt.record.status)) return;
     try {
@@ -182,12 +173,21 @@ export class WorktreeAttemptSandboxAdapter implements AttemptSandboxPort {
     }
   }
 
-  async remove(containerId: string): Promise<void> {
-    const attempt = this.requireAttempt(containerId);
+  async stopProcess(processId: number): Promise<void> {
+    try {
+      if (process.platform === 'win32') process.kill(processId, 'SIGTERM');
+      else process.kill(-processId, 'SIGTERM');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+    }
+  }
+
+  async remove(runtimeHandle: string): Promise<void> {
+    const attempt = this.requireAttempt(runtimeHandle);
     if (!['created', 'exited', 'missing'].includes(attempt.record.status)) {
       throw new Error('worktree attempt must be stopped before removal');
     }
-    this.attempts.delete(containerId);
+    this.attempts.delete(runtimeHandle);
   }
 
   async listManaged(): Promise<AttemptSandboxRecord[]> {
@@ -197,9 +197,9 @@ export class WorktreeAttemptSandboxAdapter implements AttemptSandboxPort {
     }));
   }
 
-  private requireAttempt(containerId: string): WorktreeAttempt {
-    const attempt = this.attempts.get(containerId);
-    if (!attempt) throw new Error(`worktree attempt not found: ${containerId}`);
+  private requireAttempt(runtimeHandle: string): WorktreeAttempt {
+    const attempt = this.attempts.get(runtimeHandle);
+    if (!attempt) throw new Error(`worktree attempt not found: ${runtimeHandle}`);
     return attempt;
   }
 

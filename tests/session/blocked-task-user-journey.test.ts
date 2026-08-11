@@ -43,7 +43,7 @@ function createConfig(): Config {
 }
 
 describe('blocked task user journey', () => {
-  it('lets the user inspect a fail-closed attempt but does not retry unknown work through /task unblock', async () => {
+  it('lets the user inspect a fail-closed attempt and explicitly retry it through /task unblock', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-blocked-user-journey');
@@ -53,9 +53,13 @@ describe('blocked task user journey', () => {
     const notifier: NotificationService = {
       notifyTaskCompleted: vi.fn().mockResolvedValue(undefined),
     };
+    let releaseRecoveryAttempt!: (exitCode: number) => void;
+    const recoveryAttempt = new Promise<number>(resolve => {
+      releaseRecoveryAttempt = resolve;
+    });
     const attemptSandbox = new FakeAttemptSandbox((_input, attemptIndex) => attemptIndex === 0
       ? { body: '沙箱未产出任何可交付结果', exitCode: 1 }
-      : { body: '阻塞解除后已完成用户旅程验收报告' });
+      : { body: '阻塞解除后已完成用户旅程验收报告', wait: recoveryAttempt });
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
@@ -87,15 +91,23 @@ describe('blocked task user journey', () => {
     expect(output).toContain(`#${blockedTask.id} [BLOCKED] ${blockedTask.title}`);
     expect(output).toContain(`建议动作：/task unblock ${blockedTask.id}，或直接补充材料/说明后让我继续`);
 
-    await session.submit(`/task unblock ${blockedTask.id}`, { awaitAsyncWork: true });
+    const commandResult = await Promise.race([
+      session.submitPlannerTuiCommand(`/task unblock ${blockedTask.id}`),
+      new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error('Planner TUI command waited for background execution')), 500);
+      }),
+    ]);
 
-    expect(taskRepo.findById(blockedTask.id)?.status).toBe('blocked');
-    expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
+    expect(commandResult.output).toContain(`任务 #${blockedTask.id} 已提交恢复请求`);
+    await vi.waitFor(() => expect(attemptSandbox.create).toHaveBeenCalledTimes(2));
+    expect(taskRepo.findById(blockedTask.id)?.status).toBe('running');
 
+    releaseRecoveryAttempt(0);
+    await session.waitForAsyncWork();
+
+    expect(taskRepo.findById(blockedTask.id)?.status).toBe('done');
     output = session.getSnapshot().output.join('\n');
-    expect(output).toContain(`任务 #${blockedTask.id} 已提交恢复请求`);
-    expect(output).toContain('no runnable Subtask while work remains');
-    expect(output).not.toContain('阻塞解除后已完成用户旅程验收报告');
-    expect(notifier.notifyTaskCompleted).not.toHaveBeenCalled();
+    expect(output).toContain('阻塞解除后已完成用户旅程验收报告');
+    expect(notifier.notifyTaskCompleted).toHaveBeenCalled();
   });
 });

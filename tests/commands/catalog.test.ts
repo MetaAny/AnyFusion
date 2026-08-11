@@ -5,8 +5,14 @@ import {
   type CommandNode,
 } from '../../src/commands/catalog.js';
 import { createDefaultCommandCatalog } from '../../src/commands/command-tree.js';
+import { createTestExecutorRegistrySnapshot } from '../../src/executor/test-executor-registry.js';
 
-const context = {} as CommandContext;
+const executorSnapshot = createTestExecutorRegistrySnapshot();
+const context = {
+  executorRegistry: {
+    list: () => executorSnapshot.tui,
+  },
+} as CommandContext;
 
 function createCatalog(): CommandCatalog {
   const nodes: CommandNode[] = [
@@ -115,9 +121,9 @@ describe('CommandCatalog', () => {
     });
 
     const executor = catalog.complete({ text: '/executor ', cursor: 10, context });
-    expect(executor.suggestions.find(item => item.value === 'show')).toMatchObject({
-      label: 'show',
-      replacement: { start: 10, end: 10, text: 'show' },
+    expect(executor.suggestions.find(item => item.value === 'discover')).toMatchObject({
+      label: 'discover',
+      replacement: { start: 10, end: 10, text: 'discover' },
     });
 
     const learning = catalog.complete({ text: '/learning ', cursor: 10, context });
@@ -240,9 +246,16 @@ describe('CommandCatalog', () => {
 /task history
 /task recovery
 /task recover
+/task purge
 /task index rebuild
 /task index search
 /executor list
+/executor discover
+/executor register
+/executor verify
+/executor enable
+/executor disable
+/executor reload
 /executor refresh
 /executor show
 /executor feedback
@@ -277,7 +290,7 @@ describe('CommandCatalog', () => {
     expect(actions).toContain('/task dashboard');
     expect(actions).toContain('/task index search');
     expect(actions).not.toContain('/task complete');
-    expect(actions).not.toContain('/executor register <executorName>');
+    expect(actions).toContain('/executor register');
     expect(actions).not.toContain('/executor register wizard');
     expect(actions).not.toContain('/executor unregister');
     expect(actions).not.toContain('/learning promote');

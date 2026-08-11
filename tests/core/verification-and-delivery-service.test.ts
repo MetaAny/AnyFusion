@@ -25,7 +25,6 @@ function createAggregationSubtask(overrides: Partial<ExecutionSubtask>): Executi
     executorHint: 'codex-cli',
     dependsOn: [],
     inputs: { taskId: 'task_agg', resources: [], recalledTaskIds: [] },
-    deliveryKind: 'report',
     acceptance: [],
     riskLevel: 'low',
     ...overrides,
@@ -201,7 +200,7 @@ describe('VerificationAndDeliveryService', () => {
       preferences: [],
       nextStep: '无后续建议',
       aggregationVerification: {
-        subtasks: [createAggregationSubtask({ id: 'subtask_missing', deliveryKind: 'report' })],
+        subtasks: [createAggregationSubtask({ id: 'subtask_missing' })],
         results: [],
         aggregation: createAggregationPlan(),
       },
@@ -219,7 +218,7 @@ describe('VerificationAndDeliveryService', () => {
       acceptanceCriteria: [],
       artifactPaths: [],
       aggregationVerification: {
-        subtasks: [createAggregationSubtask({ id: 'subtask_patch', deliveryKind: 'edit' })],
+        subtasks: [createAggregationSubtask({ id: 'subtask_patch' })],
         results: [{
           subtaskId: 'subtask_patch',
           executorName: 'codex-cli',

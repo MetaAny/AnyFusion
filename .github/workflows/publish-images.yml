@@ -72,8 +72,6 @@ jobs:
           }
 
           write_tags runtime_tags anyfusion-runtime
-          write_tags codex_tags metaclaw-executor-codex
-          write_tags pi_tags metaclaw-executor-pi
           echo "immutable_tag=$immutable_tag" >> "$GITHUB_OUTPUT"
 
       - name: Resolve AnyFusion-Pi revision
@@ -128,45 +126,11 @@ jobs:
           cache-from: type=gha,scope=anyfusion-runtime
           cache-to: type=gha,mode=max,scope=anyfusion-runtime
 
-      - name: Build and publish Codex Executor
-        id: codex
-        uses: docker/build-push-action@v6
-        with:
-          context: ./AnyFusion
-          file: ./AnyFusion/docker/Dockerfile.attempt-codex
-          platforms: linux/amd64
-          push: true
-          pull: true
-          tags: ${{ steps.images.outputs.codex_tags }}
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-          cache-from: type=gha,scope=metaclaw-executor-codex
-          cache-to: type=gha,mode=max,scope=metaclaw-executor-codex
-
-      - name: Build and publish Pi Executor
-        id: pi
-        uses: docker/build-push-action@v6
-        with:
-          context: ./AnyFusion
-          file: ./AnyFusion/docker/Dockerfile.attempt-pi
-          platforms: linux/amd64
-          push: true
-          pull: true
-          tags: ${{ steps.images.outputs.pi_tags }}
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-          cache-from: type=gha,scope=metaclaw-executor-pi
-          cache-to: type=gha,mode=max,scope=metaclaw-executor-pi
-
       - name: Write build summary
         shell: bash
         env:
           IMMUTABLE_TAG: ${{ steps.images.outputs.immutable_tag }}
           RUNTIME_DIGEST: ${{ steps.runtime.outputs.digest }}
-          CODEX_DIGEST: ${{ steps.codex.outputs.digest }}
-          PI_DIGEST: ${{ steps.pi.outputs.digest }}
           PLANNER_REVISION: ${{ steps.planner.outputs.revision }}
         run: |
           {
@@ -175,8 +139,6 @@ jobs:
             echo "| Image | Tag | Digest |"
             echo "| --- | --- | --- |"
             echo "| anyfusion-runtime | \`$IMMUTABLE_TAG\` | \`$RUNTIME_DIGEST\` |"
-            echo "| metaclaw-executor-codex | \`$IMMUTABLE_TAG\` | \`$CODEX_DIGEST\` |"
-            echo "| metaclaw-executor-pi | \`$IMMUTABLE_TAG\` | \`$PI_DIGEST\` |"
             echo
             echo "AnyFusion-Pi revision: \`$PLANNER_REVISION\`"
           } >> "$GITHUB_STEP_SUMMARY"

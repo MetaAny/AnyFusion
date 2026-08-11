@@ -57,17 +57,46 @@ LangGraph may replace only the durable workflow cursor/replay implementation aft
 
 Adoption requires the full crash matrix, no domain-framework coupling, at least 30% net removal of cursor/replay implementation, checkpoint-loss recovery, and exactly one production workflow path. Failure of any gate requires deleting the spike and dependency.
 
-### Planning v7 and schema v31 recovery amendment (2026-08-07)
+### Executor registry and schema v32 recovery amendment (2026-08-08)
 
-SQLite schema v31 is the current pre-release baseline. Because no database
-format has shipped, Runtime creates only fresh v31 databases and rejects every
-older schema. The earlier 29→30 upgrade and its recoverable-payload rewriting
-are removed; there is no migration or fallback reader. Durable Kernel and Task
-event history remains intact in v31. Low-value intermediate Skill progress is
-attempt-lifetime verifier evidence rather than durable history; only terminal
-Skill outcomes are persisted, and their detail plus effect-summary update is
-one transaction. The unused reflection, guidance and executor-route event
-tables are not created.
+SQLite schema v32 is the current pre-release baseline. Because no database
+format has shipped, Runtime creates only fresh v32 databases and rejects every
+v31 or older schema with the exact database path. It does not migrate, delete,
+rename or dual-read an existing database. Operators must explicitly back up
+and recreate an older pre-release database.
+
+Schema v32 removes `agent_classes` as an Executor definition or installation
+binding source. `$ANYFUSION_CONFIG_HOME/executors.yaml` is the sole static
+authority, loaded into one immutable `configDigest`-bound
+`ExecutorRegistrySnapshot`. Planner and Kernel admission reject unknown,
+disabled, unverified, stale and capability-incomplete candidates; Runtime
+receives only the corresponding verified driver binding. Kernel continues to
+own retry, fallback, recovery and availability decisions.
+
+Schema v32 adds digest-bound `executor_verifications`, rotating
+`smoke_run_audits`, minimal `task_purge_audits`, and Task `source` plus nullable
+`smoke_run_id`. Durable Kernel and Task history remains intact during ordinary
+operation. Low-value intermediate Skill progress is attempt-lifetime verifier
+evidence rather than durable history; only terminal Skill outcomes are
+persisted, and their detail plus effect-summary update is one transaction. The
+unused reflection, guidance and executor-route event tables are not created.
+
+Terminal Task purge is a controlled application transaction, not a generic
+repository operation. It first records a minimal audit and transaction-scoped
+authorization, then deletes Task-scoped receipts, handoffs, merge attempts,
+workflow, execution, publication, search, memory and workspace facts. Normal
+SQL deletion of immutable receipts, handoffs and merge attempts remains
+trigger-blocked. A failure rolls back both audit and deletion. Only `done`,
+`archived` or `cancelled` Tasks with quiescent dispatch, publication, sandbox,
+lease and WorkUnit resources may be purged; active Tasks must first pass
+through Kernel cancellation.
+
+`system_smoke` Tasks carry a unique `smoke_run_id`, are hidden from normal Task
+lists, search and memory generation, and may be cleaned only by a smoke run
+whose ID exactly matches. Smoke cleanup formally cancels unfinished owned
+Tasks, waits for quiescence, invokes Task purge, removes workspace/artifact/home
+residue and retains only bounded Executor verification/health facts, the latest
+20 smoke audits and minimal purge audits.
 
 The Phase 4 gated evaluation closed on 2026-07-21 without adoption. The replaceable drain/apply loop was materially smaller than the required MetaClaw inbox/application/outbox recovery layer, while Functional API integration would add a second SQLite cursor and replay glue. It could not produce the required 30% net removal. `DurableKernelWorkflow` is therefore the sole production workflow implementation and no LangGraph dependency or compatibility path is retained.
 

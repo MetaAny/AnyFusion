@@ -1,9 +1,3 @@
-import type { AgentClass, AgentClassRiskLevel } from '../core/types.js';
-import { PERMISSION_PROFILE_IDS, type PermissionProfileId } from '../resource/index.js';
-import { AgentClassRepo } from '../storage/agent-class-repo.js';
-import { KernelExecutorStatusRepo } from '../storage/kernel-executor-status-repo.js';
-import { WorkUnitRepo } from '../storage/work-unit-repo.js';
-import { isBuiltinExecutorName } from '../executor/builtin-executor-catalog.js';
 import {
   optionArg,
   stringArg,
@@ -12,162 +6,181 @@ import {
   type ResolvedCommandArgs,
 } from './catalog.js';
 
-function parseListOption(args: ResolvedCommandArgs, flag: `--${string}`): string[] {
-  const value = optionArg(args, flag);
-  return value ? value.split(',').map(item => item.trim()).filter(Boolean) : [];
-}
-
-function parseRuntimeArgs(value?: string): string[] {
-  if (!value) return [];
-  return value.split(/\s+/).map(item => item.trim()).filter(Boolean);
-}
-
-function buildAgentClassFromOptions(
-  name: string,
-  args: ResolvedCommandArgs,
-  existing?: AgentClass | null,
-): AgentClass {
-  const risk = (optionArg(args, '--risk') ?? existing?.riskLevel ?? 'medium') as AgentClassRiskLevel;
-  const permissionProfileId = (optionArg(args, '--permission-profile')
-    ?? existing?.permissionProfileId
-    ?? null) as PermissionProfileId | null;
-  if (permissionProfileId && !PERMISSION_PROFILE_IDS.includes(permissionProfileId)) {
-    throw new Error(`Unknown permission profile: ${permissionProfileId}`);
-  }
-  const listOrExisting = (flag: `--${string}`, fallback: string[]) => {
-    const parsed = parseListOption(args, flag);
-    return parsed.length > 0 ? parsed : fallback;
-  };
-  const runtimeArgsOption = optionArg(args, '--args');
-  return {
-    name,
-    kind: 'executor',
-    domains: listOrExisting('--domains', existing?.domains ?? []),
-    capabilities: listOrExisting('--capabilities', existing?.capabilities ?? []),
-    inputTypes: listOrExisting('--inputs', existing?.inputTypes ?? ['text']),
-    outputTypes: listOrExisting('--outputs', existing?.outputTypes ?? ['markdown']),
-    strengths: listOrExisting('--strengths', existing?.strengths ?? []),
-    weaknesses: listOrExisting('--weaknesses', existing?.weaknesses ?? []),
-    primaryUseCases: listOrExisting('--primary-use-cases', existing?.primaryUseCases ?? []),
-    avoidUseCases: listOrExisting('--avoid-use-cases', existing?.avoidUseCases ?? []),
-    intentAffinity: existing?.intentAffinity ?? {},
-    riskLevel: risk,
-    harness: existing?.harness ?? 'cli',
-    model: existing?.model ?? null,
-    skills: existing?.skills ?? [],
-    mcpServers: existing?.mcpServers ?? [],
-    plugins: existing?.plugins ?? [],
-    runtimeCommand: optionArg(args, '--command') ?? existing?.runtimeCommand ?? null,
-    runtimeArgs: runtimeArgsOption ? parseRuntimeArgs(runtimeArgsOption) : existing?.runtimeArgs ?? [],
-    runtimeCheckCommand: optionArg(args, '--check') ?? existing?.runtimeCheckCommand ?? null,
-    executionImageRef: optionArg(args, '--image') ?? existing?.executionImageRef ?? null,
-    resolvedImageId: optionArg(args, '--image-id') ?? existing?.resolvedImageId ?? null,
-    permissionProfileId,
-    projectUrl: optionArg(args, '--project-url') ?? existing?.projectUrl ?? null,
-  };
-}
-
-function formatAgentClass(agentClass: AgentClass, health: string): string {
-  const list = (values: string[]) => values.join(', ') || '-';
-  return [
-    `  ${agentClass.name} kind=${agentClass.kind} health=${health}`,
-    `    domains: ${list(agentClass.domains)}`,
-    `    capabilities: ${list(agentClass.capabilities)}`,
-    `    strengths: ${list(agentClass.strengths)}`,
-    `    primary use cases: ${list(agentClass.primaryUseCases)}`,
-  ].join('\n');
-}
-
 export async function listExecutors(
   _args: ResolvedCommandArgs,
   context: CommandContext,
 ): Promise<CommandResult> {
-  const agentClasses = new AgentClassRepo(context.db).findAll();
-  if (agentClasses.length === 0) {
-    return { type: 'text', content: 'No AgentClass records are registered.' };
-  }
-  const workUnits = new WorkUnitRepo(context.db).findAll();
-  const statuses = new KernelExecutorStatusRepo(context.db);
+  const entries = context.executorRegistry?.list() ?? [];
+  if (entries.length === 0) return { type: 'text', content: 'No Executors are configured.' };
   return {
     type: 'text',
     content: [
-      'Registered AgentClasses:',
-      ...agentClasses.map(agentClass => formatAgentClass(agentClass, statuses.findByAgentClassName(agentClass.name)?.classHealth ?? 'unverified')),
-      '',
-      `WorkUnits: ${workUnits.map(unit => `${unit.id}:${unit.agentClassName}:${unit.state}`).join(', ') || '-'}`,
+      `Executor registry digest: ${context.executorRegistry?.digest() ?? '-'}`,
+      ...entries.map(entry => [
+        `${entry.id} [${entry.enabled ? 'enabled' : 'disabled'} / ${entry.verification}]`,
+        `  ${entry.description}`,
+        `  driver=${entry.driver} capabilities=${entry.capabilities.join(', ')}`,
+        `  binary=${entry.binaryPath}`,
+        `  verifiedAt=${entry.verifiedAt ?? '-'}`,
+        ...(entry.error ? [`  error=${entry.error}`] : []),
+      ].join('\n')),
     ].join('\n'),
   };
 }
 
-export async function startExecutorRegisterWizard(): Promise<CommandResult> {
+export async function discoverExecutors(
+  _args: ResolvedCommandArgs,
+  context: CommandContext,
+): Promise<CommandResult> {
+  if (!context.executorRegistry) return unavailable();
+  const discoveries = await context.executorRegistry.discover();
   return {
-    type: 'directive',
-    content: 'Executor AgentClass registration wizard started. Answer the prompts, or type cancel.',
-    directive: { kind: 'start-executor-register-wizard' },
+    type: 'text',
+    content: discoveries.length === 0
+      ? 'No Executor profiles are configured for discovery.'
+      : discoveries.map(item => (
+          `${item.profileId}: ${item.binaryPath ?? 'not found'}${item.version ? ` (${item.version})` : ''}`
+        )).join('\n'),
   };
+}
+
+export async function verifyExecutor(
+  args: ResolvedCommandArgs,
+  context: CommandContext,
+): Promise<CommandResult> {
+  if (!context.executorRegistry) return unavailable();
+  const executorId = stringArg(args, 'executorName');
+  try {
+    const verification = await context.executorRegistry.verify(executorId);
+    return {
+      type: 'text',
+      content: verification.success
+        ? `Executor ${executorId} verified for digest ${verification.configDigest}`
+        : `Executor ${executorId} verification failed: ${String(verification.result.error ?? 'unknown error')}`,
+    };
+  } catch (error) {
+    return { type: 'text', content: `Executor verification failed: ${message(error)}` };
+  }
+}
+
+export async function enableExecutor(
+  args: ResolvedCommandArgs,
+  context: CommandContext,
+): Promise<CommandResult> {
+  return setEnabled(args, context, true);
+}
+
+export async function disableExecutor(
+  args: ResolvedCommandArgs,
+  context: CommandContext,
+): Promise<CommandResult> {
+  return setEnabled(args, context, false);
+}
+
+export async function reloadExecutors(
+  _args: ResolvedCommandArgs,
+  context: CommandContext,
+): Promise<CommandResult> {
+  if (!context.executorRegistry) return unavailable();
+  try {
+    const result = context.executorRegistry.reload();
+    return { type: 'text', content: `Executor registry reloaded: ${result.configDigest}` };
+  } catch (error) {
+    return {
+      type: 'text',
+      content: `Executor registry reload rejected; previous snapshot remains active: ${message(error)}`,
+    };
+  }
 }
 
 export async function registerExecutor(
   args: ResolvedCommandArgs,
   context: CommandContext,
 ): Promise<CommandResult> {
-  const name = stringArg(args, 'executorName');
-  if (!name) {
+  if (!context.executorRegistry) return unavailable();
+  const id = stringArg(args, 'executorName');
+  const profileId = optionArg(args, '--profile');
+  const driver = optionArg(args, '--driver');
+  const binaryPath = optionArg(args, '--binary');
+  const runtimeHome = optionArg(args, '--home');
+  const description = optionArg(args, '--description');
+  const capabilities = splitList(optionArg(args, '--capabilities'));
+  const primaryUseCases = splitList(optionArg(args, '--use-cases'));
+  if (
+    Boolean(profileId) === Boolean(driver)
+    || !binaryPath
+    || !runtimeHome
+    || !description
+    || capabilities.length === 0
+    || primaryUseCases.length === 0
+  ) {
     return {
       type: 'text',
-      content: [
-        'Enter the AgentClass registration wizard with /executor register wizard',
-        '',
-        'One-line usage:',
-        '/executor register <name> --image <ref> --image-id <sha256:id> --permission-profile restricted-custom --command <cmd> --args "exec --prompt {prompt}" [--domains a,b] [--capabilities a,b]',
-      ].join('\n'),
+      content: 'Usage: /executor register <id> (--profile <id> | --driver cli-session) --binary <absolutePath> --home <absolutePath> --description <text> --capabilities <a,b> --use-cases <a,b>',
     };
   }
-  if (isBuiltinExecutorName(name)) {
-    return { type: 'text', content: `Cannot register or update canonical Executor AgentClass: ${name}` };
-  }
-
-  const agentClassRepo = new AgentClassRepo(context.db);
-  let agentClass: AgentClass;
   try {
-    agentClass = buildAgentClassFromOptions(name, args, agentClassRepo.findByName(name));
+    const verification = await context.executorRegistry.register({
+      id,
+      profileId: profileId ?? null,
+      driver: (driver ?? profileId) as 'codex' | 'pi' | 'hermes' | 'cli-session',
+      binaryPath,
+      runtimeHome,
+      description,
+      capabilities,
+      primaryUseCases,
+      environmentFiles: splitList(optionArg(args, '--env-files')),
+      ...(driver === 'cli-session' ? {
+        versionArgs: parseStringArrayOption(args, '--version-args-json'),
+        versionPattern: requiredOption(args, '--version-pattern'),
+        permissionProfile: requiredOption(args, '--permission-profile') as
+          | 'workspace-engineering'
+          | 'public-web-research'
+          | 'restricted-custom',
+        sessionProtocol: {
+          initialArgs: parseStringArrayOption(args, '--initial-args-json'),
+          resumeArgs: parseStringArrayOption(args, '--resume-args-json'),
+          sessionIdPattern: requiredOption(args, '--session-id-pattern'),
+          finalOutputPattern: optionArg(args, '--final-output-pattern')?.trim() || null,
+          timeoutMs: parseTimeout(requiredOption(args, '--timeout-ms')),
+          terminateSignal: parseTerminateSignal(requiredOption(args, '--terminate-signal')),
+        },
+      } : {}),
+    });
+    return { type: 'text', content: `Executor ${id} registered, verified, enabled, and loaded (${verification.version})` };
   } catch (error) {
-    return { type: 'text', content: (error as Error).message };
+    return { type: 'text', content: `Executor registration failed: ${message(error)}` };
   }
-
-  if (!agentClass.executionImageRef || !agentClass.resolvedImageId || !agentClass.permissionProfileId) {
-    return { type: 'text', content: 'Custom Executor requires --image, --image-id and --permission-profile.' };
-  }
-  if (!/^sha256:[a-f0-9]{64}$/u.test(agentClass.resolvedImageId)) {
-    return { type: 'text', content: 'Custom Executor --image-id must be an immutable sha256:<64 hex> image ID.' };
-  }
-
-  agentClassRepo.upsert(agentClass);
-  return { type: 'text', content: `Registered Executor AgentClass: ${name}` };
 }
 
-export async function unregisterExecutor(
-  args: ResolvedCommandArgs,
-  context: CommandContext,
-): Promise<CommandResult> {
-  const name = stringArg(args, 'executorName');
-  if (!name) {
-    return { type: 'text', content: 'Usage: /executor unregister <name>' };
-  }
-  if (isBuiltinExecutorName(name)) {
-    return { type: 'text', content: `Cannot unregister canonical Executor AgentClass: ${name}` };
-  }
+function requiredOption(args: ResolvedCommandArgs, name: string): string {
+  const value = optionArg(args, name)?.trim();
+  if (!value) throw new Error(`Missing required option ${name}`);
+  return value;
+}
 
-  const agentClassRepo = new AgentClassRepo(context.db);
-  if (!agentClassRepo.findByName(name)) {
-    return { type: 'text', content: `Executor AgentClass is not registered: ${name}` };
+function parseStringArrayOption(args: ResolvedCommandArgs, name: string): string[] {
+  const raw = requiredOption(args, name);
+  const parsed = JSON.parse(raw) as unknown;
+  if (!Array.isArray(parsed) || parsed.length === 0 || !parsed.every(item => typeof item === 'string')) {
+    throw new Error(`${name} must be a non-empty JSON string array`);
   }
-  if (new WorkUnitRepo(context.db).findAll().some(unit => unit.agentClassName === name)) {
-    return { type: 'text', content: `Cannot unregister AgentClass with WorkUnits: ${name}` };
-  }
+  return parsed;
+}
 
-  agentClassRepo.delete(name);
-  return { type: 'text', content: `Unregistered Executor AgentClass: ${name}` };
+function parseTimeout(raw: string): number {
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1_000 || value > 600_000) {
+    throw new Error('--timeout-ms must be an integer from 1000 to 600000');
+  }
+  return value;
+}
+
+function parseTerminateSignal(raw: string): 'SIGTERM' | 'SIGINT' {
+  if (raw !== 'SIGTERM' && raw !== 'SIGINT') {
+    throw new Error('--terminate-signal must be SIGTERM or SIGINT');
+  }
+  return raw;
 }
 
 export async function refreshExecutors(
@@ -188,4 +201,34 @@ export async function refreshExecutors(
       `Skipped (not error/unknown): ${report.skipped.join(', ') || '-'}`,
     ].join('\n'),
   };
+}
+
+function setEnabled(
+  args: ResolvedCommandArgs,
+  context: CommandContext,
+  enabled: boolean,
+): Promise<CommandResult> {
+  if (!context.executorRegistry) return Promise.resolve(unavailable());
+  const executorId = stringArg(args, 'executorName');
+  return context.executorRegistry.setEnabled(executorId, enabled)
+    .then(() => ({
+      type: 'text' as const,
+      content: `Executor ${executorId} ${enabled ? 'enabled' : 'disabled'}`,
+    }))
+    .catch(error => ({
+      type: 'text' as const,
+      content: `Executor ${enabled ? 'enable' : 'disable'} failed: ${message(error)}`,
+    }));
+}
+
+function splitList(value: string | undefined): string[] {
+  return value?.split(',').map(item => item.trim()).filter(Boolean) ?? [];
+}
+
+function unavailable(): CommandResult {
+  return { type: 'text', content: 'Executor registry administration is not available in this host.' };
+}
+
+function message(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

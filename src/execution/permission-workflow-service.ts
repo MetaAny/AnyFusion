@@ -27,7 +27,7 @@ export interface PermissionAttemptContext {
   attemptId: string;
   agentClassName: string;
   permissionProfileId: NormalizedCapabilityRequest['permissionProfileId'];
-  containerId: string;
+  runtimeHandle: string;
   workspaceId: string;
   checkpointId: string | null;
 }
@@ -67,7 +67,7 @@ export class PermissionWorkflowService {
     clock?: { now(): string };
   }) {}
 
-  async request(input: CapabilityRequestInput): Promise<{
+  async request(input: CapabilityRequestInput, options: { suspendAttempt?: boolean } = {}): Promise<{
     requestId: string;
     grantId: string | null;
     status: string;
@@ -91,13 +91,15 @@ export class PermissionWorkflowService {
     request.fingerprint = capabilityRequestFingerprint(request);
     const record = this.deps.repository.createRequest(request, now);
     if (record.status !== 'pending') return this.requestResult(record);
-    await this.deps.sandbox.pause(this.deps.context.containerId);
-    try {
-      const checkpointId = await this.deps.hooks.checkpoint('permission_suspended');
-      this.deps.context.checkpointId = checkpointId;
-    } catch (error) {
-      await this.resumeIfPresent().catch(() => undefined);
-      throw error;
+    if (options.suspendAttempt !== false) {
+      await this.deps.sandbox.pause(this.deps.context.runtimeHandle);
+      try {
+        const checkpointId = await this.deps.hooks.checkpoint('permission_suspended');
+        this.deps.context.checkpointId = checkpointId;
+      } catch (error) {
+        await this.resumeIfPresent().catch(() => undefined);
+        throw error;
+      }
     }
     const event: Extract<KernelEvent, { type: 'permission_requested' }> = {
       schemaVersion: 5,
@@ -265,8 +267,8 @@ export class PermissionWorkflowService {
   }
 
   private async resumeIfPresent(): Promise<void> {
-    const sandbox = await this.deps.sandbox.inspect(this.deps.context.containerId);
-    if (sandbox?.status === 'paused') await this.deps.sandbox.resume(this.deps.context.containerId);
+    const sandbox = await this.deps.sandbox.inspect(this.deps.context.runtimeHandle);
+    if (sandbox?.status === 'paused') await this.deps.sandbox.resume(this.deps.context.runtimeHandle);
   }
 
   private requestResult(record: PermissionRequestRecord): {

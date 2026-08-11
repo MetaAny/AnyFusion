@@ -1,24 +1,13 @@
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { KernelExecutorStatusProjector } from '../../src/execution/kernel-executor-status-projector.js';
-import { AgentClassRepo } from '../../src/storage/agent-class-repo.js';
 import { KernelExecutorStatusRepo } from '../../src/storage/kernel-executor-status-repo.js';
 import { runMigrations } from '../../src/storage/migrations.js';
-import type { AgentClass } from '../../src/core/types.js';
-
-function agentClass(name = 'codex-cli'): AgentClass {
-  return {
-    name, kind: 'executor', domains: [], capabilities: [], inputTypes: [], outputTypes: [], strengths: [], weaknesses: [],
-    primaryUseCases: [], avoidUseCases: [], intentAffinity: {}, riskLevel: 'medium',
-    harness: null, model: null, skills: [], mcpServers: [], plugins: [], runtimeCommand: null, runtimeArgs: [], runtimeCheckCommand: null, projectUrl: null,
-  };
-}
 
 describe('KernelExecutorStatusProjector', () => {
   it('keeps transient failures as recent facts without making the class unhealthy and bounds history', () => {
     const db = new Database(':memory:');
     runMigrations(db);
-    new AgentClassRepo(db).upsert(agentClass());
     const repo = new KernelExecutorStatusRepo(db);
     const projector = new KernelExecutorStatusProjector(repo);
 
@@ -44,7 +33,6 @@ describe('KernelExecutorStatusProjector', () => {
   it('marks confirmed adapter/configuration faults as class errors and success as healthy', () => {
     const db = new Database(':memory:');
     runMigrations(db);
-    new AgentClassRepo(db).upsert(agentClass());
     const repo = new KernelExecutorStatusRepo(db);
     const projector = new KernelExecutorStatusProjector(repo);
 
@@ -74,7 +62,6 @@ describe('KernelExecutorStatusProjector', () => {
   it('never automatically recovers a disabled class', () => {
     const db = new Database(':memory:');
     runMigrations(db);
-    new AgentClassRepo(db).upsert(agentClass());
     const repo = new KernelExecutorStatusRepo(db);
     repo.upsert({
       agentClassName: 'codex-cli',

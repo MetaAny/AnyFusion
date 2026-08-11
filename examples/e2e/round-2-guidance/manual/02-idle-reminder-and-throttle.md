@@ -7,7 +7,7 @@
 启动真实 TUI：
 
 ```bash
-./metaclaw.sh start
+anyfusion
 ```
 
 确保当前配置中：

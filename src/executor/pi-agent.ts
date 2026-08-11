@@ -1,4 +1,4 @@
-// Holds the generated Pi web-tools extension source used by the sandboxed Pi attempt image.
+// Holds the generated Pi web-tools extension source used by the registered Pi child process.
 export const PI_WEB_EXTENSION_SOURCE = String.raw`
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
