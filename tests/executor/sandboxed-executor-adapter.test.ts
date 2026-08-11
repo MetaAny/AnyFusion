@@ -232,7 +232,8 @@ process.stdout.write(JSON.stringify({
       'OPENAI_BASE_URL=https://provider.invalid/v1',
     ].join('\n'));
     writeFileSync(join(codexHome, 'config.toml'), [
-      'model = "gpt-5.6-terra"',
+      'model = "deepseek-v4-flash"',
+      'model_reasoning_effort = "max"',
       'model_provider = "anyint"',
       '[model_providers.anyint]',
       'base_url = "https://provider.invalid/v1"',
@@ -274,6 +275,7 @@ process.stdout.write(JSON.stringify({
 
       expect(result.success).toBe(true);
       expect(renderedConfig).toMatch(/base_url = "http:\/\/127\.0\.0\.1:\d+\/v1"/u);
+      expect(renderedConfig).toContain('model_reasoning_effort = "max"');
       expect(renderedConfig).not.toContain('https://provider.invalid/v1');
       expect(attemptHome).not.toBe(codexHome);
       expect(existsSync(attemptHome)).toBe(false);

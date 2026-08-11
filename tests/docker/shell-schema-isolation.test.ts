@@ -71,7 +71,7 @@ describe('Docker shell SQLite schema isolation', () => {
       resolve('docker/codex-config/executor/config.toml'),
       'utf-8',
     );
-    const model = 'gpt-5.6-terra';
+    const model = 'deepseek-v4-flash';
 
     expect(plannerModels.providers.anyint.api).toBe('openai-responses');
     expect(plannerModels.providers.anyint.models).toContainEqual(
@@ -79,15 +79,20 @@ describe('Docker shell SQLite schema isolation', () => {
     );
     expect(plannerSettings.defaultModel).toBe(model);
     expect(plannerSettings.defaultThinkingLevel).toBe('high');
-    expect(plannerModels.providers.anyint.models[0]).not.toHaveProperty('thinkingLevelMap');
+    expect(plannerModels.providers.anyint.models[0]).toHaveProperty('thinkingLevelMap', {
+      high: 'max',
+    });
     expect(piModels.providers.anyint.api).toBe('openai-responses');
     expect(piModels.providers.anyint.models).toContainEqual(
       expect.objectContaining({ id: model }),
     );
     expect(piSettings.defaultModel).toBe(model);
     expect(piSettings.defaultThinkingLevel).toBe('high');
-    expect(piModels.providers.anyint.models[0]).not.toHaveProperty('thinkingLevelMap');
+    expect(piModels.providers.anyint.models[0]).toHaveProperty('thinkingLevelMap', {
+      high: 'max',
+    });
     expect(codexConfig).toContain(`model = "${model}"`);
+    expect(codexConfig).toContain('model_reasoning_effort = "max"');
   });
 
   it('uses a data volume scoped to the current pre-release schema', () => {
