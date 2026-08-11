@@ -45,9 +45,7 @@ export interface ExecutorProbeResult {
 export interface ExecutorAdapter {
   readonly name: string;
   readonly supportsContinuation?: boolean;
-  readonly supportsResponseOnly?: boolean;
   execute(input: ExecutorInput): Promise<ExecutorResult>;
-  executeResponseOnly?(input: { prompt: string; maxBytes: number }): Promise<ExecutorResult>;
   probe(previousFailure?: KernelFailure | null): Promise<ExecutorProbeResult>;
   abort(attemptId?: string): void;
 }

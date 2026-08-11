@@ -162,7 +162,6 @@ describe('KernelExecutionRuntime dispatch snapshots', () => {
         graphState: 'ready',
         stableFacts: {
           executorStatuses: [];
-          correctionSupportedAgentClasses: [];
           nativeContinuationAgentClasses: [];
         },
         attempts: [],
@@ -171,7 +170,7 @@ describe('KernelExecutionRuntime dispatch snapshots', () => {
     }).buildDispatchSnapshot(
       task.id,
       'ready',
-      { executorStatuses: [], correctionSupportedAgentClasses: [], nativeContinuationAgentClasses: [] },
+      { executorStatuses: [], nativeContinuationAgentClasses: [] },
       [],
       subtask.id,
     );

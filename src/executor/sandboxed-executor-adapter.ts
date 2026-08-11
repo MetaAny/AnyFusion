@@ -1,4 +1,3 @@
-import { execFile } from 'node:child_process';
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -27,8 +26,6 @@ const SANDBOX_SAFE_PROVIDER_ENV_KEYS = [
   'PI_TELEMETRY',
 ] as const;
 
-const RESPONSE_ONLY_TIMEOUT_MS = 120_000;
-
 export const EXECUTOR_RESULT_FILE_NAME = 'executor-final-response.md';
 
 interface NativeExecutorEnvironment {
@@ -39,7 +36,6 @@ interface NativeExecutorEnvironment {
 export class SandboxedExecutorAdapter implements ExecutorAdapter {
   readonly name: string;
   readonly supportsContinuation: boolean;
-  readonly supportsResponseOnly: boolean;
   private readonly activeRuntimes = new Map<string, string>();
   private readonly runtimeBinding: Readonly<RuntimeExecutorBinding>;
   private readonly sandbox: AttemptSandboxPort;
@@ -58,7 +54,6 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
     this.repository = repository;
     this.name = agentClass.name;
     this.supportsContinuation = this.runtimeBinding.supportsSessionResume;
-    this.supportsResponseOnly = ['codex', 'pi'].includes(this.runtimeBinding.driver);
   }
 
   async execute(input: ExecutorInput): Promise<ExecutorResult> {
@@ -280,81 +275,6 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
     }
   }
 
-  async executeResponseOnly(input: { prompt: string; maxBytes: number }): Promise<ExecutorResult> {
-    const startedAt = Date.now();
-    if (!this.supportsResponseOnly) {
-      return failed(
-        `Executor ${this.name} does not support response-only correction`,
-        'response_only_unsupported',
-        startedAt,
-      );
-    }
-    let modelGateway: AttemptModelGatewayServer | null = null;
-    let temporaryRoot: string | null = null;
-    try {
-      const providerEnvironment = this.providerEnvironment();
-      const upstreamBaseUrl = providerEnvironment.OPENAI_BASE_URL;
-      const upstreamApiKey = providerEnvironment.OPENAI_API_KEY;
-      if (!upstreamBaseUrl || !upstreamApiKey) {
-        throw new Error('response-only model gateway requires OPENAI_BASE_URL and OPENAI_API_KEY');
-      }
-      modelGateway = new AttemptModelGatewayServer({
-        upstreamBaseUrl,
-        upstreamApiKey,
-        advertisedHost: '127.0.0.1',
-        bindHost: '127.0.0.1',
-      });
-      const gateway = await modelGateway.start();
-      const nativeExecutor = await this.prepareNativeExecutorEnvironment(
-        upstreamBaseUrl,
-        gateway.baseUrl,
-      );
-      temporaryRoot = nativeExecutor.temporaryRoot;
-      const outputPath = join(temporaryRoot, 'response-only-result.md');
-      const args = this.responseOnlyArgs(input.prompt, outputPath, temporaryRoot);
-      const result = await runResponseOnlyProcess({
-        command: this.runtimeBinding.binaryPath,
-        args,
-        cwd: temporaryRoot,
-        env: {
-          ...process.env,
-          ...nativeExecutor.environment,
-          ...Object.fromEntries(SANDBOX_SAFE_PROVIDER_ENV_KEYS.flatMap(key => {
-            const value = providerEnvironment[key];
-            return value ? [[key, value]] : [];
-          })),
-          OPENAI_BASE_URL: gateway.baseUrl,
-          OPENAI_API_KEY: gateway.apiKey,
-        },
-        maxBytes: input.maxBytes,
-      });
-      let output = result.stdout.trim();
-      if (this.runtimeBinding.driver === 'codex' && result.exitCode === 0) {
-        output = (await readFile(outputPath, 'utf8').catch(() => result.stdout)).trim();
-      } else {
-        output = this.extractFinalOutput(output);
-      }
-      return result.exitCode === 0 && output
-        ? { success: true, output, exitCode: 0, durationMs: Date.now() - startedAt }
-        : failedExecution(
-            result.stderr.trim() || result.stdout.trim() || `response-only process exited with code ${result.exitCode}`,
-            startedAt,
-            result.exitCode,
-          );
-    } catch (error) {
-      return failedExecution(
-        error instanceof Error ? error.message : String(error),
-        startedAt,
-        1,
-      );
-    } finally {
-      await modelGateway?.close().catch(() => undefined);
-      if (temporaryRoot) {
-        await rm(temporaryRoot, { recursive: true, force: true }).catch(() => undefined);
-      }
-    }
-  }
-
   abort(attemptId?: string): void {
     const runtimeHandles = attemptId
       ? [this.activeRuntimes.get(attemptId)].filter((id): id is string => Boolean(id))
@@ -439,29 +359,6 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
         .replaceAll('{sessionId}', continuationToken ?? '')
         .replaceAll('{outputPath}', outputPath)),
     };
-  }
-
-  private responseOnlyArgs(prompt: string, outputPath: string, cwd: string): string[] {
-    if (this.runtimeBinding.driver === 'codex') {
-      const args = buildCodexNonInteractiveArgs(prompt, {
-        ephemeral: true,
-        json: true,
-        outputLastMessagePath: outputPath,
-        sandbox: 'workspace-write',
-      });
-      args.splice(args.length - 1, 0, '--ignore-rules', '-C', cwd);
-      return args;
-    }
-    return [
-      '--mode', 'text',
-      '--no-session',
-      '--no-extensions',
-      '--no-tools',
-      '--no-skills',
-      '--no-prompt-templates',
-      '--no-context-files',
-      '-p', prompt,
-    ];
   }
 
   private async prepareNativeExecutorEnvironment(
@@ -569,30 +466,6 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
     const token = extractExecutorSessionId(this.runtimeBinding, output);
     if (token) input.recovery.onContinuationToken(token);
   }
-}
-
-function runResponseOnlyProcess(input: {
-  command: string;
-  args: string[];
-  cwd: string;
-  env: NodeJS.ProcessEnv;
-  maxBytes: number;
-}): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-  return new Promise(resolvePromise => {
-    execFile(input.command, input.args, {
-      cwd: input.cwd,
-      env: input.env,
-      encoding: 'utf8',
-      timeout: RESPONSE_ONLY_TIMEOUT_MS,
-      maxBuffer: input.maxBytes,
-    }, (error, stdout, stderr) => {
-      resolvePromise({
-        exitCode: typeof error?.code === 'number' ? error.code : error ? 1 : 0,
-        stdout,
-        stderr: error && !stderr ? error.message : stderr,
-      });
-    });
-  });
 }
 
 function failed(message: string, code: string, startedAt: number, exitCode = 1): ExecutorResult {

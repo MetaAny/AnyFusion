@@ -2,7 +2,7 @@
 
 [English Technical Overview](technical-overview.md) | [中文首页](../../README.zh-CN.md)
 
-> 当前实现基线（2026-08-10）：PlanningAgentPlan v7、Work Graph
+> 当前实现基线（2026-08-11）：PlanningAgentPlan v7、Work Graph
 > v6、Kernel event/snapshot/decision contract v5、Completion Protocol v4，
 > fresh-only SQLite schema v35、一个显式 Project 仓库、用户审批后的整分支
 > 发布，以及来自
@@ -867,6 +867,8 @@ grant/deny/escalate、partition wait 和 sandbox recovery。
 AnyFusion 可以把复杂需求表示成 work graph，而不是把整段需求一次性塞给一个 executor。图没有 single/multi execution mode；Planner 只在受控能力交接或必要交付边界建立多个 Subtasks。每条 `dependencies` 边同时是拓扑与 keyed `text`/`artifact` handoff contract。
 
 `SubtaskExecutionContext` 是唯一生产 Executor 输入。Task 标题/目标仅作背景，当前 Subtask 目标是唯一操作指令，越界 sibling 只暴露标题。Runtime 不把 Task/Subtask/attempt/WorkUnit 身份及 acceptance/handoff key 交给模型复制。Completion Protocol v4 要求 marker 前有非空 Markdown 结果说明；成功时严格 JSON 为 `{}` 或只包含可选 `resultFilePaths`，失败时使用受控 `failure`。Runtime 校验声明的结果文件确实存在且位于工作区内，用结果说明生成 acceptance evidence 和文本 handoff，用结果文件生成 artifact handoff。Subtask 可以修改工作区，也可以不修改；workspace delta 仍由 Runtime 独立记录并用于 Git 发布校验。若修改了文件，Executor 必须提交并同步本地 `main`；未修改文件时只需保持工作树干净。随后 Runtime 根据绑定 Subtask 与 outgoing contract 生成权威内部 envelope，并执行预算和直接边汇总校验。
+
+第一次 Completion Protocol 失败后，Kernel 可以授权一次持久化名称仍为 `contract_correction` 的完整重试。它不再是无工具格式修复：新 Executor session 复用原 Subtask worktree，重新建立同 AgentClass 的 permission profile、mount、resource lease、evidence/capability MCP、完整工具与网络策略，并接收原目标、acceptance 和包含本次 violations 的 bounded recovery packet。新 attempt 不继承来源 attempt 的一次性 capability grant，也不把错误提取的原始中间响应作为主要任务输入。Runtime 按新 attempt 的基线和最终状态重新计算权威 workspace delta，并正常执行 Completion 与 publication 验收；第二次 contract failure 直接 blocked。Pi terminal event 提取和 correction 额度按 source attempt 统计仍是独立技术债。
 
 在 active session path 中，proposal 只有在 `ControlKernel` 授权并创建 durable
 application 后才会成为持久化 Work Graph v6 `Subtask` revision。未发布产品

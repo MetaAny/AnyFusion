@@ -17,7 +17,6 @@ import type { SubtaskRepo } from '../storage/subtask-repo.js';
 import type { ExecutionMode } from './types.js';
 import type { ExecutionRuntime } from './execution-runtime.js';
 import {
-  COMPLETION_MARKER_V4,
   validateCompletionProtocol,
   type CompletionContractViolation,
   type CompletionHandoffV4,
@@ -110,10 +109,6 @@ export class SubtaskAttemptRunner {
     this.dispatchItemRepo = new KernelDispatchItemRepo(deps.db);
     this.publicationRepo = new WorkspacePublicationRepo(deps.db);
     this.terminalService = new AttemptTerminalService(deps.db);
-  }
-
-  supportsResponseOnly(agentClassName: string): boolean {
-    return this.deps.executionRuntime.supportsResponseOnly(agentClassName);
   }
 
   supportsContinuation(agentClassName: string): boolean {
@@ -423,7 +418,9 @@ export class SubtaskAttemptRunner {
         recovery: {
           mode: recoveryMode,
           sourceAttemptId: input.sourceAttemptId ?? null,
-          packet: recoveryMode === 'fresh' ? null : boundedRecoveryPacket(sourceReceipt, sourceRuntime),
+          packet: recoveryMode === 'fresh'
+            ? null
+            : boundedRecoveryPacket(sourceReceipt, sourceRuntime, input.attemptPayload),
         },
       });
       evidenceCapability = built.evidenceCapability;
@@ -932,245 +929,6 @@ export class SubtaskAttemptRunner {
     }
   }
 
-  async runCorrection(input: {
-    attemptId: string;
-    sourceAttemptId: string;
-    executionId: string;
-    taskId: string;
-    subtaskId: string;
-    agentClassName: string;
-    completionContract: unknown;
-    violations: CompletionContractViolation[];
-  }): Promise<SubtaskAttemptOutcome> {
-    const task = this.deps.taskRuntimeService.findTask(input.taskId);
-    const subtask = this.deps.subtaskRepo.findById(input.subtaskId);
-    const source = this.receiptRepo.findByAttemptId(input.sourceAttemptId);
-    const sourceRuntime = this.attemptRuntimeRepo.find(input.sourceAttemptId);
-    if (
-      !task
-      || !subtask
-      || subtask.status !== 'awaiting_decision'
-      || !source
-      || !sourceRuntime
-      || source.agentClassName !== input.agentClassName
-    ) {
-      return { outcome: 'cancelled_or_stale', attemptId: input.attemptId, reason: 'response-only correction source is stale' };
-    }
-    const claim = await this.deps.workUnitClaimService.claim({
-      taskId: task.id,
-      subtask: { id: subtask.id, preferredAgentClassList: [input.agentClassName] },
-      attemptId: input.attemptId,
-    });
-    if (!claim) return { outcome: 'capacity_unavailable', attemptId: input.attemptId, agentClassName: input.agentClassName };
-    const startedAt = new Date().toISOString();
-    try {
-      claim.startAttempt();
-      this.deps.subtaskRepo.updateStatus(subtask.id, 'running');
-      claim.markRunning();
-      const prompt = buildCorrectionPrompt(source.rawResponse, input.violations);
-      const result = await this.deps.executionRuntime.runResponseOnly(input.agentClassName, prompt, 128 * 1024);
-      if (!result?.success) {
-        const error = result?.error ?? 'AgentClass does not enforce response-only correction';
-        this.persistNonSuccess({
-          attemptId: input.attemptId, executionId: input.executionId, taskId: task.id, subtaskId: subtask.id,
-          workUnitId: claim.workUnit.id, agentClassName: input.agentClassName, startedAt,
-          terminalState: 'executor_failed', rawResponse: result?.output ?? '', errorCode: 'correction_unavailable', errorDetail: error,
-        });
-        claim.markFailed(error);
-        return {
-          outcome: 'executor_failed', attemptId: input.attemptId, error,
-          failure: result?.failure ?? { kind: 'unknown', scope: 'attempt', code: 'correction_unavailable', summary: error },
-        };
-      }
-      const activeSubtasks = this.deps.subtaskRepo.listActiveByTask(task.id);
-      const allSubtasks = activeSubtasks.length > 0 ? activeSubtasks : this.deps.subtaskRepo.listByTask(task.id);
-      const outgoingHandoffs = allSubtasks.flatMap(candidate => {
-        const dependency = candidate.dependencies.find(item => item.fromSubtaskId === subtask.id);
-        return dependency ? [{ toSubtaskId: candidate.id, requiredItems: dependency.requiredItems }] : [];
-      });
-      const gitWorkspace = await this.managedGitWorkspace.ensure({
-        taskId: task.id,
-        generationId: subtask.generationId,
-        subtaskId: subtask.id,
-      }, this.deps.sourceRoot);
-      const completion = validateCompletionProtocol({
-        rawResponse: result.output,
-        subtask,
-        outgoingHandoffs,
-        workspaceRoot: gitWorkspace.filesPath,
-        incomingUsageByTarget: new Map(outgoingHandoffs.map(contract => [
-          contract.toSubtaskId,
-          summarizeHandoffUsage(this.handoffRepo.listIncoming(task.id, contract.toSubtaskId)),
-        ])),
-      });
-      if (!completion.ok) {
-        const detail = completion.violations.map(item => `${item.code}:${item.path}:${item.message}`).join('; ');
-        const contractOutcome = this.landContractFailure({
-          attemptId: input.attemptId,
-          executionId: input.executionId,
-          taskId: task.id,
-          subtaskId: subtask.id,
-          workUnitId: claim.workUnit.id,
-          agentClassName: input.agentClassName,
-          startedAt,
-          rawResponse: result.output,
-          completionSchemaVersion: completion.envelope?.schemaVersion ?? null,
-          violations: completion.violations,
-          errorCode: completion.violations[0]?.code ?? 'completion_malformed',
-          errorDetail: detail,
-          completionContract: input.completionContract,
-        });
-        claim.markFailed(detail);
-        return contractOutcome;
-      }
-      if (completion.envelope.status === 'failed') {
-        const failure = completion.envelope.failure;
-        this.persistNonSuccess({
-          attemptId: input.attemptId, executionId: input.executionId, taskId: task.id, subtaskId: subtask.id,
-          workUnitId: claim.workUnit.id, agentClassName: input.agentClassName, startedAt,
-          terminalState: 'executor_failed', rawResponse: result.output, completionSchemaVersion: 4,
-          errorCode: failure.code, errorDetail: failure.summary,
-        });
-        claim.markFailed(failure.summary);
-        return {
-          outcome: 'executor_failed', attemptId: input.attemptId, error: failure.summary,
-          failure: { ...failure, scope: 'task' },
-        };
-      }
-      const completedEnvelope = completion.envelope;
-      const completedAt = new Date().toISOString();
-      const candidate = await this.managedGitWorkspace.validateExecutorCandidate(gitWorkspace);
-      const permissionRequestId = await this.requestRepositoryPromotion({
-        taskId: task.id,
-        projectId: task.projectId,
-        generationId: subtask.generationId,
-        subtaskId: subtask.id,
-        attemptId: input.attemptId,
-        agentClassName: input.agentClassName,
-        permissionProfileId: this.deps.agentClassService.listAgentClasses()
-          .find(candidate => candidate.name === input.agentClassName)?.permissionProfileId
-          ?? 'restricted-custom',
-        workspaceId: gitWorkspace.id,
-        mainCommit: candidate.mainCommit,
-        candidateCommit: candidate.candidateCommit,
-        changedPaths: candidate.changedPaths,
-      });
-      const dispatchItem = this.dispatchItemRepo.find(input.attemptId);
-      if (!dispatchItem) {
-        throw new Error(`authorized dispatch item not found: ${input.attemptId}`);
-      }
-      let landing;
-      try {
-        landing = this.terminalService.land({
-          receipt: buildReceipt({
-          attemptId: input.attemptId, executionId: input.executionId, taskId: task.id, subtaskId: subtask.id,
-          workUnitId: claim.workUnit.id, agentClassName: input.agentClassName, startedAt,
-          terminalState: 'completed', rawResponse: result.output, completionSchemaVersion: 4, warnings: completion.warnings,
-        }, completedAt),
-        expectedSubtaskStatus: 'running',
-        nextSubtaskStatus: 'awaiting_integration',
-        subtaskError: null,
-        publication: {
-          id: `publication_${input.attemptId}`,
-          taskId: task.id,
-          generationId: subtask.generationId,
-          subtaskId: subtask.id,
-          sourceAttemptId: input.attemptId,
-          agentClassName: input.agentClassName,
-          mainBaseCommit: candidate.mainCommit,
-          candidateCommit: candidate.candidateCommit,
-          permissionRequestId,
-          changedPaths: candidate.changedPaths,
-          completion: {
-            body: completion.body,
-            artifacts: completion.normalizedArtifacts,
-            warnings: completion.warnings,
-            handoffs: completedEnvelope.handoffs,
-            completionSchemaVersion: 4,
-          },
-          topologyLayer: deriveTopologyLayer(subtask.id, allSubtasks),
-          firstDispatchOrder: dispatchItem.batchOrder,
-          createdAt: completedAt,
-        },
-        event: {
-          schemaVersion: 5,
-          type: 'execution_outcome',
-          id: `event_${dispatchItem.attemptId}_execution_outcome`,
-          correlationId: dispatchItem.decisionId,
-          causationId: dispatchItem.decisionId,
-          occurredAt: completedAt,
-          sessionId: this.deps.sessionId,
-          taskId: dispatchItem.taskId,
-          subtaskId: dispatchItem.subtaskId,
-          attemptId: dispatchItem.attemptId,
-          terminalKind: 'completed',
-          agentClassName: dispatchItem.agentClassName,
-          attemptKind: dispatchItem.attemptKind,
-          sourceAttemptId: dispatchItem.sourceAttemptId,
-          failure: null,
-        },
-          now: completedAt,
-        });
-      } catch (error) {
-        this.withdrawRepositoryPromotion(
-          permissionRequestId,
-          'corrected candidate terminal landing failed before publication became durable',
-        );
-        throw error;
-      }
-      if (landing.cancellationWon) {
-        this.withdrawRepositoryPromotion(
-          permissionRequestId,
-          'corrected candidate publication was cancelled before terminal landing',
-        );
-        return {
-          outcome: 'cancelled_or_stale',
-          attemptId: input.attemptId,
-          reason: 'Cancellation fence won before correction terminal landing',
-        };
-      }
-      if (this.deps.autoApproveRepositoryPromotions) {
-        this.publicationRepo.markApproved(`publication_${input.attemptId}`, completedAt);
-      }
-      const workspaceRecord = this.deps.workspaceRepository.findByIdentity(
-        task.id,
-        subtask.generationId,
-        subtask.id,
-      );
-      if (workspaceRecord) {
-        this.deps.workspaceRepository.upsert({
-          ...workspaceRecord,
-          headCommit: candidate.candidateCommit,
-          status: 'active',
-          updatedAt: completedAt,
-        });
-      }
-      return {
-        outcome: 'completed', attemptId: input.attemptId, output: completion.body,
-        artifacts: completion.normalizedArtifacts, warnings: completion.warnings,
-        executorName: input.agentClassName, durationMs: result.durationMs,
-      };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (!this.receiptRepo.findByAttemptId(input.attemptId)) {
-        this.persistNonSuccess({
-          attemptId: input.attemptId, executionId: input.executionId, taskId: input.taskId, subtaskId: input.subtaskId,
-          workUnitId: claim.workUnit.id, agentClassName: input.agentClassName, startedAt,
-          terminalState: 'executor_failed', rawResponse: '', errorCode: 'correction_exception', errorDetail: message,
-        });
-      }
-      claim.markFailed(message);
-      return {
-        outcome: 'executor_failed', attemptId: input.attemptId, error: message,
-        failure: { kind: 'unknown', scope: 'attempt', code: 'correction_exception', summary: message },
-      };
-    } finally {
-      if (this.hasSealedTerminal(input.attemptId)) {
-        claim.release();
-      }
-    }
-  }
-
   private async requestRepositoryPromotion(input: {
     taskId: string;
     projectId: string;
@@ -1524,41 +1282,27 @@ function buildReceipt(input: {
   };
 }
 
-function buildCorrectionPrompt(
-  rawResponse: string,
-  violations: CompletionContractViolation[],
-): string {
-  const guidance = [...new Set(violations.map(violation => correctionGuidance(violation.code)))];
-  return [
-    'Correct only the final response format. Do not execute the task, use tools, inspect files, or change the workspace.',
-    'Return non-empty Markdown followed by exactly one completion trailer using this exact order:',
-    '<non-empty Markdown body>',
-    COMPLETION_MARKER_V4,
-    '<one strict JSON object>',
-    'The marker must appear before the JSON object. Do not wrap the JSON in a Markdown code fence. The JSON object must be the final bytes of the response.',
-    'Successful report schema: {"resultFilePaths":["<optional workspace-relative result file path>"]}',
-    'Failure report schema: {"failure":{"kind":"task_failed","code":"<stable_code>","summary":"<concise explanation>"}}',
-    'Do not return schema/status identity, Task/Subtask/attempt/WorkUnit IDs, acceptance keys, or handoff identities. Runtime owns and injects them.',
-    `Validation guidance:\n${guidance.map(item => `- ${item}`).join('\n')}`,
-    `Original response:\n${rawResponse}`,
-  ].join('\n\n');
-}
-
-function correctionGuidance(code: CompletionContractViolation['code']): string {
-  switch (code) {
-    case 'completion_artifact_invalid':
-      return 'List only existing workspace-relative result files, or omit resultFilePaths when there are none.';
-    case 'completion_budget_exceeded':
-      return 'Keep the result description within 4000 characters and declare at most 20 result files.';
-    default:
-      return 'Return exactly one strict identity-free report matching one of the schemas above.';
-  }
-}
-
 function boundedRecoveryPacket(
   receipt: ExecutorAttemptReceipt | null,
   runtime: ExecutorAttemptRuntimeRecord | null,
+  attemptPayload: KernelAttemptPayload | undefined,
 ): Record<string, unknown> {
+  const completionRetry = attemptPayload?.protocol === 'completion-correction-v2'
+    ? {
+        protocol: attemptPayload.protocol,
+        violations: attemptPayload.violations.slice(0, 10).map(violation => ({
+          code: violation.code.slice(0, 64),
+          path: violation.path.slice(0, 256),
+          message: violation.message.slice(0, 512),
+        })),
+        instructions: [
+          'Inspect the existing worktree and preserve correct work from the source attempt.',
+          'Complete every remaining acceptance criterion and verify the resulting files before finishing.',
+          'Return a non-empty Markdown result followed by exactly one Completion Protocol marker and one strict JSON object.',
+          'The marker must precede the JSON object; do not use a JSON code fence; the JSON object must be the final response bytes.',
+        ],
+      }
+    : null;
   const packet = {
     sourceAttemptId: receipt?.attemptId ?? runtime?.attemptId ?? null,
     failure: receipt ? {
@@ -1570,6 +1314,7 @@ function boundedRecoveryPacket(
     workspaceDelta: runtime?.workspaceDelta ?? {},
     confirmedCompleted: [] as string[],
     unknownItems: ['Verify the current workspace and remaining acceptance criteria before making changes.'],
+    completionRetry,
   };
   const serialized = JSON.stringify(packet);
   return serialized.length <= 16_000

@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -123,7 +123,7 @@ describe('SandboxedExecutorAdapter provider isolation', () => {
     }
   });
 
-  it('uses the native Pi attempt extension path when configured', async () => {
+  it('runs a Pi recovery-packet retry with the full tool profile and completion contract', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'metaclaw-worktree-pi-extension-'));
     const envFile = join(directory, 'executor-pi.env');
     const piHome = join(directory, 'pi-home');
@@ -144,78 +144,24 @@ describe('SandboxedExecutorAdapter provider isolation', () => {
     const adapter = new SandboxedExecutorAdapter(agentClass(), testRuntimeBinding(agentClass(), sandbox.kind), sandbox);
 
     try {
-      const result = await adapter.execute(executorInput(directory));
+      const input = executorInput(directory, 'attempt_retry');
+      input.context.recovery = {
+        mode: 'recovery_packet',
+        sourceAttemptId: 'attempt_primary',
+        packet: { completionRetry: { protocol: 'completion-correction-v2' } },
+      };
+      const result = await adapter.execute(input);
 
       expect(result.success).toBe(true);
       const args = create.mock.calls[0]![0].args;
       expect(args).toContain('/native/anyfusion/pi-attempt-tools.ts');
       expect(args).not.toContain('/opt/metaclaw/pi-attempt-tools.ts');
-    } finally {
-      vi.unstubAllEnvs();
-      rmSync(directory, { recursive: true, force: true });
-    }
-  });
-
-  it('runs Pi response-only correction without tools or a Task sandbox', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'metaclaw-response-only-pi-'));
-    const envFile = join(directory, 'executor-pi.env');
-    const piHome = join(directory, 'pi-home');
-    const piAgentHome = join(piHome, '.pi', 'agent');
-    const binDir = join(directory, 'bin');
-    const fakePi = join(binDir, 'pi');
-    const capturePath = join(directory, 'response-only-args.json');
-    mkdirSync(piAgentHome, { recursive: true });
-    mkdirSync(binDir, { recursive: true });
-    writeFileSync(envFile, [
-      'OPENAI_API_KEY=provider-secret',
-      'OPENAI_BASE_URL=https://provider.invalid/v1',
-    ].join('\n'));
-    writeFileSync(join(piAgentHome, 'models.json'), JSON.stringify({
-      providers: { anyint: { baseUrl: 'https://provider.invalid/v1' } },
-    }));
-    writeFileSync(join(piAgentHome, 'settings.json'), '{}');
-    writeFileSync(fakePi, `#!/usr/bin/env node
-const { writeFileSync } = require('node:fs');
-writeFileSync(process.env.CAPTURE_PATH, JSON.stringify({ args: process.argv.slice(2), home: process.env.HOME }));
-process.stdout.write(JSON.stringify({
-  type: 'message_end',
-  message: {
-    role: 'assistant',
-    content: [{ type: 'text', text: 'Corrected report.\\n<!-- metaclaw:completion:v4 -->\\n{}' }],
-  },
-}) + '\\n');
-`);
-    chmodSync(fakePi, 0o755);
-    vi.stubEnv('METACLAW_PI_EXECUTOR_ENV_FILE', envFile);
-    vi.stubEnv('METACLAW_EXECUTOR_PI_HOME', piHome);
-    vi.stubEnv('CAPTURE_PATH', capturePath);
-    const { sandbox, create } = sandboxPort('worktree');
-    const adapter = new SandboxedExecutorAdapter(
-      agentClass(),
-      piRuntimeBinding(fakePi, piHome, envFile),
-      sandbox,
-    );
-
-    try {
-      const result = await adapter.executeResponseOnly({
-        prompt: 'Correct only the final response format.',
-        maxBytes: 128 * 1024,
-      });
-
-      expect(adapter.supportsResponseOnly).toBe(true);
-      expect(result).toMatchObject({ success: true, exitCode: 0 });
-      expect(result.output).toContain('<!-- metaclaw:completion:v4 -->');
-      expect(create).not.toHaveBeenCalled();
-      const capture = JSON.parse(readFileSync(capturePath, 'utf8'));
-      expect(capture.args).toEqual(expect.arrayContaining([
-        'text',
-        '--no-session',
-        '--no-tools',
-        '--no-context-files',
-        'Correct only the final response format.',
-      ]));
-      expect(capture.home).not.toBe(piHome);
-      expect(existsSync(capture.home)).toBe(false);
+      expect(args).not.toContain('--no-tools');
+      expect(args[args.indexOf('--tools') + 1]).toContain('evidence_search');
+      expect(args[args.indexOf('--tools') + 1]).toContain('bash');
+      expect(args.at(-1)).toContain('recovery_packet');
+      expect(args.at(-1)).toContain('completion-correction-v2');
+      expect(args.at(-1)).toContain('<!-- metaclaw:completion:v4 -->');
     } finally {
       vi.unstubAllEnvs();
       rmSync(directory, { recursive: true, force: true });
@@ -501,7 +447,7 @@ function executorInput(
         executionId: 'exec_1', taskId: 'task_1', subtaskId,
         attemptId, workUnitId: `work_unit_${attemptId}`,
       },
-      completionContract: { marker: '<!-- metaclaw:completion:v2 -->' as const, schemaVersion: 2 as const },
+      completionContract: { marker: '<!-- metaclaw:completion:v4 -->' as const, schemaVersion: 4 as const },
       evidenceTools: { availability: 'unavailable' as const, reason: 'test' },
     },
     sandbox: {

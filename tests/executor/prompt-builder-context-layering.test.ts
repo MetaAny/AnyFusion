@@ -83,12 +83,18 @@ describe('Subtask execution prompt layering', () => {
         workspaceDelta: {},
         confirmedCompleted: ['created file'],
         unknownItems: ['run tests'],
+        completionRetry: {
+          protocol: 'completion-correction-v2',
+          violations: [{ code: 'completion_malformed', path: 'marker', message: 'marker missing' }],
+        },
       },
     };
 
     const prompt = buildExecutorContextPrompt(recoveryInput);
     expect(prompt).toContain('previous approach failed');
     expect(prompt).toContain('created file');
+    expect(prompt).toContain('completion-correction-v2');
+    expect(prompt).toContain('marker missing');
     expect(prompt).not.toContain('internal-source-attempt-id');
     expect(prompt).not.toContain('sourceAttemptId');
   });
