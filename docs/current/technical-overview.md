@@ -6,9 +6,12 @@ AnyFusion is a local AI Task OS for agentic work. It turns natural-language requ
 
 It is built for teams who need agents to do more than answer the current turn. AnyFusion gives long-running AI work a task state machine, memory boundary, unified ControlKernel decision plane, work-unit dispatch runtime, verification loop, local Gateway, Feishu delivery path, and real end-to-end smoke gate.
 
-> Current implementation baseline (2026-08-07): PlanningAgentPlan v7, Work
-> Graph v6, Kernel event/snapshot/decision contract v5, Completion Protocol v3,
-> and fresh-only SQLite schema v31 with no pre-release upgrade path.
+> Current implementation baseline (2026-08-11): PlanningAgentPlan v7, Work
+> Graph v6, Kernel event/snapshot/decision contract v5, Completion Protocol v4,
+> fresh-only SQLite schema v35 with no pre-release upgrade path, one explicit
+> Project repository, user-approved whole-branch publication, and one
+> digest-bound Executor Registry Snapshot sourced from
+> `$ANYFUSION_CONFIG_HOME/executors.yaml`.
 
 ## What AnyFusion Does
 
@@ -18,14 +21,14 @@ It is built for teams who need agents to do more than answer the current turn. A
 - Keeps Planning and Runtime authorization in one append-only `kernel_decisions` ledger while durable inbox/application/outbox state owns recoverable execution.
 - Exposes historical tasks through a local SQLite FTS index that the PlanningAgent queries explicitly.
 - Plans complex work as explicit subtasks with acceptance criteria and aggregation rules.
-- Plans work as a task-owned capability-handoff graph, authorizes a complete ordered canonical AgentClass list per subtask, and lets idle executor work units claim ready subtasks.
-- Validates every Subtask through Completion Protocol v3 against one authoritative workspace delta, persists clean results and immutable direct-edge handoffs, and blocks contract failures without implicit retry.
+- Plans work as a task-owned capability-handoff graph, validates a complete ordered Executor list against the current registry snapshot, and lets idle executor work units claim ready subtasks.
+- Validates every Subtask through Completion Protocol v4, records the authoritative workspace delta independently, persists clean results and immutable direct-edge handoffs, and allows exactly one Kernel-authorized same-AgentClass full retry after the first contract failure.
 - Binds each live MetaClaw session to one persisted AnyFusion-Pi Planner session; MetaClaw-owned preferences and runtime facts may cross only bounded read-only Planner query contracts and are not replayed as conversation history.
 - Captures generated files as task artifacts.
 - Sends Feishu chat replies, file artifacts, and Markdown preview links through the backend delivery layer.
 - Provides a local Gateway so multiple terminals can connect to one AnyFusion runtime.
 - Uses the sibling AnyFusion-Pi fork as the default local Planner conversation surface in the unified Node 22.19+ runtime image, with an isolated Planner process/dependency tree and AnyFusion-managed provider/model configuration.
-- Adds a responsive read-only AnyFusion Task dashboard over the versioned host bridge without moving Task, Kernel, or Executor authority into the TUI. Live disconnect/reconnect and server PTY visual acceptance remain migration work; the original Ink UI remains source-preserved as a standby module.
+- Adds a responsive read-only AnyFusion Task dashboard and Executor registration window over the versioned host bridge without moving Task, Kernel, registry, or Runtime authority into the TUI. The original Ink UI remains source-preserved as a standby module.
 - Ships with `npm run smoke:anyfusion`, whose default gate verifies two-turn memory in one persisted AnyFusion-Pi Planner session; artifact scenarios remain available explicitly.
 
 ## Core Architecture
@@ -55,31 +58,40 @@ flowchart LR
   Supervisor --> Attempt[SubtaskAttemptRunner<br/>one attempt, one WorkUnit]
   Attempt --> Context[SubtaskExecutionContext<br/>direct handoffs and selected evidence]
   Context --> Executors[ExecutionRuntime<br/>one worktree Executor process]
-  Executors --> Verify[Completion Protocol v3<br/>evidence, no-change reason,<br/>authoritative workspace delta]
-  Verify --> Publication[Git publication gate<br/>stable integration order]
+  Executors --> Verify[Completion Protocol v4<br/>result description and<br/>optional result files]
+  Verify --> Publication[User-approved Git publication<br/>whole candidate branch]
   Publication --> Delivery[Delivery and UI<br/>TUI progress, Feishu, files, preview links]
   Delivery --> User
 
-  Session <--> Store[(Local SQLite<br/>tasks, subtasks, agent classes,<br/>work units, events, memory)]
+  Session <--> Store[(Local SQLite schema 35<br/>projects, tasks, approvals,<br/>work units, events, memory)]
   Loop --> Decisions[(kernel_decisions)]
   Graph <--> Store
   Attempt <--> Store
 ```
 
-Every natural-language input becomes `plan_proposed`; deterministic commands become versioned Kernel events; attempts return capacity, structured outcome, publication conflict, permission, partition, sandbox or contract facts. `ControlKernel` validates Planning admission, derives one deterministic dispatch batch from the runnable frontier, and remains the sole authority for recovery, retry, fallback, merge repair, replan, partition waiting, permission decisions and derived availability. Runtime applies no unpersisted strategy.
+Every natural-language input becomes `plan_proposed`; deterministic commands become versioned Kernel events; attempts return capacity, structured outcome, publication conflict, permission, partition, sandbox or contract facts. `ControlKernel` validates Planning admission, derives one deterministic dispatch batch from the runnable frontier, and remains the sole authority for recovery, retry, fallback, replan, partition waiting, permission decisions and derived availability. Runtime applies no unpersisted strategy.
+
+Startup resolves one Project with `anyfusion --project <path>` or the default
+`~/AnyFusionProjects/default`. The path must be the exact top-level ordinary Git
+repository and may not be nested in another repository. Existing repositories
+must be clean on `main` and contain no nested repositories or submodules;
+non-Git directories are initialized and committed on `main`. Runtime passes the
+resolved Project root explicitly to Session, Planner and Gateway, so the launch
+directory is never inferred as Task source.
 
 The AnyFusion-Pi `PlanningAgent` uses a dedicated process runner rather than an Executor adapter. One live MetaClaw session maps to one persisted Pi session file. Non-interactive surfaces launch the Planner with `--mode rpc`, exchange JSONL over stdin/stdout, and serialize turns targeting the same session so only one process writes that file at a time. Native TUI and RPC use one Planner bootstrap. The fork owns dialogue history, a small stable system prompt and exactly one fixed `metaclaw-planner/SKILL.md`; MetaClaw does not rebuild history from SQLite interactions. Dynamic facts are queried through exactly seven read-only MCP tools: `search_tasks`, `get_task_context`, `get_current_session_context`, `get_planning_context`, `get_runtime_state`, `list_executor_status` and `get_executor_diagnostics`. Repository inspection is limited to Pi-native `read`, `grep`, `find` and `ls` rooted at `/workspace`; `bash`, `edit` and `write` remain disabled. Provider/model selection, external Skills/extensions/MCP configuration, prompt templates, installation and updates are fixed or disabled by AnyFusion. Every semantic turn uses the restricted native `submit_planning_proposal({ plan })` tool. Runtime identity is injected outside the model, rejection is structured feedback in the current ReAct turn, and proposal-host transport uncertainty remains distinct from MCP unavailability. A missing fixed MCP tool fails startup; mid-turn MCP loss locks proposal submission and aborts that loop, then reconnects before the next turn. There is no assistant-text proposal parser, proposal-specific retry count, repair prompt or outer validation loop.
 
 The local AnyFusion-Pi TUI and the non-interactive PlanningAgent runner use the same Planner implementation but remain separate controlled processes. `PlannerTuiBridge` is a trusted local Application-Shell adapter implementing AnyFusion Planner Host Protocol v2 over a mode-`0600` Unix JSONL socket. It publishes a bounded Task-pool/focused-Task projection, accepts structured proposal tool calls, serves `command_complete/command_completion`, and transports explicit user-authored MetaClaw slash commands. Pi uses its native asynchronous editor/list/Tab/arrow-key and tool-call machinery, while command-tree traversal, replacement ranges, hints/errors, dynamic Task/Executor candidates, validation, and execution remain owned by `MetaclawSession → CommandCatalog/InputController`; Pi receives only completion data or the rendered authoritative result and has no generic mutation API. `MetaclawSession` always reruns `PlanningAgentPlanSchema` and `validatePlanningAgentPlan()` before reusing the existing `plan_proposed → DurableKernelWorkflow → ControlKernel` path. Persisted proposal submissions provide replay, rejected-revision, accepted-turn-lock and conflict semantics without duplicating Kernel events. The bridge cannot write the database or directly call Kernel, scheduling, Execution, or Executor APIs.
 
-Executor health recovery is event-driven. `ExecutorRecoveryRefreshService`
-inspects only enabled AgentClasses whose persisted class health is already
-`error`, coalesces concurrent checks per class, applies a 30-second probe
-timeout, and records bounded redacted recovery evidence separately from attempt
-history. A successful structured probe may perform only `error -> healthy`;
-`disabled` remains an administrative lock, and healthy/unverified classes are
-not polled for new faults. Session startup, planning cycles, Task
-resume/recovery, Executor configuration changes, and
+Executor installation verification and dynamic health are separate gates.
+Only `enabled + verified + configDigest matched` Executors enter Planner and
+Kernel candidate projections. A YAML change makes prior verification stale.
+For already-routable Executors, `ExecutorRecoveryRefreshService` inspects only
+classes whose persisted health is `error`, coalesces concurrent checks, applies
+a 30-second probe timeout, and records bounded redacted recovery evidence
+separately from attempt history. A successful structured probe may perform only
+`error -> healthy`; `disabled` remains an administrative lock. Session startup,
+planning cycles, Task resume/recovery, Executor configuration changes, and
 `/executor refresh [name|all]` are the supported triggers.
 
 Planning and recovery refresh begin concurrently, but Kernel admission waits for
@@ -124,11 +136,13 @@ flowchart LR
   Ready --> Batch[dispatch_batch<br/>durable attempt items]
   Batch --> Attempt[Attempt supervisor<br/>claim and run independently]
   Attempt --> Run[ExecutionRuntime<br/>transport and execute]
-  Run --> Verify[Completion Protocol v3<br/>delta, receipt and candidate commit]
-  Verify --> Integrate[Git publication gate<br/>deterministic order]
-  Integrate --> Done{Integrated?}
-  Done -->|yes| Result[Atomically publish result,<br/>handoffs, artifacts and done]
-  Done -->|conflict| Repair[Kernel-authorized merge repair]
+  Run --> Verify[Completion Protocol v4<br/>receipt and candidate commit]
+  Verify --> Approval[repository_promotion<br/>user review]
+  Approval -->|approved| Integrate[Merge complete candidate<br/>into Project main]
+  Approval -->|denied| Block[Block and preserve<br/>branch/worktree]
+  Integrate -->|base unchanged| Result[Atomically publish result,<br/>handoffs, artifacts and done]
+  Integrate -->|main changed| Resync[Preserve worktree;<br/>Executor resynchronizes main]
+  Resync --> Approval
 ```
 
 This is the Task OS path. It is where task state, resume context, policy authorization, subtask state, work-unit leases, artifact capture, verification and Git publication matter. ADR-0011 still keeps one admitted top-level task, but independent Subtasks inside that Task now run concurrently.
@@ -158,7 +172,7 @@ The conversation/task boundary matters:
 
 The current direct-reply path is explicit: MetaClaw sends the current turn through the bound persisted AnyFusion-Pi Planner session, the PlanningAgent queries confirmed preferences or runtime facts only when needed, and runtime delivers `response.directReply` without claiming an executor work unit.
 
-The Task OS upgrade described in [AnyFusion Task OS Architecture And Strategy Upgrade](../archive/plans/2026-06-14-metaclaw-task-os-architecture-strategy-upgrade.md) is reflected in the codebase: deterministic task search indexing, PlanningAgent work graph proposals, unified `ControlKernel` authorization, persisted subtasks, work-unit claiming, aggregation, and verification are implemented and covered by targeted tests. Broad Executor Discovery, remote registries, elastic work-unit spawn, and large multi-client Gateway expansion remain intentionally out of scope for this cycle.
+The Task OS upgrade described in [AnyFusion Task OS Architecture And Strategy Upgrade](../archive/plans/2026-06-14-metaclaw-task-os-architecture-strategy-upgrade.md) is reflected in the codebase: deterministic task search indexing, PlanningAgent work graph proposals, unified `ControlKernel` authorization, persisted subtasks, work-unit claiming, aggregation, and verification are implemented and covered by targeted tests. Local Executor discovery and registration are implemented; remote registries, elastic work-unit spawn, and large multi-client Gateway expansion remain intentionally out of scope.
 
 Important runtime boundary: there is no second strategy/orchestration loop
 beside the active PlanningAgent → ControlKernel → Runtime chain. Work Graph
@@ -167,23 +181,28 @@ availability, and recovery remain explicit Kernel policy.
 
 ## Current Executors
 
-AnyFusion ships two canonical Executor AgentClasses. The default Runtime
-executes them as child processes in the Subtask worktree. The legacy Docker
-attempt backend remains available explicitly for compatibility:
+AnyFusion initializes `$ANYFUSION_CONFIG_HOME/executors.yaml` with controlled
+Capabilities and discovery Profiles for Codex, Pi and Hermes. No Executor is
+routable merely because its command is installed. It must be registered,
+verified for the current configuration digest and enabled. Runtime executes
+every verified binding as a child process in the assigned Subtask worktree.
+Docker only packages the single Ubuntu Runtime on Windows/macOS:
 
 | Executor | Command | Best For | Install Requirement |
 | --- | --- | --- | --- |
-| Codex CLI | `codex` | Repository edits, tests, deterministic implementation, code review with patches | Included and configured in the unified Runtime; install locally only for direct Linux development |
-| Pi Agent | `pi` | Research tasks, report generation, multi-step synthesis, agentic CLI workflows | Included and configured in the unified Runtime; install locally only for direct Linux development |
+| Codex CLI | `codex` | Repository edits, tests, deterministic implementation, code review with patches | Install/authenticate, discover the absolute path, then confirm and verify registration |
+| Pi Agent | `pi` | Research tasks, report generation, source-backed synthesis | Install/authenticate, discover the absolute path, then confirm and verify registration |
+| Hermes Agent | `hermes` or `hermes-agent` | General agentic work with explicit session recovery | Install/configure, discover the absolute path, then confirm and verify registration |
+| Generic session CLI | User supplied | A controlled custom capability with a verifiable two-turn session protocol | Supply the full `cli-session` binding and pass verification |
 
-`codex-cli` and `pi-agent` are canonical AgentClasses with permission-profile
-bindings. In `METACLAW_EXECUTOR_BACKEND=worktree` mode, their trusted CLI
-commands run as child processes inside the unified Runtime and use the Subtask
-Git worktree as their working directory. In `docker` mode, the AgentClass also
-requires its immutable image pin and internal control network. No executor
-WorkUnit is pre-seeded. After authorization, `WorkUnitClaimService` claims or
-provisions a WorkUnit, and `ExecutorRegistry` resolves the AgentClass through
-the backend-aware `SandboxedExecutorAdapter`.
+Each installation binding records an absolute binary path, version probe,
+driver, absolute source runtime home, environment-file references, inherited
+environment variable names, confirmed permission profile and backend support.
+It stores no credential values. Drivers declare session-resume support,
+evidence affordance, result collection and private-home materialization. No
+Executor WorkUnit is pre-seeded. After Kernel authorization,
+`WorkUnitClaimService` claims or provisions a WorkUnit, and Runtime resolves the
+verified binding through `SandboxedExecutorAdapter`.
 
 ## Prerequisites
 
@@ -192,26 +211,23 @@ Required:
 - Node.js `>=22.19.0`.
 - npm.
 - Git.
-- A Unix-like shell environment. macOS and Linux are primary targets; Windows users should use WSL2 for the supported install path.
+- Ubuntu 24.04. Windows users run the same Ubuntu Runtime through Docker.
 - Native build tooling for `better-sqlite3`.
 
 Recommended native build tools:
 
 ```bash
-# macOS
-xcode-select --install
-
-# Ubuntu / Debian
+# Ubuntu 24.04
 sudo apt-get update
 sudo apt-get install -y build-essential python3 make g++
 ```
 
 Executor prerequisites:
 
-- Worktree mode: the unified Runtime image contains the trusted Codex and Pi
-  CLI binaries. Direct Linux development must install the selected CLI locally.
-- Docker compatibility mode: build or pull the canonical Codex and Pi executor
-  images used by the configured AgentClasses.
+- Worktree mode: install and authenticate each CLI, then register its real
+  absolute binary path and private source runtime home.
+- Windows development uses the same registered Linux CLIs inside the one Ubuntu
+  Runtime container; no per-Executor image is registered or built.
 
 Feishu prerequisites, only if you use Feishu Gateway integration:
 
@@ -244,10 +260,10 @@ The install is usable when `anyfusion --help` prints the CLI help and `npm run s
 ```text
 MetaClaw native Planner session smoke passed.
 Scenario: planner-session
-Native session: /var/lib/metaclaw/codex/planner/sessions/...jsonl
+Native session: ~/.local/share/anyfusion/runtime/planner-sessions/...jsonl
 ```
 
-`setup.sh` installs AnyFusion itself, builds the local CLI, links `anyfusion`, creates `~/.metaclaw/config.yaml`, and detects installed executors on `PATH`.
+`setup.sh` installs AnyFusion itself, builds the local CLI, links `anyfusion`, creates `~/.local/share/anyfusion/runtime/config.yaml`, and detects installed executors on `PATH`.
 
 In an interactive terminal it shows the detected executor list, lets you choose which executors to connect, and asks which one should be the default. If a selected auto-installable executor is missing, setup can install it for you. Codex CLI is the default fallback when no executor is available:
 
@@ -263,20 +279,21 @@ codex
 
 Install checklist:
 
-- `node --version` is `>=20`.
+- `node --version` is `>=22.19.0`.
 - `./setup.sh` finishes with "安装完成".
-- `~/.metaclaw/config.yaml` exists.
+- `~/.local/share/anyfusion/runtime/config.yaml` exists.
 - `anyfusion --help` works from a new shell.
-- The default executor command works, for example `codex --help`.
+- Each intended Executor appears as `enabled / verified` in
+  `anyfusion executor list`.
 - `npm run smoke:anyfusion` passes and prints the native Planner session path.
 
 Setup options:
 
 ```bash
-# Do not overwrite an existing ~/.metaclaw/config.yaml
+# Do not overwrite an existing ~/.local/share/anyfusion/runtime/config.yaml
 METACLAW_OVERWRITE_CONFIG=false ./setup.sh
 
-# Rewrite ~/.metaclaw/config.yaml
+# Rewrite ~/.local/share/anyfusion/runtime/config.yaml
 METACLAW_OVERWRITE_CONFIG=true ./setup.sh
 
 # Build AnyFusion but skip npm link
@@ -307,54 +324,29 @@ If `anyfusion` is not found after setup, first open a new shell so your `PATH` p
 
 ## Windows Install
 
-The recommended Windows path is WSL2 with Ubuntu. This gives AnyFusion the Unix-like shell, native build tooling, sockets, process behavior, and executor compatibility that the runtime expects.
+Windows is the Docker orchestration host. Runtime, Planner, Codex and Pi all
+run inside the same Ubuntu 24.04 Runtime container, so Windows and the Ubuntu
+server use the same application logic and Linux process behavior.
 
-Install WSL2 from PowerShell:
+Keep `AnyFusion` and the sibling `AnyFusion-Pi` checkout side by side, create
+the three provider files, then run from PowerShell:
 
 ```powershell
-wsl --install -d Ubuntu
+Copy-Item docker\planner-pi.env.example docker\planner-pi.env
+Copy-Item docker\executor-codex.env.example docker\executor-codex.env
+Copy-Item docker\executor-pi.env.example docker\executor-pi.env
+.\docker\shell.ps1 -Start
+.\docker\shell.ps1 -SetupSsh
+.\docker\shell.ps1
 ```
 
-Restart Windows if prompted, then open Ubuntu and install prerequisites inside WSL:
-
-```bash
-sudo apt-get update
-sudo apt-get install -y git curl build-essential python3 make g++
-
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt-get install -y nodejs
-
-node --version
-npm --version
-git --version
-```
-
-Install and verify AnyFusion inside the WSL Ubuntu shell:
-
-```bash
-git clone https://github.com/MetaAny/AnyFusion.git
-cd AnyFusion
-./setup.sh
-anyfusion --help
-npm run smoke:anyfusion
-```
-
-If setup installs Codex CLI, open it once inside WSL and finish login before running real tasks:
-
-```bash
-codex
-```
-
-Windows install checklist:
-
-- Run AnyFusion commands inside WSL Ubuntu, not Windows PowerShell.
-- Keep the repository under the WSL filesystem, for example `~/AnyFusion`, not `/mnt/c/...`, for better file and SQLite performance.
-- Confirm `node --version` is `>=20`.
-- Confirm `anyfusion --help` works in a fresh WSL shell.
-- Confirm the default executor works in WSL, for example `codex --help`.
-- Confirm `npm run smoke:anyfusion` completes successfully
-
-Native Windows PowerShell is not the primary supported runtime today. Advanced users can try direct development with Node.js 22.19+, Git, Visual Studio Build Tools, `npm install`, `npm run build`, and `node dist/index.js`, but `setup.sh`, `anyfusion.sh`, Unix socket Gateway behavior, and downstream executor CLIs may not behave the same way. Use the unified Docker runtime for the supported Windows path, or WSL2 for direct Linux development.
+Use `-Rebuild` after source changes. Runtime state and Executor configuration
+persist under `/data/anyfusion`, and the default Project persists at
+`/workspace/default`. Container bootstrap uses the shared registration service
+to add, verify, enable and reload missing canonical `codex` and `pi` Executors;
+existing definitions are skipped. `-Start` and `-Rebuild` wait for this bootstrap
+and SSH readiness before reporting success. Native Windows Node.js is not a
+supported Runtime path.
 
 ## Install Executors
 
@@ -362,66 +354,85 @@ AnyFusion does not vendor the downstream executor CLIs. Install the ones you wan
 
 ### Register Custom Executors
 
-Installed executors are runtime workers that AnyFusion can assign subtasks to. A registered executor now has three parts:
+The Executor registry has four top-level sections: `schemaVersion`,
+`capabilities`, `profiles` and `executors`. Capabilities define controlled
+delivery contracts, affordances, recovery safety and minimum permission.
+Profiles define discovery rules and known drivers. Executors define routing
+descriptions, enablement and installation bindings.
 
-- The `AgentClass`: domains, capabilities, risk level, input/output types, use-case hints, route-intent affinity, and runtime defaults.
-- The runtime binding: immutable Docker image ID, controlled permission profile, in-container command/arguments, install check command, and optional project URL.
-- At least one executor `WorkUnit`: a concrete idle runtime slot that can claim one ready subtask at a time.
+In the AnyFusion-Pi TUI, enter `/executor register` to open the shared
+registration window. The basic screen confirms profile, description,
+Capabilities and primary use cases. The advanced screen confirms the absolute
+binary path, private runtime home, environment sources and effective
+permission. Codex, Pi and Hermes use known profiles. A Generic CLI expands the
+full `cli-session` protocol.
 
-Use the guided registration flow when you are not sure what to fill in:
+The same application service is available from slash commands and the CLI:
 
 ```bash
-/executor register wizard
+anyfusion executor discover
+anyfusion executor register codex-local \
+  --profile codex \
+  --binary /usr/local/bin/codex \
+  --home /home/user/.codex \
+  --description "Repository engineering and verification" \
+  --capabilities workspace-engineering \
+  --use-cases "implementation,tests,code review"
+anyfusion executor verify codex-local
+anyfusion executor enable codex-local
+anyfusion executor disable codex-local
+anyfusion executor show codex-local
+anyfusion executor list
+anyfusion executor reload
 ```
 
-The wizard asks for the executor name, whether to infer from a project URL or fill fields manually, the local command, non-interactive args, install check command, domains, and capabilities. If you provide a GitHub URL, AnyFusion tries to infer CLI information from `package.json` or README examples. If inference is not reliable, it falls back to manual entry.
+Generic CLI registration requires `--driver cli-session`,
+`--version-args-json`, `--version-pattern`, `--permission-profile`,
+`--initial-args-json`, `--resume-args-json`, `--session-id-pattern`,
+`--timeout-ms` and `--terminate-signal`; `--final-output-pattern` is optional.
+Templates use `{prompt}`, `{sessionId}` and optionally `{outputPath}`.
 
-One-line registration is also supported:
+Verification creates a temporary Git workspace and independent runtime home,
+checks the version pattern, asks the first session to return a random challenge,
+extracts its session ID, resumes the same session with a second challenge, and
+checks cwd/home isolation, output limits, timeout, abort and normalized errors.
+Only success atomically replaces YAML, records verification for the exact
+`configDigest`, enables the Executor and refreshes the snapshot. A manual YAML
+change requires `/executor reload` or restart and makes prior verification
+stale. Invalid reload keeps the previous valid snapshot active.
 
-```bash
-/executor register research-bot \
-  --image registry.example/research-bot:1.2.3 \
-  --image-id sha256:<64-hex-digest> \
-  --permission-profile restricted-custom \
-  --command research-bot \
-  --args "run --prompt {prompt}" \
-  --check "research-bot --version" \
-  --project-url https://github.com/example/research-bot \
-  --domains research,reporting \
-  --capabilities research,report_generation
-```
-
-`{prompt}` is replaced with the subtask prompt. If `--args` does not contain `{prompt}`, AnyFusion appends the prompt as the final argument. The image ID must match the referenced image and the permission profile must be one of the controlled profiles. A missing binding or changed tag fails closed until the class is explicitly updated; there is no host-process fallback. Static routing capabilities remain separate and Planner-safe.
-
-`codex-cli` and `pi-agent` are owned completely by canonical definitions. Startup force-converges every persisted static field, immutable image binding and permission profile for those names, and normal registration APIs reject overwrite or deletion. Non-canonical capabilities remain free-form registration metadata and are never promoted into the controlled Planner catalog. Historical custom classes without image/profile bindings remain visible for audit but are non-executable.
+The live Session owns that active snapshot. Planner MCP reads its current
+Planner-safe projection through the existing read-only Planner Host socket;
+Kernel and Runtime consume projections from the same loaded snapshot and
+digest. Runtime execution has no AgentClass-name or environment-derived binding
+fallback.
 
 The Phase 5 permission product boundary is the sandbox profile plus durable request/grant/use audit budgets. `use_capability` atomically consumes attempt, expiry, call and byte limits, but it is not a universal operation broker and does not prove fine-grained mediation of every native file, network or external action. Container mounts, egress profile and resource leases remain the implemented enforcement boundaries.
 
-Executor extension contract:
+Executor definition contract:
 
 Required routing fields:
 
-- `name`: stable executor name, such as `research-bot` or `finance-research-agent`.
-- `domains`: where the executor fits, such as `research`, `finance`, or `software`.
-- `capabilities`: what the executor can do, such as `research`, `report_generation`, `multi_tool`, `coding`, or `tests`.
+- `id`: stable lower-case Executor ID.
+- `description`: non-empty routing description.
+- `capabilities`: at least one ID from the controlled Capability section.
+- `primaryUseCases`: at least one concrete primary use case.
+- `enabled`: administrative enablement.
+- `binding`: absolute binary/home, version, driver, environment and confirmed permission facts.
 
 Recommended routing fields:
 
 - `inputTypes`: supported input types, such as `text`, `files`, or `image`.
 - `outputTypes`: expected outputs, such as `markdown`, `report`, `code`, `patch`, or `json`.
-- `primaryUseCases`: examples of tasks that should route to this executor.
 - `avoidUseCases`: examples of tasks that should not route to this executor.
 - `riskLevel`: `low`, `medium`, or `high`.
-- `intentAffinity`: route-intent affinity by keys such as `repo_execution`, `research_workflow`, `memory_agent_ops`, and `general`.
-- `projectUrl`: source repository or documentation URL.
+- `affinity`: optional bounded route-intent weights.
 
-Executor health and recent outcomes are dynamic status. Planner reads them through `list_executor_status`; they are not stored as static AgentClass routing metadata.
-
-Required runtime binding:
-
-- `runtimeCommand`: executable command available on `PATH`, for example `research-bot`.
-- `runtimeArgs`: non-interactive arguments, for example `["run", "--prompt", "{prompt}"]`.
-- `runtimeCheckCommand`: install or availability check, for example `research-bot --version`.
+Planner receives only the enabled, verified, digest-matched routing projection.
+Kernel independently validates membership, capability coverage and health.
+Runtime receives the driver/path/home/environment binding only after Kernel
+authorization. Executor health and recent outcomes remain dynamic status
+queried through `list_executor_status`.
 
 Runtime behavior requirements:
 
@@ -443,11 +454,15 @@ Optional advanced adapter interfaces:
 Executor management commands:
 
 ```bash
+/executor discover
 /executor list
 /executor show <name>
-/executor register wizard
-/executor unregister <name>
-/executor feedback <taskId>
+/executor register
+/executor verify <name>
+/executor enable <name>
+/executor disable <name>
+/executor reload
+/executor refresh <name|all>
 ```
 
 ### Codex CLI
@@ -459,7 +474,8 @@ which codex
 codex --help
 ```
 
-Codex attempts run inside the canonical `metaclaw-executor-codex:phase5` image through `SandboxedExecutorAdapter`.
+Codex runs through the dedicated `codex` driver in the assigned worktree with
+an attempt-private materialized `CODEX_HOME`.
 
 ### Pi Agent
 
@@ -477,9 +493,8 @@ AnyFusion calls it as:
 pi -p "<prompt>"
 ```
 
-Pi attempts use the same execution seam in either backend. Docker compatibility
-mode runs them in `metaclaw-executor-pi:phase5`; worktree mode runs the trusted
-`pi` binary in the current Subtask worktree.
+Pi attempts run the registered `pi` binary in the current Subtask worktree
+through the same execution seam as every other Executor.
 
 ## Run
 
@@ -501,46 +516,45 @@ The default command launches the pinned AnyFusion-Pi Planner TUI:
 - Bridge failure, stale data, or malformed data degrades Task projection and proposal submission explicitly; it never pretends a Task was created and does not terminate ordinary conversation.
 - Set `METACLAW_STANDBY_TUI=1` to start the preserved Ink implementation for fallback investigation. That module is not the default and receives no migration feature work.
 
-Or use the project helper:
+Or use the repository launcher without installing the global link:
 
 ```bash
-./anyfusion.sh start
+./anyfusion --project /path/to/project
 ```
 
 On first launch, AnyFusion creates its local state under:
 
 ```text
-~/.metaclaw/
-├── config.yaml
-├── metaclaw.db
-└── gateway.sock
+~/.local/share/anyfusion/
+└── runtime/
+    ├── config.yaml
+    ├── metaclaw.db
+    └── gateway.sock
 ```
 
 Connect a second terminal to the same runtime:
 
 ```bash
-./anyfusion.sh connect
+anyfusion --connect
 ```
 
-Runtime utilities:
+Run the Gateway in the foreground:
 
 ```bash
-./anyfusion.sh status
-./anyfusion.sh logs
-./anyfusion.sh logs -f
-./anyfusion.sh restart
-./anyfusion.sh stop
+anyfusion gateway run --project /path/to/project
 ```
 
-Install or manage AnyFusion as a user-level service:
+Gateway setup and diagnostics remain explicit CLI operations:
 
 ```bash
-./anyfusion.sh gateway install
-./anyfusion.sh gateway start
-./anyfusion.sh gateway status
-./anyfusion.sh gateway restart
-./anyfusion.sh gateway stop
+anyfusion gateway setup
+anyfusion gateway doctor
+anyfusion gateway pairing list
 ```
+
+The repository no longer ships a second background-process launcher or a
+generated systemd service. Keep the Gateway in the foreground for the Demo, or
+wrap `anyfusion gateway run` with the server's existing process supervisor.
 
 Direct Gateway modes:
 
@@ -549,20 +563,31 @@ anyfusion --gateway
 anyfusion --connect
 ```
 
-### Running in Docker (macOS / Windows / containerized)
+### Native Linux server launcher
 
-On macOS and Windows, the `docker/` workflow runs the Linux Runtime as an SSH server so the native TUI receives a genuine PTY and `/workspace` remains available through shell or VS Code Remote-SSH. Docker Desktop is required for this supported path because the Runtime and its native Executor CLIs expect Linux. One BuildKit build consumes MetaClaw as the default context and the sibling AnyFusion-Pi repository as the required `anyfusion-pi` context. The final image contains one Node 22.19+ installation, a MetaClaw control process under `/app`, and an isolated Planner process under `/opt/anyfusion-planner/app`; their dependency trees remain separate. Canonical Executor attempts run as child processes in managed Subtask worktrees; the Docker attempt path is compatibility-only and is not started by the default launcher.
+The repository-root `anyfusion` command is the default launcher on this Linux
+server. It builds MetaClaw and the sibling AnyFusion-Pi repository and starts
+MetaClaw plus Planner as separate host Node.js processes. Verified registry
+bindings reuse their installed host commands and run in managed Subtask
+worktrees. Docker is not used by this startup path.
 
-The Runtime image contains the MetaClaw CLI, generated v7 schema, versioned host bridge, compiled Planner MCP server, built AnyFusion-Pi application, Codex/Pi CLIs and their attempt configuration. `docker/Dockerfile.runtime` builds both repository contexts and copies two independent application trees into the final image. The Planner launcher and MetaClaw-injected `/app/dist/planner-mcp.js` command both use `/usr/local/bin/node`; `/opt/anyfusion-planner/node` is forbidden. Worktree mode runs the trusted Executor CLI in the managed Subtask worktree and uses loopback attempt services; it does not require sibling Executor images or a Docker socket. Source changes in either repository require `docker/shell.ps1 -Rebuild`; only workspace and data volumes persist. The trusted Runtime exposes an attempt-scoped model gateway with a random scoped token. Use `docker/shell.ps1` for Docker + SSH compatibility validation.
+Each attempt receives a driver-materialized private home and an attempt-scoped
+model gateway token when the driver supports that evidence path. Runtime state
+is under `~/.local/share/anyfusion/runtime`; the Executor registry is under
+`$ANYFUSION_CONFIG_HOME`, normally `~/.config/anyfusion`. Use
+`anyfusion --no-build` to reuse current outputs and
+`anyfusion smoke --scenario artifact` for the native Planner-to-Executor gate.
+The Runtime Dockerfile and `docker/shell.ps1` provide the same Ubuntu runtime
+for CI and Windows-hosted development.
 
 Local validation covers TypeScript lint/build, focused Planner RPC and host-protocol tests, the Docker Vitest suite, Unix-socket bridge behavior, Session validation, and unchanged Kernel/Execution/Executor regressions. Linux container smoke additionally verifies the single Node 22.19+ executable, isolated application dependency trees and processes, absence of an embedded Planner Node, Planner RPC JSONL, entrypoint config separation, and the final unified image.
 
 ## Configuration
 
-Edit:
+Application and integration settings remain in:
 
 ```bash
-~/.metaclaw/config.yaml
+~/.local/share/anyfusion/runtime/config.yaml
 ```
 
 Example:
@@ -571,7 +596,6 @@ Example:
 version: 1
 
 executor:
-  command: codex
   timeout: 300
   max_duration: 3600
 
@@ -624,11 +648,23 @@ integrations:
     public_base_url: ""
 ```
 
+Static Executor definitions and bindings are not stored in this application
+file or in SQLite. They live only in:
+
+```bash
+$ANYFUSION_CONFIG_HOME/executors.yaml
+```
+
+The registry file is mode `0600`, references environment files and inherited
+variable names, and must not contain credential values. Use
+`anyfusion executor reload` or `/executor reload` after a manual edit. A failed
+reload leaves the previous valid snapshot active.
+
 Export the Feishu app secret before starting the runtime:
 
 ```bash
 export FEISHU_APP_SECRET="your Feishu app secret"
-./anyfusion.sh start
+anyfusion gateway run --project /path/to/project
 ```
 
 ## Feishu Gateway Delivery And Markdown Preview
@@ -640,7 +676,7 @@ AnyFusion separates document generation from Feishu delivery:
 - The Feishu Gateway sends the final answer back to the origin chat.
 - The Feishu Gateway uploads generated artifact files when file upload is available.
 - Markdown artifacts get online preview links when Markdown Preview is configured.
-- Delivery attempts are written to `~/.metaclaw/gateway-audit.jsonl`.
+- Delivery attempts are written to `~/.local/share/anyfusion/gateway-audit.jsonl`.
 
 Executors should not call Feishu Docs or cloud-document APIs directly. If a user asks for a "Feishu cloud document" or "online preview", AnyFusion instructs the executor to produce local Markdown artifacts; the Gateway handles Feishu synchronization and preview links.
 
@@ -696,7 +732,7 @@ AnyFusion will:
 3. Retrieve relevant historical task context when available.
 4. Apply semantic task priority.
 5. Ask the planner to choose a planner outcome or build a subtask work graph.
-6. Persist ready subtasks with dependencies, required capabilities, an ordered canonical AgentClass list, and acceptance criteria.
+6. Persist ready subtasks with dependencies, required capabilities, a snapshot-validated ordered Executor list, and acceptance criteria.
 7. Claim an idle executor work unit for each ready subtask and stream progress.
 8. Store result summaries, artifacts, and task memory.
 9. Suggest what to do next.
@@ -718,6 +754,7 @@ Useful commands:
 /task unblock <id>
 /task unblock <id> /tmp/evidence-v4.pdf
 /task cancel <id>
+/task purge <taskId> --confirm <taskId>
 /task <taskId> subtask cancel <subtaskId...>
 /task <taskId> accept-partial
 /task index rebuild
@@ -735,6 +772,15 @@ The main TUI obtains completion state from the same `CommandCatalog` used by `/h
 
 The AnyFusion-Pi Planner TUI is the default local surface. The fork owns conversation interaction; MetaClaw owns the read-only Task projection, deterministic slash-command execution, and all durable Task/Kernel/Executor facts. The TUI queries the MetaClaw command tree over the host bridge, renders returned candidates with Pi's native autocomplete UI, applies MetaClaw-owned replacement ranges, validates again before submission, and transports the user's exact command; it does not implement a second command catalog. The branded welcome component remains visible even under quiet startup and shows the AnyFusion pixel mark, Planner version, bridge status, model/workspace, and a bounded task summary. The old Ink TUI remains intact under `src/tui/` and can be selected with `METACLAW_STANDBY_TUI=1`, but it is explicitly a standby module rather than a second actively maintained frontend. Feishu and Gateway remain backend delivery surfaces and do not depend on which local TUI is active.
 
+Task purge is intentionally stronger than cancellation. It accepts only
+`done`, `archived` or `cancelled` Tasks after dispatch, publication, sandbox,
+lease and WorkUnit resources are quiescent. The service writes a minimal audit
+and transaction-scoped authorization before deleting Task-scoped graph,
+receipt, handoff, publication, search, memory, workspace and artifact facts.
+Ordinary SQL deletion of immutable receipts, handoffs and merge attempts
+remains trigger-blocked, and any transactional failure rolls back both audit
+and deletion.
+
 ## Task Search
 
 AnyFusion keeps a local SQLite FTS5 search index for tasks and task-related text. This makes historical work recoverable even when the user does not remember the exact task id.
@@ -746,7 +792,7 @@ Commands:
 /task index search contract risk matrix
 ```
 
-The index is a deterministic read model, not a semantic router. The PlanningAgent decides when historical work is relevant, calls `search_tasks`, and reads selected records with `get_task_context`. Runtime code does not infer task continuity, related history, timeline intent, or resume/reference mode from user wording.
+The index is a deterministic read model, not a semantic router. The PlanningAgent decides when historical work is relevant, calls `search_tasks`, and reads selected records with `get_task_context`. Runtime code does not infer task continuity, related history, timeline intent, or resume/reference mode from user wording. Tasks whose `source` is `system_smoke` are excluded from ordinary Task lists, search and memory generation unless an explicit diagnostic path requests them.
 
 ## Single-Task Concurrent Kernel Control Model
 
@@ -761,23 +807,42 @@ Whole-Task and explicit Subtask cancellation use the same durable control chain.
 Natural-language dispatch is split into Planner understanding, kernel authorization, and runtime execution. Raw natural-language input enters `PlanningAgent`; only slash commands and deterministic IDs, paths, URLs, and attachments bypass semantic planning. Natural-language memory capture is not a fast path. The dedicated AnyFusion-Pi runner submits a strict v7 `PlanningAgentPlan` through the native proposal tool and queries bounded read-only MCP tools when evidence is needed. Work Graph uses the v6 contract; authorization resolution remains limited to an exact pending request and does not add resource claims.
 
 - `direct_reply`, `clarification`, `task_control`, or `no_action`: no executor work unit should be claimed unless the kernel rewrites the plan into executable work.
-- `plan_work_graph`: the planner must propose a non-empty capability-minimal work graph whose nodes are future `Subtask` records. Each proposal carries dependencies, acceptance criteria, `deliveryKind: edit | report`, non-empty controlled `requiredCapabilities`, and the complete ordered set of statically eligible canonical AgentClasses in `preferredAgentClassList`.
+- `plan_work_graph`: the planner must propose a non-empty capability-minimal work graph whose nodes are future `Subtask` records. Each proposal carries dependencies, acceptance criteria, non-empty controlled `requiredCapabilities`, and the complete ordered set of eligible Executor IDs from the current Planner registry projection in `preferredAgentClassList`.
 
-`ControlKernel` exposes only `decide(event, snapshot)`. Kernel contract v5 validates Planning proposals, single-active-Task admission, graph and canonical coverage facts, then decides batch dispatch, capacity handling, execution landing, Task/Subtask cancellation, partial-result acceptance, generation replan, deferred availability, Executor recovery, merge repair/conflict replan, timer rechecks, contract correction, permission grant/deny/escalation, partition waiting and sandbox recovery without reading repositories, clocks, adapters or raw logs. Every event/snapshot/decision uses a versioned discriminated union, and decision and attempt identities are deterministic from the event and batch item.
+`ControlKernel` exposes only `decide(event, snapshot)`. Kernel contract v5 validates Planning proposals, single-active-Task admission, graph structure, registry digest, Executor membership, capability coverage and health, then decides batch dispatch, capacity handling, execution landing, Task/Subtask cancellation, partial-result acceptance, generation replan, deferred availability, Executor recovery, timer rechecks, contract correction, permission grant/deny/escalation, partition waiting and sandbox recovery without reading repositories, clocks, adapters or raw logs. Every event/snapshot/decision uses a versioned discriminated union, and decision and attempt identities are deterministic from the event and batch item.
 
-`DurableKernelWorkflow` first writes every event to `kernel_events`, atomically issues one immutable `kernel_decisions` authorization plus a pending application, then invokes an idempotent Runtime handler. Stable observations return to the inbox. Duplicate events resume the existing application instead of issuing a second Decision, and startup reconciles applications, child dispatch items, sandbox records and publication state before accepting input. Planner runs and bounded redacted tool summaries remain audited separately. `WorkGraphRuntimeService` derives graph facts without selecting strategy. `KernelExecutionRuntime` builds snapshots and applies decisions; `AttemptSupervisor` owns child launch; `SubtaskAttemptRunner` produces receipts and candidate commits; `WorkspacePublicationWorker` owns ordered integration and atomic completion publication.
+`DurableKernelWorkflow` first writes every event to `kernel_events`, atomically issues one immutable `kernel_decisions` authorization plus a pending application, then invokes an idempotent Runtime handler. Stable observations return to the inbox. Duplicate events resume the existing application instead of issuing a second Decision, and startup reconciles applications, child dispatch items, sandbox records and publication state before accepting input. Planner runs and bounded redacted tool summaries remain audited separately. `WorkGraphRuntimeService` derives graph facts without selecting strategy. `KernelExecutionRuntime` builds snapshots and applies decisions; `AttemptSupervisor` owns child launch; `SubtaskAttemptRunner` produces receipts and exact candidate commits; `WorkspacePublicationWorker` applies user-approved Project-main promotions and atomically publishes completion facts.
 
 The older `ExecutorRouter`, `ExecutorRoutingCoordinator`, `ExecutionPolicyPlanner`, and the `IntentOrchestrator` routing subsystem have been removed entirely — there is no separate executor-selection layer. Legacy route-intent names such as `repo_execution` and `research_workflow` survive only as affinity keys for ranking agent classes.
 
-## Complex Task Strategy And Agentic Loop
+## Complex Task Strategy And Kernel Control Loop
 
-AnyFusion can represent complex requests as a work graph instead of a single undifferentiated prompt. The graph has no explicit single/multi execution mode. `AnyFusionPlanningAgent` keeps work that one canonical AgentClass can deliver as one node and creates another node only at a controlled Routing Capability handoff. The shared pure rules reject malformed DAGs and mergeable same-AgentClass single chains, while reentrant adapters may now own multiple independent nodes in one frontier.
+AnyFusion can represent complex requests as a work graph instead of a single undifferentiated prompt. The graph has no explicit single/multi execution mode. `AnyFusionPlanningAgent` keeps work that one registry Executor can deliver as one node and creates another node only at a controlled Routing Capability handoff. The shared pure rules reject malformed DAGs and mergeable same-Executor single chains, while reentrant adapters may own multiple independent nodes in one frontier.
 
-In the active session path, proposed nodes become persisted Work Graph v6 `Subtask` records only after a durable `authorize_task_plan` application. The unreleased product uses fresh-only SQLite schema v31; every older pre-release schema is rejected, with no upgrade or dual-read path. The schema includes persisted Planner proposal turns/submissions and accepted-turn locks alongside the durable inbox/application/outbox and graph revisions, resource/workspace/permission/sandbox records, dispatch items, candidate publications, immutable merge attempts, cancellation cleanup, lease revocation, coalesced generation replan, deferred availability proposals, bounded Executor recovery checks and explicit partial completion facts. Kernel and Task event logs retain complete history. Skill progress remains attempt-lifetime verifier evidence; only terminal Skill outcomes are persisted and atomically update effect summaries. `dependencies` is the only topology and typed handoff source. Downstream work becomes runnable only after direct dependencies are published, receives their immutable handoffs and full Git ancestry, and never absorbs sibling or integration-branch state implicitly.
+In the active session path, proposed nodes become persisted Work Graph v6
+`Subtask` records only after a durable `authorize_task_plan` application. The
+unreleased product uses fresh-only SQLite schema v35; every v34 or older
+pre-release schema is rejected with its exact path, with no migration,
+automatic deletion or dual-read path. Schema 35 retains the Project,
+publication, Executor Registry, process-runtime and purge baseline while removing
+the obsolete Subtask delivery-kind column. It preserves the
+durable inbox/application/outbox, graph revisions,
+resource/workspace/permission/sandbox records, dispatch/publication/immutable
+merge audit, cancellation cleanup, lease revocation, generation replan,
+deferred availability, bounded recovery checks and partial completion facts.
+Kernel and Task event logs retain complete history during ordinary operation.
+Skill progress remains attempt-lifetime verifier evidence; only terminal Skill
+outcomes are persisted and atomically update effect summaries. `dependencies`
+is the only topology and typed handoff source. Downstream work becomes runnable
+only after direct dependencies are approved and merged into Project `main`,
+receives their immutable handoffs and starts its own worktree from that updated
+baseline.
 
 `SubtaskExecutionContext` is the only production Executor input. Task title/goal are background, the current Subtask goal is the sole operational instruction, siblings expose only titles as out of scope, and Planner-selected evidence has deterministic per-reference and total preview budgets. Runtime keeps Task/Subtask/attempt/WorkUnit identities and acceptance/handoff keys outside the model-facing prompt and report. Ordinary assistant/Executor history never enters the context. Codex and Pi may access eligible Task evidence through the same attempt-bound read-only authorization; unsupported Adapters receive only selected previews.
 
-Every Executor response must end with Completion Protocol v3. The model-facing strict JSON report contains only `evidence` and nullable `noChangeReason`, or a controlled `failure`; identity fields and model-authored artifacts are rejected. After Executor success and before completion validation, Runtime computes and persists one authoritative workspace delta. `report` requires an empty delta and null reason; changed `edit` requires a null reason; zero-delta `edit` requires a non-empty reason. Runtime derives artifacts from created/modified files, excludes deletions from the artifact list, reuses the source attempt delta for response-only correction, and fails closed on truncated or indeterminate delta. It then materializes the internal acceptance/handoff envelope, strips the machine report and checks budgets and direct-edge aggregate limits. Success persists the terminal receipt and candidate commit, then enters `awaiting_integration`. The publication worker merges candidates into a MetaClaw-managed integration branch in stable topology/authorization/ID order and only then atomically publishes normalized handoffs, clean body, artifacts, workspace state and `done`. Text may use Git three-way merge; binary paths require exclusive publication leases and never auto-merge. Conflicts return to the original AgentClass for three scoped repairs, then one independent conflict replan, then park. User repositories and branches are never mutated or pushed.
+Every Executor response must end with Completion Protocol v4. The required non-empty Markdown before the marker is the result description. The model-facing strict JSON is `{}` or contains only optional `resultFilePaths`; a controlled `failure` is also accepted, while identity fields and other model-authored fields are rejected. Runtime verifies declared result paths as existing workspace-relative files, uses the description for acceptance evidence and text handoffs, and uses declared files for artifact handoffs. Workspace changes are allowed but not required. Runtime still computes and persists one authoritative commit-derived workspace delta independently of Completion validation. If files changed, the Executor commits them, merges current local `main`, resolves conflicts and leaves the assigned branch clean; otherwise a clean assigned worktree is sufficient. Runtime then validates the assigned branch and `main` ancestry, materializes the internal acceptance/handoff envelope, strips the machine report, checks budgets, and persists the exact candidate in `awaiting_approval` with a `repository_promotion` request. Approval merges the complete branch into Project `main`; denial blocks and preserves the worktree. If `main` moved after review began, Runtime preserves the worktree and reruns the Executor to synchronize before creating a new approval. Successful promotion atomically publishes normalized handoffs, clean body, artifacts, workspace state and `done`, then deletes the Subtask worktree and branch. No remote Git operation or file-selective publication occurs.
+
+On the first Completion Protocol failure, Kernel may authorize one persisted `contract_correction` attempt. Despite the retained name, this is a complete retry through the ordinary Executor path: a new session reuses the Subtask worktree, receives the original goal and acceptance plus a bounded recovery packet with the violations, and gets the same AgentClass permission profile, mounts, evidence/capability MCP servers, tools and network policy. Attempt-scoped grants are not inherited. Runtime recomputes the retry's workspace delta and validates its new final response normally; a second contract failure blocks. Pi terminal-event extraction and correction quota scoping by source attempt remain separate technical debt.
 
 The retired `ExecutionStrategyPlanner`, `ExecutionPolicy`, `MultiExecutorOrchestrator`, and `AgenticLoopController` implementations have been removed. They were no longer connected to the production path after work-graph and work-unit dispatch became authoritative. `ExecutionAggregator` remains available to the verification pipeline for structured multi-result evidence checks.
 
@@ -787,9 +852,9 @@ Executors and Skills are different layers of the ecosystem.
 
 An Executor is who does the work. A Skill is the method, knowledge, or operating guide the worker uses while doing it.
 
-Executors are AgentClass runtimes such as the canonical Codex CLI and Pi Agent.
-They may be launched as trusted child processes in a managed worktree or as
-Docker-sandboxed attempts during compatibility operation. An executor
+Executors are registry-bound AgentClass compatibility values such as confirmed
+Codex, Pi, Hermes or generic session CLIs.
+They are launched as trusted child processes in a managed worktree. An executor
 determines the model, toolchain, permissions, runtime environment, context
 window, file access, non-interactive command, cost profile, and reliability
 boundary.
@@ -884,7 +949,29 @@ npm run lint
 npm run smoke:anyfusion
 ```
 
-`npm run smoke:anyfusion` is the required live Planner smoke gate. Its default `planner-session` scenario sends two turns in one MetaClaw session, verifies the second reply recalls a marker absent from that turn, and verifies exactly one persisted AnyFusion-Pi session file was created. Executor artifact gates remain available with `--scenario artifact` or `--scenario python-hello`.
+`npm run smoke:anyfusion` is the required live Planner smoke gate. Its default
+`planner-session` scenario sends two turns in one MetaClaw session, verifies the
+second reply recalls a marker absent from that turn, and verifies exactly one
+persisted AnyFusion-Pi session file was created. Executor artifact gates remain
+available with `--scenario artifact` or `--scenario python-hello`; the real
+public-web research gate is
+`anyfusion smoke --executor pi --scenario pi-research --timeout 300`.
+
+Real Task smoke uses the current main database, workspace and
+`executors.yaml`. Each smoke Task has `source = system_smoke` and a unique
+`smoke_run_id`, so normal Task pools, search and memory generation hide it. The
+runner always cancels unfinished owned work through the formal command path,
+waits for resources to become quiescent, purges only its exact Task, removes
+workspace/artifact/temporary-home residue, checks foreign keys, and rotates
+`smoke_run_audits` to the latest 20. Do not run a credentialed smoke until the
+current host registry, database and provider configuration are confirmed safe.
+
+The 2026-08-08 host acceptance registered and verified Codex and Pi, passed a
+real Codex artifact Task and a real Pi `web_search`/`web_fetch` research Task,
+and confirmed zero Task-scoped residue after formal purge. Hermes driver/profile
+support is implemented, but Hermes was intentionally not registered or included
+in that acceptance. Exact run IDs and close-out evidence are recorded in the
+[schema 32 completion plan](../plans/2026-08-07-unified-executor-registry-and-schema-32.md).
 
 Targeted tests:
 
@@ -908,7 +995,7 @@ src/
 ├── core/           # Narrow shared primitives and normalized KernelFailure facts
 ├── delivery/       # Verification, artifact extraction, aggregation checks, and final delivery preparation
 ├── execution/      # Authorized side effects: workflow apply, probes, claims, attempts, sandbox, Git publication
-├── executor/       # Executor adapters plus AgentClass admin/seeder services, prompt builders, skill packages
+├── executor/       # Registry config/snapshot/registration, drivers, adapters, prompts, skill packages
 ├── gateway/        # Local Gateway server/client and Feishu gateway runtime
 ├── guidance/       # Proactive guidance, task signals, guidance policy, dashboard orchestration
 ├── integrations/   # External integration helpers such as Markdown preview
@@ -921,7 +1008,7 @@ src/
 ├── resource/       # Partition identity, conflicts, permission profiles, grants, and capability-use rules
 ├── session/        # Application-shell intake, projections, and Kernel runtime wiring
 ├── storage/        # SQLite migrations and repositories
-├── task/           # Task domain state machine and runtime
+├── task/           # Task domain state machine, runtime, and controlled purge service
 ├── tui-bridge/     # Native Planner TUI process and read-only Unix JSONL bridge
 ├── tui/            # Preserved standby Ink terminal UI
 ├── utils/          # Config, paths, logger, IDs

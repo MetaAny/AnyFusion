@@ -24,10 +24,13 @@ describe('WorkspacePublicationRepo integrated result query', () => {
     insertPublication(publications, 'publication-earlier', 'task-a', 'subtask-a-earlier', 'earlier.md');
     insertPublication(publications, 'publication-other-task', 'task-b', 'subtask-b', 'other.md');
     insertPublication(publications, 'publication-pending', 'task-a', 'subtask-a-pending', 'pending.md');
+    publications.markApproved('publication-later', '2026-08-04T00:00:00.500Z');
     publications.markApplying('publication-later', '2026-08-04T00:00:01.000Z');
     publications.markIntegrated('publication-later', 'commit-later', '2026-08-04T00:00:03.000Z');
+    publications.markApproved('publication-earlier', '2026-08-04T00:00:00.500Z');
     publications.markApplying('publication-earlier', '2026-08-04T00:00:01.000Z');
     publications.markIntegrated('publication-earlier', 'commit-earlier', '2026-08-04T00:00:02.000Z');
+    publications.markApproved('publication-other-task', '2026-08-04T00:00:00.500Z');
     publications.markApplying('publication-other-task', '2026-08-04T00:00:01.000Z');
     publications.markIntegrated('publication-other-task', 'commit-other', '2026-08-04T00:00:02.000Z');
 
@@ -62,7 +65,6 @@ function createSubtask(subtasks: SubtaskRepo, taskId: string, subtaskId: string)
     contextRefs: [],
     requiredCapabilities: ['workspace-engineering'],
     preferredAgentClassList: ['codex-cli'],
-    deliveryKind: 'edit',
     acceptance: [],
     riskLevel: 'low',
     result: '',
@@ -88,13 +90,16 @@ function insertPublication(
     subtaskId,
     sourceAttemptId: `attempt-${id}`,
     agentClassName: 'codex-cli',
+    mainBaseCommit: `main-${id}`,
     candidateCommit: `candidate-${id}`,
+    permissionRequestId: `permission-${id}`,
+    changedPaths: [artifact],
     completion: {
       body: `Report for ${id}`,
       artifacts: [artifact],
       warnings: [],
       handoffs: [],
-      completionSchemaVersion: 3,
+      completionSchemaVersion: 4,
     },
     topologyLayer: 0,
     firstDispatchOrder: 0,

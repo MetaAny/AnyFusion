@@ -5,7 +5,7 @@ import {
   type KernelDecisionApplicationRecord,
   type KernelWorkflowStore,
 } from '../../src/kernel/kernel-workflow.js';
-import { getPlannerExecutorCatalog } from '../../src/executor/builtin-executor-catalog.js';
+import { testPlannerExecutorCatalog } from '../support/executor-registry.js';
 import type { KernelDecisionLedgerRecord } from '../../src/kernel/kernel-workflow.js';
 
 describe('DurableKernelWorkflow', () => {
@@ -203,7 +203,7 @@ function directReplyEvent(): KernelEvent {
 function planSnapshot(): KernelSnapshot {
   return {
     schemaVersion: 5, type: 'plan_admission', tasks: [], runningTaskId: null,
-    executorCatalog: getPlannerExecutorCatalog(), executorStatuses: [], v5WorkGraphTaskIds: [], eligibleContextRefKeys: [], pendingAuthorizationRequest: null,
+    executorCatalog: testPlannerExecutorCatalog(), executorStatuses: [], v5WorkGraphTaskIds: [], eligibleContextRefKeys: [], pendingAuthorizationRequest: null,
   };
 }
 

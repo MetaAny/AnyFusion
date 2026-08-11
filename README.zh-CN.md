@@ -37,8 +37,8 @@ AnyFusion 是位于人员、企业协作入口与 Agent Runtime 之间的本地�
 | **持久化任务调度** | Task 与 Subtask 生命周期、依赖就绪、阻塞、挂起、恢复、取消和故障恢复均被持久记录，可跨进程和会话继续运行。 |
 | **策略治理的规划链路** | 自然语言规划与执行授权严格分离：Planner 提案，Control Kernel 决策，Runtime 只执行已授权的副作用。 |
 | **依赖感知工作图** | 复杂目标被表达为显式 DAG，包含验收标准、类型化依赖、受限上下文，以及工作单元之间可持久化的 handoff contract。 |
-| **多垂类 Agent 编排** | 基于能力的路由将 Subtask 映射到有序 AgentClass 候选，包括 Codex、Pi、Hermes 或企业自定义垂类 Agent，而不是把调度策略散落在 Prompt 中。 |
-| **Worktree 执行边界** | canonical Codex/Pi 在统一 Runtime 中作为子进程运行，每个 attempt 使用自己的持久 Git worktree；旧 Docker attempt 后端仅作为显式兼容选项保留。 |
+| **多垂类 Agent 编排** | 受控 Capability 路由把 Subtask 映射到同一份 verified、digest-bound Executor Registry snapshot 的完整候选集，包括 Codex、Pi、Hermes Profile 或企业自定义 session CLI。 |
+| **Worktree 执行边界** | 已验证的 Registry CLI binding 在统一 Runtime 中作为短生命周期子进程运行，每个 attempt 使用自己的受管 Git worktree；不再保留嵌套 Docker 执行路径。 |
 | **验收、证据与审计** | 结构化完成协议在结果暴露或交付前记录验收证据、产物、handoff、attempt receipt 与审计事件。 |
 | **业务记忆与多端交付** | 已确认偏好、任务历史、语义检索、终端工作流、Gateway 和飞书交付均连接至同一份持久任务状态。 |
 
@@ -61,7 +61,7 @@ flowchart LR
   Planning --> Workflow[持久化 Kernel Workflow<br/>Inbox / Ledger / Application]
   Workflow --> Kernel[Control Kernel<br/>策略与授权]
   Kernel --> Runtime[Execution Runtime<br/>Frontier / Dispatch / Recovery]
-  Runtime --> Agents[Worktree Executor 进程<br/>Codex / Pi]
+  Runtime --> Agents[已验证 Registry Executor<br/>Worktree 子进程]
   Agents --> Verify[验收与交付<br/>证据 / 产物 / Handoff]
 
   State[(持久任务状态<br/>记忆 / Attempt / 审计)]
@@ -81,25 +81,13 @@ flowchart LR
 
 ## 快速开始
 
-### macOS 原生安装（不依赖 Docker）
+### Linux 服务器裸机运行
 
-当前 Developer Preview 可以直接在 macOS 上通过 Node.js 22.19+ 原生运行，
-不需要安装 Docker Desktop。Executor attempt 是本机子进程，每个 attempt
-使用自己独立的受管 Git worktree。
+本服务器默认直接在宿主机运行 AnyFusion、兄弟 AnyFusion-Pi Planner、Codex
+和 Pi。Executor attempt 使用隔离的临时 Agent home 和受管 Git worktree。
+本机启动和 smoke 不需要 Docker。
 
-Planner 目前仍维护在独立的 AnyFusion-Pi fork 中，尚未与 Runtime 一起发布为
-单一二进制文件。因此原生预览版首次安装需要构建两个仓库。请按照下面的目录
-结构将它们放在同一个父目录中。
-
-1. 安装系统依赖：
-
-```bash
-brew install node@22 git ripgrep fd python@3.12
-export PATH="$(brew --prefix node@22)/bin:$PATH"
-node --version # 必须为 v22.19.0 或更高版本
-```
-
-2. 下载并构建 Runtime 与 Planner：
+1. 安装 Node.js 22.19+、npm、Git、Codex 和 Pi，并将两个仓库放在同一父目录：
 
 ```bash
 mkdir -p "$HOME/anyfusion-src"
@@ -109,119 +97,44 @@ git clone https://github.com/MetaAny/AnyFusion.git
 git clone --branch codex/anyfusion-planner \
   https://github.com/MetaAny/AnyFusion-Pi.git
 
-cd "$HOME/anyfusion-src/AnyFusion-Pi"
-npm ci --ignore-scripts
-npm run build:offline
-
 cd "$HOME/anyfusion-src/AnyFusion"
-npm ci
-npm run build
-
-# canonical worktree Executor。Planner 使用上面单独构建的 fork。
-npm install -g --ignore-scripts \
-  @openai/codex@0.144.1 \
-  @earendil-works/pi-coding-agent@0.80.2
 ```
 
-3. 创建原生 provider 配置。先将下面两个占位值替换为实际配置：
+2. 创建三个 provider 文件：
 
 ```bash
-export ANYFUSION_PROVIDER_KEY='替换为你的密钥'
-export ANYFUSION_PROVIDER_URL='https://你的-openai-兼容服务地址.example/v1'
-export ANYFUSION_CONFIG_HOME="$HOME/.config/anyfusion"
-
-mkdir -p \
-  "$ANYFUSION_CONFIG_HOME/planner" \
-  "$ANYFUSION_CONFIG_HOME/codex" \
-  "$ANYFUSION_CONFIG_HOME/pi-home/.pi/agent" \
-  "$HOME/.local/bin"
-
-cat > "$ANYFUSION_CONFIG_HOME/provider.env" <<EOF
-OPENAI_API_KEY=$ANYFUSION_PROVIDER_KEY
-OPENAI_BASE_URL=$ANYFUSION_PROVIDER_URL
-PI_SKIP_VERSION_CHECK=1
-PI_TELEMETRY=0
-EOF
-chmod 600 "$ANYFUSION_CONFIG_HOME/provider.env"
-
-cd "$HOME/anyfusion-src/AnyFusion"
-sed "s|__OPENAI_BASE_URL__|$ANYFUSION_PROVIDER_URL|g" \
-  docker/planner-pi-config/models.json \
-  > "$ANYFUSION_CONFIG_HOME/planner/models.json"
-cp docker/planner-pi-config/settings.json \
-  "$ANYFUSION_CONFIG_HOME/planner/settings.json"
-
-sed "s|__OPENAI_BASE_URL__|$ANYFUSION_PROVIDER_URL|g" \
-  docker/codex-config/executor/config.toml \
-  > "$ANYFUSION_CONFIG_HOME/codex/config.toml"
-
-sed "s|__OPENAI_BASE_URL__|$ANYFUSION_PROVIDER_URL|g" \
-  docker/pi-config/models.json \
-  > "$ANYFUSION_CONFIG_HOME/pi-home/.pi/agent/models.json"
-cp docker/pi-config/settings.json \
-  "$ANYFUSION_CONFIG_HOME/pi-home/.pi/agent/settings.json"
+cp docker/planner-pi.env.example docker/planner-pi.env
+cp docker/executor-codex.env.example docker/executor-codex.env
+cp docker/executor-pi.env.example docker/executor-pi.env
 ```
 
-4. 安装原生启动器：
+在每个文件中设置 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL`。
+
+3. 安装 launcher 并检查环境：
 
 ```bash
-cat > "$HOME/.local/bin/anyfusion" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-ANYFUSION_SOURCE_ROOT="${ANYFUSION_SOURCE_ROOT:-$HOME/anyfusion-src/AnyFusion}"
-ANYFUSION_PI_SOURCE_ROOT="${ANYFUSION_PI_SOURCE_ROOT:-$HOME/anyfusion-src/AnyFusion-Pi}"
-ANYFUSION_CONFIG_HOME="${ANYFUSION_CONFIG_HOME:-$HOME/.config/anyfusion}"
-
-export METACLAW_HOME="${METACLAW_HOME:-$HOME/.local/share/anyfusion}"
-export METACLAW_EXECUTOR_BACKEND=worktree
-export METACLAW_PLANNER_COMMAND="$ANYFUSION_PI_SOURCE_ROOT/packages/coding-agent/dist/cli.js"
-export METACLAW_PLANNER_TUI_COMMAND="$METACLAW_PLANNER_COMMAND"
-export METACLAW_PLANNER_WORKDIR="$PWD"
-export METACLAW_PLANNER_HOME="$ANYFUSION_CONFIG_HOME/planner"
-export ANYFUSION_PLANNER_HOME="$METACLAW_PLANNER_HOME"
-export METACLAW_PLANNER_SESSION_DIR="$METACLAW_HOME/planner-sessions"
-export METACLAW_PLANNER_SCHEMA_PATH="$ANYFUSION_SOURCE_ROOT/dist/planning-agent-plan-v7.schema.json"
-export ANYFUSION_PLANNER_SCHEMA_PATH="$METACLAW_PLANNER_SCHEMA_PATH"
-export METACLAW_PLANNER_ENV_FILE="$ANYFUSION_CONFIG_HOME/provider.env"
-export METACLAW_CODEX_EXECUTOR_ENV_FILE="$ANYFUSION_CONFIG_HOME/provider.env"
-export METACLAW_PI_EXECUTOR_ENV_FILE="$ANYFUSION_CONFIG_HOME/provider.env"
-export METACLAW_EXECUTOR_CODEX_HOME="$ANYFUSION_CONFIG_HOME/codex"
-export METACLAW_EXECUTOR_PI_HOME="$ANYFUSION_CONFIG_HOME/pi-home"
-export METACLAW_PI_ATTEMPT_EXTENSION="$ANYFUSION_SOURCE_ROOT/dist/pi-attempt-tools.ts"
-export PI_SKIP_VERSION_CHECK=1
-export PI_TELEMETRY=0
-
-exec node "$ANYFUSION_SOURCE_ROOT/dist/index.js" "$@"
-EOF
-
-chmod +x "$HOME/.local/bin/anyfusion"
-grep -q 'HOME/.local/bin' "$HOME/.zshrc" 2>/dev/null \
-  || echo 'export PATH="$HOME/.local/bin:$(brew --prefix node@22)/bin:$PATH"' >> "$HOME/.zshrc"
-export PATH="$HOME/.local/bin:$(brew --prefix node@22)/bin:$PATH"
+./setup.sh
+anyfusion --check
+anyfusion executor list
 ```
 
-5. 进入希望 AnyFusion 操作的仓库或目录，然后启动 TUI：
+确认需要参与路由的 Executor 都显示为 `enabled / verified`。尚未确认 binding
+时，使用 `anyfusion executor discover`、`register` 和 `verify`。
+
+4. 启动 TUI 或运行端到端 gate：
 
 ```bash
-cd /path/to/your/project
-anyfusion
+anyfusion --project /path/to/project
+anyfusion smoke --scenario artifact
+anyfusion smoke --executor pi --scenario pi-research --timeout 300
 ```
 
-Runtime 状态保存在 `~/.local/share/anyfusion`。Executor 在受管 Subtask
-worktree 中修改文件，并继续通过现有 Git publication 链路发布结果。macOS
-原生安装不要设置 `METACLAW_EXECUTOR_BACKEND=docker`。
-
-以后拉取新代码后，分别在 AnyFusion-Pi 中运行 `npm run build:offline`，
-在 AnyFusion 中运行 `npm run build` 即可完成更新。
-
-然后直接用自然语言交给 AnyFusion 一个多步骤目标：
-
-```text
-分析这些合同，将法律和商务审查分配给合适的专业 Agent，并交付一份附带证据的综合风险矩阵。
-```
-
-AnyFusion 会识别请求、在需要时创建持久任务、授权工作图、分发就绪工作单元、验证完成协议，并保存相关证据与产物。如已配置真实凭证，可另行运行 `npm run smoke:anyfusion` 完成端到端验证。
+launcher 默认构建两个仓库，并且只使用
+`$ANYFUSION_CONFIG_HOME/executors.yaml` 中已验证的绝对 CLI binding。
+`anyfusion --no-build` 可复用当前构建产物。Runtime 数据位于
+`~/.local/share/anyfusion/runtime`，Registry 和 Executor 私有源配置位于
+`~/.config/anyfusion`。Docker 只提供统一的 Ubuntu Runtime/测试环境，供
+Windows 开发机编排使用；Executor attempt 不会启动嵌套容器。
 
 ## 项目状态
 
@@ -232,6 +145,8 @@ AnyFusion 会识别请求、在需要时创建持久任务、授权工作图、�
 | 部署状态 | 已部署至内部服务器进行小范围试用 |
 | 任务范围 | 一个活跃顶层任务，内部支持具备依赖关系的多个 Subtask |
 | 调度方式 | 单一活跃顶层 Task 内按确定性 batch 并行运行最多四个隔离 attempt |
+| 持久化 | fresh-only SQLite schema 34；schema 33 及更旧数据库无迁移直接拒绝 |
+| Executor 权威源 | digest-bound 主机 Registry；只有 enabled、verified、digest-matched binding 可路由 |
 | 兼容性 | CLI、配置和 Runtime contract 在稳定版前可能继续演进 |
 
 AnyFusion 当前不会被描述为 Production Ready。Preview 阶段用于验证任务控制平面、工作图契约、专业 Agent 路由、验收模型与实际运行流程，再逐步形成稳定兼容性承诺。
@@ -241,7 +156,7 @@ AnyFusion 当前不会被描述为 Production Ready。Preview 阶段用于验证
 | 资源 | 内容 |
 | --- | --- |
 | [技术总览](docs/current/technical-overview.zh-CN.md) | Runtime 架构、运行环境、模块和实现细节 |
-| [运行时安全](docs/current/phase-5-runtime-security.md) | Worktree Executor 进程、Docker 兼容 attempt、持久 workspace、镜像 profile 和运行时提权 |
+| [运行时安全](docs/current/phase-5-runtime-security.md) | Worktree Executor 进程、持久 workspace、PID 清理、Registry binding 和运行时提权 |
 | [架构决策](docs/adr/README.md) | 已接受的系统边界和权威设计决策 |
 | [并发收敛路线图](docs/plans/2026-07-16-planner-kernel-concurrency-convergence-roadmap.md) | 控制平面、资源分区、故障恢复和并发调度计划 |
 | [Preview Release Notes](docs/releases/v1.2.0-preview.0.md) | 当前版本范围、部署状态和已知限制 |

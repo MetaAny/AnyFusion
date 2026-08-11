@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { ControlKernel, type KernelEvent, type KernelSnapshot } from '../../src/kernel/control-kernel.js';
-import { getPlannerExecutorCatalog } from '../../src/executor/builtin-executor-catalog.js';
+import { testPlannerExecutorCatalog } from '../support/executor-registry.js';
 import { KernelWorkflowRepo } from '../../src/storage/kernel-workflow-repo.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 
@@ -114,6 +114,6 @@ function directReplyEvent(): KernelEvent {
 function planSnapshot(): KernelSnapshot {
   return {
     schemaVersion: 5, type: 'plan_admission', tasks: [], runningTaskId: null,
-    executorCatalog: getPlannerExecutorCatalog(), executorStatuses: [], v5WorkGraphTaskIds: [], eligibleContextRefKeys: [], pendingAuthorizationRequest: null,
+    executorCatalog: testPlannerExecutorCatalog(), executorStatuses: [], v5WorkGraphTaskIds: [], eligibleContextRefKeys: [], pendingAuthorizationRequest: null,
   };
 }

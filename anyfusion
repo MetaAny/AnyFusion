@@ -1,0 +1,219 @@
+#!/usr/bin/env bash
+
+# Native Linux launcher for the AnyFusion Runtime, Planner, and worktree Executors.
+set -Eeuo pipefail
+
+resolve_script_path() {
+  local source_path="${BASH_SOURCE[0]}"
+  local source_dir
+  local link_target
+
+  while [[ -L "$source_path" ]]; do
+    source_dir="$(cd -P "$(dirname "$source_path")" && pwd)"
+    link_target="$(readlink "$source_path")"
+    if [[ "$link_target" == /* ]]; then
+      source_path="$link_target"
+    else
+      source_path="$source_dir/$link_target"
+    fi
+  done
+
+  source_dir="$(cd -P "$(dirname "$source_path")" && pwd)"
+  printf '%s/%s\n' "$source_dir" "$(basename "$source_path")"
+}
+
+SCRIPT_PATH="$(resolve_script_path)"
+REPO_ROOT="$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd)"
+INVOKE_CWD="$PWD"
+ANYFUSION_PI_ROOT="${ANYFUSION_PI_ROOT:-$(dirname "$REPO_ROOT")/AnyFusion-Pi}"
+PLANNER_ENV_FILE="${ANYFUSION_PLANNER_ENV_FILE:-$REPO_ROOT/docker/planner-pi.env}"
+CODEX_ENV_FILE="${ANYFUSION_CODEX_EXECUTOR_ENV_FILE:-$REPO_ROOT/docker/executor-codex.env}"
+PI_ENV_FILE="${ANYFUSION_PI_EXECUTOR_ENV_FILE:-$REPO_ROOT/docker/executor-pi.env}"
+APP_ENTRY="$REPO_ROOT/dist/index.js"
+PLANNER_SCHEMA="$REPO_ROOT/dist/planning-agent-plan-v7.schema.json"
+PI_ATTEMPT_EXTENSION="$REPO_ROOT/dist/pi-attempt-tools.ts"
+PLANNER_CLI="$ANYFUSION_PI_ROOT/packages/coding-agent/dist/cli.js"
+BOOTSTRAP="$REPO_ROOT/scripts/runtime-bootstrap.sh"
+
+source "$BOOTSTRAP"
+
+info() {
+  printf '[INFO] %s\n' "$*"
+}
+
+fail() {
+  printf '[ERROR] %s\n' "$*" >&2
+  exit 1
+}
+
+show_help() {
+  cat <<'EOF'
+Usage:
+  anyfusion [--project <dir>]       Build both repositories and start the native TUI
+  anyfusion --project <dir> --script <file>
+                                    Run a scripted flow on the native Runtime
+  anyfusion smoke [smoke options]   Run the native Planner-to-Executor smoke
+  anyfusion build                   Build AnyFusion and AnyFusion-Pi
+  anyfusion --no-build [args...]    Reuse existing build outputs
+  anyfusion --check                 Validate and prepare the native server runtime
+  anyfusion executor <command> ...  Discover, register, verify, enable, disable, show, list, or reload Executors
+  anyfusion gateway run             Run the Gateway in the foreground
+  anyfusion --connect               Connect to an already running Gateway
+  anyfusion --launcher-help         Show this help
+
+Runtime:
+  - Project defaults to ~/AnyFusionProjects/default when --project is omitted.
+  - The Project must be one clean top-level Git repository on main.
+  - Runtime and AnyFusion-Pi are separate host Node.js processes.
+  - Codex and Pi use the existing host-installed commands.
+  - Executor attempts use managed Git worktrees and isolated temporary homes.
+  - Docker is not required by this launcher or its smoke command.
+
+Environment:
+  ANYFUSION_PI_ROOT                 AnyFusion-Pi checkout; defaults to ../AnyFusion-Pi
+  ANYFUSION_CONFIG_HOME             Agent config root; defaults to ~/.config/anyfusion
+  ANYFUSION_DATA_HOME               Product data root; defaults to ~/.local/share/anyfusion
+  METACLAW_HOME                     Runtime data root; defaults to $ANYFUSION_DATA_HOME/runtime
+  ANYFUSION_PLANNER_ENV_FILE        Planner provider env file
+  ANYFUSION_CODEX_EXECUTOR_ENV_FILE Codex provider env file
+  ANYFUSION_PI_EXECUTOR_ENV_FILE    Pi provider env file
+EOF
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || fail "Missing required command: $1"
+}
+
+check_prerequisites() {
+  [[ "$(uname -s)" == 'Linux' ]] || fail 'The native launcher requires Linux.'
+  require_command node
+  require_command npm
+  require_command git
+  require_command codex
+  require_command pi
+
+  node -e '
+    const actual = process.versions.node.split(".").map(Number);
+    const minimum = [22, 19, 0];
+    for (let index = 0; index < minimum.length; index += 1) {
+      if (actual[index] > minimum[index]) process.exit(0);
+      if (actual[index] < minimum[index]) process.exit(1);
+    }
+  ' || fail "Node.js >=22.19.0 is required; found $(node --version)."
+
+  [[ -f "$ANYFUSION_PI_ROOT/package.json" ]] \
+    || fail "Missing sibling AnyFusion-Pi repository at $ANYFUSION_PI_ROOT"
+}
+
+dependencies_stale() {
+  local root="$1"
+  [[ ! -d "$root/node_modules" || ! -f "$root/node_modules/.package-lock.json" \
+    || "$root/package-lock.json" -nt "$root/node_modules/.package-lock.json" \
+    || "$root/package.json" -nt "$root/node_modules/.package-lock.json" ]]
+}
+
+build_sources() {
+  if dependencies_stale "$ANYFUSION_PI_ROOT"; then
+    info 'Installing AnyFusion-Pi dependencies...'
+    (cd "$ANYFUSION_PI_ROOT" && npm ci --ignore-scripts)
+  fi
+  info 'Building AnyFusion-Pi...'
+  (cd "$ANYFUSION_PI_ROOT" && npm run build:offline)
+
+  if dependencies_stale "$REPO_ROOT"; then
+    info 'Installing AnyFusion dependencies...'
+    (cd "$REPO_ROOT" && npm ci)
+  fi
+  info 'Building AnyFusion...'
+  (cd "$REPO_ROOT" && npm run build)
+}
+
+require_build_outputs() {
+  local path
+  for path in "$APP_ENTRY" "$PLANNER_SCHEMA" "$PI_ATTEMPT_EXTENSION" "$PLANNER_CLI"; do
+    [[ -f "$path" ]] || fail "Missing build output: $path; run 'anyfusion build'."
+  done
+}
+
+prepare_runtime_configuration() {
+  local node_path
+  local planner_wrapper
+
+  node_path="$(command -v node)"
+  export ANYFUSION_CONFIG_HOME="${ANYFUSION_CONFIG_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/anyfusion}"
+  planner_wrapper="$ANYFUSION_CONFIG_HOME/bin/anyfusion-planner"
+
+  mkdir -p "$(dirname "$planner_wrapper")"
+  printf '#!/usr/bin/env bash\nexec %q %q "$@"\n' "$node_path" "$PLANNER_CLI" > "$planner_wrapper"
+  chmod 700 "$planner_wrapper"
+
+  export ANYFUSION_TEMPLATE_ROOT="$REPO_ROOT/docker"
+  export ANYFUSION_DEFAULT_CONFIG="$REPO_ROOT/docker/tui-config.yaml"
+  export ANYFUSION_APP_ENTRY="$APP_ENTRY"
+  export METACLAW_PLANNER_COMMAND="$planner_wrapper"
+  export METACLAW_PLANNER_TUI_COMMAND="$planner_wrapper"
+  export METACLAW_PLANNER_WORKDIR="$INVOKE_CWD"
+  export METACLAW_PLANNER_SCHEMA_PATH="$PLANNER_SCHEMA"
+  export ANYFUSION_PLANNER_SCHEMA_PATH="$PLANNER_SCHEMA"
+  export METACLAW_PLANNER_ENV_FILE="$PLANNER_ENV_FILE"
+  export METACLAW_CODEX_EXECUTOR_ENV_FILE="$CODEX_ENV_FILE"
+  export METACLAW_PI_EXECUTOR_ENV_FILE="$PI_ENV_FILE"
+  export METACLAW_PI_ATTEMPT_EXTENSION="$PI_ATTEMPT_EXTENSION"
+  anyfusion_bootstrap_runtime
+}
+
+main() {
+  local skip_build=false
+  local command="${1:-run}"
+
+  case "$command" in
+    --launcher-help|-h)
+      show_help
+      return
+      ;;
+    --no-build)
+      skip_build=true
+      shift
+      command="${1:-run}"
+      ;;
+  esac
+
+  check_prerequisites
+
+  if [[ "$command" == '--check' ]]; then
+    require_build_outputs
+    prepare_runtime_configuration
+    info 'Native AnyFusion runtime is ready.'
+    printf '  Runtime: %s\n' "$REPO_ROOT"
+    printf '  Planner: %s\n' "$ANYFUSION_PI_ROOT"
+    printf '  Codex: %s\n' "$(command -v codex)"
+    printf '  Pi: %s\n' "$(command -v pi)"
+    printf '  Data: %s\n' "$METACLAW_HOME"
+    printf '  Agent config: %s\n' "$ANYFUSION_CONFIG_HOME"
+    return
+  fi
+
+  if [[ "$command" == 'build' ]]; then
+    build_sources
+    return
+  fi
+
+  if [[ "$skip_build" == false ]]; then
+    build_sources
+  fi
+  require_build_outputs
+  prepare_runtime_configuration
+
+  if [[ "$command" == 'smoke' ]]; then
+    shift
+    export METACLAW_SMOKE_NATIVE=true
+    export METACLAW_SMOKE_REPO_ROOT="$REPO_ROOT"
+    cd "$REPO_ROOT"
+    exec node "$REPO_ROOT/scripts/smoke-metaclaw-real-task.mjs" "$@"
+  fi
+
+  cd "$INVOKE_CWD"
+  exec node "$APP_ENTRY" "$@"
+}
+
+main "$@"

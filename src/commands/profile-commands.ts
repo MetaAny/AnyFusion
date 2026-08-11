@@ -1,4 +1,3 @@
-import { AgentClassRepo } from '../storage/agent-class-repo.js';
 import {
   stringArg,
   type CommandContext,
@@ -55,9 +54,9 @@ export async function showExecutorProfile(
     return { type: 'text', content: '用法: /profile executor <name>' };
   }
 
-  const agentClass = new AgentClassRepo(context.db).findByName(executorName);
-  if (!agentClass) {
-    return { type: 'text', content: `Error: Executor AgentClass is not registered: ${executorName}` };
+  const executor = context.executorRegistry?.list().find(item => item.id === executorName);
+  if (!executor) {
+    return { type: 'text', content: `Error: Executor is not registered: ${executorName}` };
   }
 
   const rows = context.db.prepare(`
@@ -79,27 +78,12 @@ export async function showExecutorProfile(
     type: 'text',
     content: [
       `Executor 画像：${executorName}`,
-      `  kind: ${agentClass.kind}`,
-      `  domains: ${formatList(agentClass.domains)}`,
-      `  capabilities: ${formatList(agentClass.capabilities)}`,
-      `  input types: ${formatList(agentClass.inputTypes)}`,
-      `  output types: ${formatList(agentClass.outputTypes)}`,
-      `  strengths: ${formatList(agentClass.strengths)}`,
-      `  weaknesses: ${formatList(agentClass.weaknesses)}`,
-      `  primary use cases: ${formatList(agentClass.primaryUseCases)}`,
-      `  avoid use cases: ${formatList(agentClass.avoidUseCases)}`,
-      `  intent affinity: ${Object.entries(agentClass.intentAffinity).map(([intent, score]) => `${intent}:${score}`).join(', ') || '-'}`,
-      `  risk: ${agentClass.riskLevel}`,
-      `  harness/model: ${agentClass.harness ?? '-'} / ${agentClass.model ?? '-'}`,
-      `  skills: ${formatList(agentClass.skills)}`,
-      `  MCP servers: ${formatList(agentClass.mcpServers)}`,
-      `  plugins: ${formatList(agentClass.plugins)}`,
-      `  runtime command: ${[agentClass.runtimeCommand, ...agentClass.runtimeArgs].filter(Boolean).join(' ') || '-'}`,
-      `  runtime check: ${agentClass.runtimeCheckCommand ?? '-'}`,
-      `  execution image: ${agentClass.executionImageRef ?? '-'}`,
-      `  resolved image ID: ${agentClass.resolvedImageId ?? '-'}`,
-      `  permission profile: ${agentClass.permissionProfileId ?? '-'}`,
-      `  project URL: ${agentClass.projectUrl ?? '-'}`,
+      `  enabled: ${executor.enabled ? 'yes' : 'no'}`,
+      `  verification: ${executor.verification}`,
+      `  capabilities: ${formatList(executor.capabilities)}`,
+      `  driver: ${executor.driver}`,
+      `  binary: ${executor.binaryPath}`,
+      `  description: ${executor.description}`,
       `Skill Summary ${rows.length}`,
       ...rows.map(row => `  - ${row.skill_name}@${row.skill_version ?? 'unversioned'} used=${row.used_count} success=${row.success_count} failure=${row.failure_count} patch=${row.patch_candidate_count}`),
     ].join('\n'),

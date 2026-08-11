@@ -7,6 +7,7 @@ import type { OrchestrationEngine } from '../guidance/orchestration.js';
 import type { SessionPresentationService } from './session-presentation-service.js';
 import type { QueuedExecutionRequest } from './session-helpers.js';
 import type { TaskClearScope, TaskStatusQueryScope } from '../task/task-control-types.js';
+import type { Task } from '../core/types.js';
 
 interface FocusContext {
   kind: 'conversation' | 'task';
@@ -15,6 +16,11 @@ interface FocusContext {
 
 export interface SessionKernelRuntimeDeps {
   sessionId: string;
+  projectId: string;
+  newTaskMetadata?: {
+    source: Task['source'];
+    smokeRunId: string | null;
+  };
   taskRuntimeService: TaskRuntimeService;
   memoryContextService: MemoryContextService;
   orchestration: OrchestrationEngine;
@@ -154,11 +160,24 @@ export class SessionKernelRuntime {
     if (!task) throw new Error(`task not found: ${taskCommand.taskId}`);
     this.deps.callbacks.setCurrentTaskId(task.id);
     this.deps.callbacks.setFocusContext({ kind: 'task', taskId: task.id });
+    const executionMode = task.status === 'blocked' ? 'resume-blocked' : 'resume-parked';
     this.deps.callbacks.prepareTaskExecution(task.id, buildExecutionRequest({
       userInput,
       taskId: task.id,
-      executionMode: task.status === 'blocked' ? 'resume-blocked' : 'resume-parked',
+      executionMode,
       decision,
+      recoveryTrigger: taskCommand.control === 'recover_blocked'
+        ? {
+            kind: 'natural-language-resume',
+            blockedReason: task.dependencies
+              .filter(dependency => dependency.status === 'waiting')
+              .map(dependency => dependency.description)
+              .filter(Boolean)
+              .join('；') || '未知原因',
+            triggerReason: decision.reason,
+            sourceInputExcerpt: userInput.replace(/\s+/g, ' ').trim().slice(0, 80),
+          }
+        : undefined,
     }));
   }
 
@@ -173,9 +192,11 @@ export class SessionKernelRuntime {
       ? this.deps.taskRuntimeService.findTask(command.taskId)
       : this.deps.taskRuntimeService.createTask({
           id: decision.action.taskId,
+          projectId: this.deps.projectId,
           title: (command.title ?? inline.normalizedGoal).slice(0, 50),
           goal: command.goal ?? inline.normalizedGoal,
           resources: inline.resources,
+          ...this.deps.newTaskMetadata,
         });
     if (!task) throw new Error(`task not found: ${command.taskId}`);
     if (command.priority) {
@@ -209,6 +230,7 @@ function buildExecutionRequest(input: {
   taskId: string;
   executionMode: QueuedExecutionRequest['executionMode'];
   decision: KernelDecision;
+  recoveryTrigger?: QueuedExecutionRequest['recoveryTrigger'];
 }): QueuedExecutionRequest {
   return {
     userPrompt: input.userInput,
@@ -216,6 +238,7 @@ function buildExecutionRequest(input: {
     executionMode: input.executionMode,
     kernelDecisionId: input.decision.id,
     schedulingReason: input.decision.reason,
+    recoveryTrigger: input.recoveryTrigger,
   };
 }
 

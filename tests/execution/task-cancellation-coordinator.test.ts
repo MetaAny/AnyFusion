@@ -17,7 +17,6 @@ import { WorkUnitClaimService } from '../../src/execution/work-unit-claim-servic
 import { SqliteAttemptSandboxRepository } from '../../src/storage/attempt-sandbox-repo.js';
 import { SqliteWorkspaceRepository } from '../../src/storage/workspace-repo.js';
 import { TaskCancellationCoordinator } from '../../src/execution/task-cancellation-coordinator.js';
-import { AgentClassService } from '../../src/executor/agent-class-service.js';
 import type { KernelDecision } from '../../src/kernel/control-kernel.js';
 import type { AttemptSandboxPort, AttemptSandboxRecord } from '../../src/execution/attempt-sandbox.js';
 
@@ -26,7 +25,6 @@ describe('TaskCancellationCoordinator', () => {
     const db = new Database(':memory:');
     db.pragma('foreign_keys = ON');
     runMigrations(db);
-    new AgentClassService({ db }).seedDefaults();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-task-cancel');
     const taskRuntime = new TaskRuntimeService({ taskEngine, taskRepo });
@@ -75,7 +73,7 @@ describe('TaskCancellationCoordinator', () => {
       });
       dispatch.claimPending(`attempt-${suffix}`, now);
       dispatch.markRunning(`attempt-${suffix}`, `wu-${suffix}`, now);
-      dispatch.markSandbox(`attempt-${suffix}`, `container-${suffix}`, now);
+      dispatch.markRuntime(`attempt-${suffix}`, `worktree:${suffix}`, now);
     }
 
     const leases = new ResourceLeaseService(new SqliteResourceLeaseRepository(db));
@@ -107,18 +105,22 @@ describe('TaskCancellationCoordinator', () => {
       subtaskId: 'publishing',
       sourceAttemptId: 'attempt-publishing',
       agentClassName: 'codex-cli',
+      mainBaseCommit: 'main',
       candidateCommit: 'candidate',
+      permissionRequestId: 'permission-cancel',
+      changedPaths: [],
       completion: {
         body: 'candidate',
         artifacts: [],
         warnings: [],
         handoffs: [],
-        completionSchemaVersion: 3,
+        completionSchemaVersion: 4,
       },
       topologyLayer: 0,
       firstDispatchOrder: 4,
       createdAt: now,
     });
+    publications.markApproved('publication-cancel', now);
     publications.markApplying('publication-cancel', now);
 
     const sandboxRepo = new SqliteAttemptSandboxRepository(db);
@@ -149,9 +151,8 @@ describe('TaskCancellationCoordinator', () => {
         subtaskId: suffix,
         workUnitId: `wu-${suffix}`,
         workspaceId: `workspace-${suffix}`,
-        containerId: `container-${suffix}`,
-        imageRef: 'metaclaw/codex',
-        imageId: 'sha256:test',
+        runtimeHandle: `worktree:${suffix}`,
+        processId: 1_000 + (suffix === 'left' ? 1 : 2),
         status: 'running',
         leaseToken: `token-${suffix}`,
         labels: {},
@@ -162,16 +163,15 @@ describe('TaskCancellationCoordinator', () => {
         createdAt: now,
         updatedAt: now,
       });
-      sandboxState.set(`container-${suffix}`, {
-        containerId: `container-${suffix}`,
-        imageId: 'sha256:test',
+      sandboxState.set(`worktree:${suffix}`, {
+        runtimeHandle: `worktree:${suffix}`,
+        processId: 1_000 + (suffix === 'left' ? 1 : 2),
         status: 'running',
         exitCode: null,
         labels: {},
       });
     }
     const sandbox: AttemptSandboxPort = {
-      resolveImage: vi.fn(),
       create: vi.fn(),
       start: vi.fn(),
       wait: vi.fn(),
@@ -179,15 +179,16 @@ describe('TaskCancellationCoordinator', () => {
       pause: vi.fn(),
       resume: vi.fn(),
       listManaged: vi.fn(),
-      stop: vi.fn(async containerId => {
-        sandboxState.set(containerId, {
-          ...sandboxState.get(containerId)!,
+      stop: vi.fn(async runtimeHandle => {
+        sandboxState.set(runtimeHandle, {
+          ...sandboxState.get(runtimeHandle)!,
           status: 'exited',
           exitCode: 137,
         });
       }),
-      inspect: vi.fn(async containerId => sandboxState.get(containerId) ?? null),
-      remove: vi.fn(async containerId => { sandboxState.delete(containerId); }),
+      stopProcess: vi.fn(),
+      inspect: vi.fn(async runtimeHandle => sandboxState.get(runtimeHandle) ?? null),
+      remove: vi.fn(async runtimeHandle => { sandboxState.delete(runtimeHandle); }),
     } as AttemptSandboxPort;
     const abortAttempt = vi.fn().mockReturnValue(true);
     const coordinator = new TaskCancellationCoordinator({
@@ -242,7 +243,6 @@ describe('TaskCancellationCoordinator', () => {
     const db = new Database(':memory:');
     db.pragma('foreign_keys = ON');
     runMigrations(db);
-    new AgentClassService({ db }).seedDefaults();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-subtask-cancel');
     const taskRuntime = new TaskRuntimeService({ taskEngine, taskRepo });
@@ -361,7 +361,6 @@ function subtask(
     contextRefs: [],
     requiredCapabilities: ['workspace-engineering'] as const,
     preferredAgentClassList: ['codex-cli'] as const,
-    deliveryKind: 'report' as const,
     acceptance: [],
     riskLevel: 'low' as const,
     result: status === 'done' ? 'done' : '',

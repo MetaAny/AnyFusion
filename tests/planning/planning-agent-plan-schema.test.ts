@@ -36,7 +36,6 @@ function outputPlan() {
         contextRefs: [{ kind: 'current_user_input' }],
         requiredCapabilities: ['workspace-engineering'],
         preferredAgentClassList: ['codex-cli'],
-        deliveryKind: 'edit',
         acceptance: [{ key: 'tests_pass', description: 'tests pass', requiredEvidence: ['test result'] }],
         riskLevel: 'low',
       }],
@@ -46,13 +45,20 @@ function outputPlan() {
 }
 
 describe('PlanningAgent plan schemas', () => {
+  it('uses one canonical schema object for Planner output and Kernel validation', () => {
+    expect(PlanningAgentPlanOutputSchema).toBe(PlanningAgentPlanSchema);
+  });
+
   it('generates a Responses API compatible structured-output schema without oneOf', () => {
     const schema = z.toJSONSchema(PlanningAgentPlanOutputSchema, {
       target: 'draft-7',
       unrepresentable: 'any',
     });
 
-    expect(JSON.stringify(schema)).not.toContain('"oneOf"');
+    const serialized = JSON.stringify(schema);
+    expect(serialized).not.toContain('"oneOf"');
+    expect(serialized).not.toContain('"deliveryKind"');
+    expect(serialized).not.toContain('"reasons_note"');
   });
 
   it('strictly rejects missing nested fields instead of applying semantic defaults', () => {
@@ -114,6 +120,18 @@ describe('PlanningAgent plan schemas', () => {
     });
 
     expect(parsed.success).toBe(false);
+  });
+
+  it('rejects the removed delivery type field', () => {
+    const valid = outputPlan();
+    const subtask = valid.workGraph.subtasks[0];
+    expect(PlanningAgentPlanSchema.safeParse({
+      ...valid,
+      workGraph: {
+        ...valid.workGraph,
+        subtasks: [{ ...subtask, deliveryKind: 'report' }],
+      },
+    }).success).toBe(false);
   });
 
   it('requires null workGraph for non-work-graph actions', () => {

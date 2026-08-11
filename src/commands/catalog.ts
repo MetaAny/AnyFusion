@@ -6,6 +6,13 @@ import type { Config } from '../core/types.js';
 import type { ActiveExecutionControl } from '../execution/active-execution-control.js';
 import type { CommandReadServices } from './command-read-services.js';
 import type { TaskControlPort } from './task-control-port.js';
+import type {
+  CliSessionProtocol,
+  ExecutorDriverId,
+  ExecutorPermissionProfileId,
+  ExecutorVerification,
+  TuiExecutorRegistryEntry,
+} from '../executor/executor-registry-types.js';
 
 export interface CommandContext {
   taskEngine: TaskEngine;
@@ -20,15 +27,51 @@ export interface CommandContext {
     stillError: string[];
     skipped: string[];
   }>;
+  purgeTask?(input: {
+    taskId: string;
+    confirmation: string;
+    reason: string;
+    expectedSmokeRunId?: string;
+  }): Promise<{
+    taskId: string;
+    cleanupErrors: string[];
+  }>;
+  executorRegistry?: {
+    digest(): string;
+    list(): readonly TuiExecutorRegistryEntry[];
+    discover(): Promise<Array<{
+      profileId: string;
+      displayName: string;
+      driver: string;
+      binaryPath: string | null;
+      version: string | null;
+    }>>;
+    verify(executorId: string): Promise<ExecutorVerification>;
+    setEnabled(executorId: string, enabled: boolean): Promise<void>;
+    reload(): { configDigest: string };
+    register(input: {
+      id: string;
+      profileId: string | null;
+      driver: ExecutorDriverId;
+      binaryPath: string;
+      runtimeHome: string;
+      description: string;
+      capabilities: string[];
+      primaryUseCases: string[];
+      environmentFiles: string[];
+      versionArgs?: string[];
+      versionPattern?: string;
+      permissionProfile?: ExecutorPermissionProfileId;
+      sessionProtocol?: CliSessionProtocol;
+    }): Promise<ExecutorVerification>;
+  };
+  includeSystemSmokeTasks?: boolean;
   currentTaskId: string | null;
   db: Database.Database;
   config: Config;
 }
 
 export type CommandDirective =
-  | {
-      kind: 'start-executor-register-wizard';
-    }
   | {
       kind: 'resume-task';
       taskId: string;

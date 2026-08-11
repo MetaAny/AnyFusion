@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
-import { mkdirSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import { resolve } from 'path';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
@@ -224,8 +224,9 @@ describe('scripted session', () => {
 
     const doneTask = taskEngine.list().find(task => task.status === 'done');
     expect((doneTask as any)?.artifacts).toHaveLength(1);
-    expect((doneTask as any)?.artifacts[0]).toContain('/workspace-store/workspaces/');
-    expect((doneTask as any)?.artifacts[0]).toContain('/files/artifact-note.md');
+    expect((doneTask as any)?.artifacts[0]).not.toContain('/project-worktrees/');
+    expect((doneTask as any)?.artifacts[0]).toMatch(/\/artifact-note\.md$/);
+    expect(existsSync((doneTask as any)?.artifacts[0])).toBe(true);
   });
 
   it('shows file-task Executor final output once and does not repeat it in completion', async () => {
@@ -348,7 +349,7 @@ describe('scripted session', () => {
     expect(blockedTask).toBeTruthy();
     const fallbackArtifact = resolve(process.cwd(), 'metaclaw-tasks', blockedTask!.id, 'feishu-document.md');
     expect(blockedTask?.artifacts).not.toContain(fallbackArtifact);
-    expect(result.output.join('\n')).toContain('response-only correction is unavailable or already exhausted');
+    expect(result.output.join('\n')).toContain('contract retry is already exhausted');
     expect(result.output.join('\n')).not.toContain('已记录 1 个任务产物');
   });
 });

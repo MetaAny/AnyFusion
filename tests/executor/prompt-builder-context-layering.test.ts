@@ -10,7 +10,6 @@ function input(): ExecutorInput {
         id: 'internal-subtask-id',
         title: 'A',
         goal: 'Only do A',
-        deliveryKind: 'report' as const,
         acceptance: [
           { key: 'secret_acceptance_key_one', description: 'file exists', requiredEvidence: [] },
           { key: 'secret_acceptance_key_two', description: 'output verified', requiredEvidence: [] },
@@ -22,7 +21,7 @@ function input(): ExecutorInput {
       outOfScopeSiblings: [{ id: 'internal-sibling-id', title: 'B' }],
       workspaceContext: { allowFilesystem: true, workingDirectory: '/repo', targetPaths: ['/repo/out'] },
       identity: { executionId: 'internal-execution-id', taskId: 'internal-task-id', subtaskId: 'internal-subtask-id', attemptId: 'internal-attempt-id', workUnitId: 'internal-work-unit-id' },
-      completionContract: { marker: '<!-- metaclaw:completion:v2 -->' as const, schemaVersion: 2 as const },
+      completionContract: { marker: '<!-- metaclaw:completion:v4 -->' as const, schemaVersion: 4 as const },
       evidenceTools: { availability: 'unavailable' as const, reason: 'unit test' },
     },
   };
@@ -40,7 +39,7 @@ describe('Subtask execution prompt layering', () => {
     const prompt = buildExecutorContextPrompt(input());
     expect(prompt).toContain('selected evidence only');
     expect(prompt).toContain('"title": "B"');
-    expect(prompt).toContain('<!-- metaclaw:completion:v2 -->');
+    expect(prompt).toContain('<!-- metaclaw:completion:v4 -->');
     expect(prompt).not.toContain('internal-downstream-id');
     expect(prompt).not.toContain('internal-evidence-id');
     expect(prompt).not.toContain('internal-sibling-id');
@@ -48,10 +47,14 @@ describe('Subtask execution prompt layering', () => {
     expect(prompt).not.toContain('executionContextBundle');
   });
 
-  it('renders an identity-free completion report while Runtime owns all authoritative identities and keys', () => {
+  it('requires a result description and permits optional result file paths without delivery-type rules', () => {
     const prompt = buildExecutorContextPrompt(input());
-    expect(prompt).toContain('{"evidence":["<concise evidence that the work and checks succeeded>"],"noChangeReason":null}');
-    expect(prompt).toContain('Runtime derives changed files and injects schema identity, attempt/work-unit/subtask IDs, acceptance keys, and handoff identities');
+    expect(prompt).toContain('{"resultFilePaths":["<optional workspace-relative result file path>"]}');
+    expect(prompt).toContain('The Markdown before the marker is the required result description');
+    expect(prompt).toContain('If you changed files, commit the complete result');
+    expect(prompt).not.toContain('Delivery kind:');
+    expect(prompt).not.toContain('noChangeReason');
+    expect(prompt).not.toContain('must remain unchanged');
     for (const internalValue of [
       'internal-task-id',
       'internal-subtask-id',
@@ -80,12 +83,18 @@ describe('Subtask execution prompt layering', () => {
         workspaceDelta: {},
         confirmedCompleted: ['created file'],
         unknownItems: ['run tests'],
+        completionRetry: {
+          protocol: 'completion-correction-v2',
+          violations: [{ code: 'completion_malformed', path: 'marker', message: 'marker missing' }],
+        },
       },
     };
 
     const prompt = buildExecutorContextPrompt(recoveryInput);
     expect(prompt).toContain('previous approach failed');
     expect(prompt).toContain('created file');
+    expect(prompt).toContain('completion-correction-v2');
+    expect(prompt).toContain('marker missing');
     expect(prompt).not.toContain('internal-source-attempt-id');
     expect(prompt).not.toContain('sourceAttemptId');
   });

@@ -1,12 +1,23 @@
 import type Database from 'better-sqlite3';
 
-const CURRENT_SCHEMA_VERSION = 31;
+const CURRENT_SCHEMA_VERSION = 35;
 
 const CURRENT_SCHEMA_SQL = `
+CREATE TABLE projects (
+          id TEXT PRIMARY KEY,
+          root_path TEXT NOT NULL UNIQUE,
+          main_branch TEXT NOT NULL DEFAULT 'main' CHECK(main_branch = 'main'),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
 CREATE TABLE tasks (
           id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL DEFAULT 'project_default',
           title TEXT NOT NULL,
           goal TEXT,
+          source TEXT NOT NULL DEFAULT 'user' CHECK(source IN ('user', 'system_smoke')),
+          smoke_run_id TEXT,
           status TEXT NOT NULL DEFAULT 'created',
           summary TEXT DEFAULT '',
           snapshot_json TEXT DEFAULT '[]',
@@ -148,33 +159,6 @@ CREATE VIRTUAL TABLE task_search_index USING fts5(
         tokenize = 'trigram'
       );
 
-CREATE TABLE agent_classes (
-          name TEXT PRIMARY KEY,
-          kind TEXT NOT NULL DEFAULT 'executor',
-          domains_json TEXT NOT NULL DEFAULT '[]',
-          capabilities_json TEXT NOT NULL DEFAULT '[]',
-          input_types_json TEXT NOT NULL DEFAULT '[]',
-          output_types_json TEXT NOT NULL DEFAULT '[]',
-          strengths_json TEXT NOT NULL DEFAULT '[]',
-          weaknesses_json TEXT NOT NULL DEFAULT '[]',
-          primary_use_cases_json TEXT NOT NULL DEFAULT '[]',
-          avoid_use_cases_json TEXT NOT NULL DEFAULT '[]',
-          intent_affinity_json TEXT NOT NULL DEFAULT '{}',
-          risk_level TEXT NOT NULL DEFAULT 'medium',
-          availability TEXT NOT NULL DEFAULT 'available',
-          harness TEXT,
-          model TEXT,
-          skills_json TEXT NOT NULL DEFAULT '[]',
-          mcp_servers_json TEXT NOT NULL DEFAULT '[]',
-          plugins_json TEXT NOT NULL DEFAULT '[]',
-          runtime_command TEXT,
-          runtime_args_json TEXT NOT NULL DEFAULT '[]',
-          runtime_check_command TEXT,
-          project_url TEXT,
-          created_at TEXT NOT NULL,
-          updated_at TEXT NOT NULL
-        , execution_image_ref TEXT, resolved_image_id TEXT, permission_profile_id TEXT);
-
 CREATE TABLE task_events (
           id TEXT PRIMARY KEY,
           task_id TEXT NOT NULL,
@@ -196,8 +180,7 @@ CREATE TABLE work_units (
           heartbeat_at TEXT,
           lease_expires_at TEXT,
           created_at TEXT NOT NULL,
-          updated_at TEXT NOT NULL, claimed_attempt_id TEXT,
-          FOREIGN KEY (agent_class_name) REFERENCES agent_classes(name)
+          updated_at TEXT NOT NULL, claimed_attempt_id TEXT
         );
 
 CREATE TABLE work_unit_events (
@@ -271,8 +254,47 @@ CREATE TABLE kernel_executor_status (
         class_health TEXT NOT NULL DEFAULT 'unverified',
         recent_attempts_json TEXT NOT NULL DEFAULT '[]',
         recent_recovery_checks_json TEXT NOT NULL DEFAULT '[]',
-        updated_at TEXT NOT NULL,
-        FOREIGN KEY (agent_class_name) REFERENCES agent_classes(name)
+        updated_at TEXT NOT NULL
+      );
+
+CREATE TABLE executor_verifications (
+        executor_id TEXT NOT NULL,
+        config_digest TEXT NOT NULL,
+        binary_path TEXT NOT NULL,
+        binary_path_digest TEXT NOT NULL,
+        version TEXT NOT NULL,
+        driver TEXT NOT NULL,
+        verified_at TEXT NOT NULL,
+        success INTEGER NOT NULL CHECK(success IN (0, 1)),
+        result_json TEXT NOT NULL DEFAULT '{}',
+        PRIMARY KEY (executor_id, config_digest)
+      );
+
+CREATE TABLE smoke_run_audits (
+        run_id TEXT PRIMARY KEY,
+        scenario TEXT NOT NULL,
+        executor_id TEXT,
+        result TEXT NOT NULL,
+        diagnostics_json TEXT NOT NULL DEFAULT '{}',
+        started_at TEXT NOT NULL,
+        completed_at TEXT NOT NULL
+      );
+
+CREATE TABLE task_purge_audits (
+        task_id TEXT PRIMARY KEY,
+        source TEXT NOT NULL,
+        smoke_run_id TEXT,
+        terminal_status TEXT NOT NULL,
+        counts_json TEXT NOT NULL,
+        result_summary_hash TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        purged_at TEXT NOT NULL
+      );
+
+CREATE TABLE task_purge_authorizations (
+        task_id TEXT PRIMARY KEY,
+        authorization_token TEXT NOT NULL,
+        created_at TEXT NOT NULL
       );
 
 CREATE TABLE subtasks (
@@ -285,7 +307,6 @@ CREATE TABLE subtasks (
           context_refs_json TEXT NOT NULL DEFAULT '[]',
           required_capabilities_json TEXT NOT NULL,
           preferred_agent_class_list_json TEXT NOT NULL,
-          delivery_kind TEXT NOT NULL DEFAULT 'report' CHECK(delivery_kind IN ('edit', 'report')),
           acceptance_json TEXT NOT NULL DEFAULT '[]',
           risk_level TEXT NOT NULL DEFAULT 'medium',
           result TEXT NOT NULL DEFAULT '',
@@ -603,9 +624,8 @@ CREATE TABLE attempt_sandboxes (
             subtask_id TEXT NOT NULL,
             work_unit_id TEXT NOT NULL,
             workspace_id TEXT NOT NULL,
-            container_id TEXT NOT NULL UNIQUE,
-            image_ref TEXT NOT NULL,
-            image_id TEXT NOT NULL,
+            runtime_handle TEXT NOT NULL UNIQUE,
+            process_id INTEGER,
             status TEXT NOT NULL,
             lease_token TEXT NOT NULL,
             labels_json TEXT NOT NULL,
@@ -660,7 +680,7 @@ CREATE TABLE "kernel_dispatch_items" (
               'terminal', 'cancelled', 'uncertain'
             )),
             work_unit_id TEXT,
-            sandbox_container_id TEXT,
+            sandbox_runtime_handle TEXT,
             launch_started_at TEXT,
             terminal_at TEXT,
             cancellation_decision_id TEXT,
@@ -680,7 +700,10 @@ CREATE TABLE "workspace_publications" (
             subtask_id TEXT NOT NULL,
             source_attempt_id TEXT NOT NULL,
             agent_class_name TEXT NOT NULL,
+            main_base_commit TEXT NOT NULL,
             candidate_commit TEXT NOT NULL,
+            permission_request_id TEXT NOT NULL UNIQUE,
+            changed_paths_json TEXT NOT NULL DEFAULT '[]',
             original_completion_json TEXT NOT NULL,
             topology_layer INTEGER NOT NULL,
             first_dispatch_order INTEGER NOT NULL,
@@ -690,7 +713,7 @@ CREATE TABLE "workspace_publications" (
             integration_commit TEXT,
             observed_integration_commit TEXT,
             status TEXT NOT NULL CHECK(status IN (
-              'pending', 'applying', 'conflicted', 'integrated', 'parked',
+              'awaiting_approval', 'pending', 'applying', 'conflicted', 'integrated', 'parked', 'denied',
               'cancelling', 'cancelled', 'uncertain'
             )),
             applying_at TEXT,
@@ -701,7 +724,6 @@ CREATE TABLE "workspace_publications" (
             error_summary TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
-            UNIQUE(task_id, generation_id, subtask_id),
             FOREIGN KEY (task_id) REFERENCES tasks(id),
             FOREIGN KEY (subtask_id) REFERENCES subtasks(id)
           );
@@ -731,6 +753,10 @@ CREATE TABLE generation_replan_requests (
           );
 
 CREATE INDEX idx_tasks_status ON tasks(status);
+
+CREATE INDEX idx_tasks_project ON tasks(project_id, status, updated_at);
+
+CREATE INDEX idx_tasks_source ON tasks(source, status, updated_at);
 
 CREATE INDEX idx_preferences_scope ON preferences(scope);
 
@@ -774,6 +800,12 @@ CREATE INDEX idx_skill_effect_summaries_executor
 CREATE INDEX idx_task_events_task ON task_events(task_id, created_at);
 
 CREATE INDEX idx_work_units_state ON work_units(agent_class_kind, state, updated_at);
+
+CREATE INDEX idx_executor_verifications_latest
+        ON executor_verifications(executor_id, verified_at DESC);
+
+CREATE INDEX idx_smoke_run_audits_completed
+        ON smoke_run_audits(completed_at DESC);
 
 CREATE INDEX idx_work_unit_events_unit ON work_unit_events(work_unit_id, created_at);
 
@@ -913,7 +945,11 @@ CREATE TRIGGER subtask_handoffs_immutable_update
         END;
 
 CREATE TRIGGER subtask_handoffs_immutable_delete
-        BEFORE DELETE ON subtask_handoffs BEGIN
+        BEFORE DELETE ON subtask_handoffs
+        WHEN NOT EXISTS (
+          SELECT 1 FROM task_purge_authorizations authorization
+          WHERE authorization.task_id = OLD.task_id
+        ) BEGIN
           SELECT RAISE(ABORT, 'subtask_handoffs are immutable');
         END;
 
@@ -923,7 +959,11 @@ CREATE TRIGGER executor_attempt_receipts_immutable_update
         END;
 
 CREATE TRIGGER executor_attempt_receipts_immutable_delete
-        BEFORE DELETE ON executor_attempt_receipts BEGIN
+        BEFORE DELETE ON executor_attempt_receipts
+        WHEN NOT EXISTS (
+          SELECT 1 FROM task_purge_authorizations authorization
+          WHERE authorization.task_id = OLD.task_id
+        ) BEGIN
           SELECT RAISE(ABORT, 'executor_attempt_receipts are immutable');
         END;
 
@@ -938,7 +978,14 @@ CREATE TRIGGER workspace_merge_attempts_immutable_update
           END;
 
 CREATE TRIGGER workspace_merge_attempts_immutable_delete
-          BEFORE DELETE ON workspace_merge_attempts BEGIN
+          BEFORE DELETE ON workspace_merge_attempts
+          WHEN NOT EXISTS (
+            SELECT 1
+            FROM workspace_publications publication
+            JOIN task_purge_authorizations authorization
+              ON authorization.task_id = publication.task_id
+            WHERE publication.id = OLD.publication_id
+          ) BEGIN
             SELECT RAISE(ABORT, 'workspace_merge_attempts are immutable');
           END;
 `;
@@ -957,7 +1004,7 @@ function tableExists(db: Database.Database, table: string): boolean {
  * pre-release databases fail closed instead of running upgrade or dual-read
  * paths; callers must create a fresh database.
  */
-export function runMigrations(db: Database.Database): void {
+export function runMigrations(db: Database.Database, databasePath?: string): void {
   if (tableExists(db, 'schema_version')) {
     const versions = db.prepare(
       'SELECT version FROM schema_version ORDER BY version',
@@ -967,7 +1014,7 @@ export function runMigrations(db: Database.Database): void {
     }
     const found = versions.map(row => row.version).join(', ') || 'empty';
     throw new Error(
-      `unsupported pre-release SQLite schema (${found}); create a fresh database for schema ${CURRENT_SCHEMA_VERSION}`,
+      `unsupported pre-release SQLite schema (${found}) at ${databasePath ?? '(unknown path)'}; back up and create a fresh database for schema ${CURRENT_SCHEMA_VERSION}`,
     );
   }
 
@@ -979,7 +1026,7 @@ export function runMigrations(db: Database.Database): void {
   `).all() as Array<{ name: string }>;
   if (existing.length > 0) {
     throw new Error(
-      `unsupported pre-release SQLite database without schema_version (${existing.map(row => row.name).join(', ')})`,
+      `unsupported pre-release SQLite database without schema_version at ${databasePath ?? '(unknown path)'} (${existing.map(row => row.name).join(', ')})`,
     );
   }
 

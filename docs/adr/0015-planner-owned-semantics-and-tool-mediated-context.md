@@ -30,7 +30,7 @@ Each non-interactive turn sends only the current user input into the bound persi
 
 After authorization, Runtime follows the Kernel-approved v3 `preferredAgentClassList` for claim/probe mechanics: it may claim an idle WorkUnit or create/probe a `starting` instance, and a failed probe becomes a Runtime fact. Runtime does not switch AgentClass after execution failure or decide the terminal Task action. (2026-07-27: Phase 3–4 completed this move — capacity exhaustion, retry, fallback, replan and terminal policy are now decided only by `ControlKernel`.)
 
-The runtime image contains the compiled MetaClaw application, generated current schema, versioned Planner host bridge, isolated Planner/Executor templates and entrypoint. It builds the pinned AnyFusion-Pi Planner source through a required BuildKit named context into the same Node 22.19+ image. Planner and MetaClaw use one Node executable but retain separate dependency trees and exchange only JSON/JSONL and environment configuration; Planner source and dependencies are not linked into MetaClaw. Executor Codex and Executor Pi remain separate canonical attempt images.
+The runtime image contains the compiled MetaClaw application, generated current schema, versioned Planner host bridge, isolated Planner/Executor templates and entrypoint. It builds the pinned AnyFusion-Pi Planner source through a required BuildKit named context into the same Node 22.19+ image. Planner and MetaClaw use one Node executable but retain separate dependency trees and exchange only JSON/JSONL and environment configuration; Planner source and dependencies are not linked into MetaClaw. Registered Executor CLIs run as child processes of that Runtime in assigned worktrees.
 
 ## Supersedes
 
@@ -132,8 +132,9 @@ Node tree or prebuilt Planner-image input exists.
 This deployment convergence does not weaken the process seam. Planner and
 MetaClaw remain separate processes with the same JSONL/Unix-socket contracts,
 failure isolation, ownership rules, and prohibition on shared in-process
-objects. Executor attempt images remain separate because sandbox and credential
-isolation are security contracts, not Node-version compatibility paths.
+objects. Executor CLIs remain separate processes with attempt-private homes and
+scoped model-gateway credentials; the Demo does not claim operating-system
+isolation between them and Runtime.
 
 PlanningAgentPlan v7 is exposed only through the proposal tool schema. Rejected
 plans remain natural tool feedback inside the same Pi ReAct loop. The retired

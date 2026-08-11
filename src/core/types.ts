@@ -53,8 +53,11 @@ export interface PrioritySignals {
 // ─── 任务对象 ───
 export interface Task {
   id: string;
+  projectId: string;
   title: string;
   goal: string;
+  source: 'user' | 'system_smoke';
+  smokeRunId: string | null;
   status: TaskStatus;
   summary: string;
   snapshots: TaskSnapshot[];
@@ -94,8 +97,6 @@ export interface AgentClass {
   runtimeCommand: string | null;
   runtimeArgs: string[];
   runtimeCheckCommand: string | null;
-  executionImageRef: string | null;
-  resolvedImageId: string | null;
   permissionProfileId: 'workspace-engineering' | 'public-web-research' | 'restricted-custom' | null;
   projectUrl: string | null;
   createdAt?: string;
@@ -114,7 +115,6 @@ export interface Subtask {
   contextRefs: ContextRef[];
   requiredCapabilities: string[];
   preferredAgentClassList: string[];
-  deliveryKind: 'edit' | 'report';
   acceptance: WorkGraphAcceptanceCriterion[];
   riskLevel: AgentClassRiskLevel;
   result: string;

@@ -1,131 +1,105 @@
-# Phase 5 Runtime Security And AgentClass Operations
+# Runtime Security And Executor Registry Operations
 
-## Runtime topology
+## Demo runtime topology
 
-The default backend runs the canonical Codex/Pi CLI as a trusted child process
-inside the unified Runtime container. Its working directory is the existing
-private Subtask Git worktree; capability, evidence and model-gateway services
-use loopback addresses. This is the minimal demo boundary and does not claim a
-second OS-level sandbox for the child process.
+AnyFusion has one execution path. Runtime launches the CLI from the verified
+Executor Registry binding as a child process in the Subtask's persistent Git
+worktree. Ubuntu server deployment runs Runtime, Planner and Executors directly
+on the host. Windows development runs the same Linux process model inside one
+Ubuntu Runtime container. Docker packages that Runtime container; it is not an
+Executor backend and Runtime does not need the Docker socket or Docker CLI.
 
-The compatibility backend runs every attempt in a new Docker container. In that mode, the control plane,
-`metaclaw-egress` proxy and attempt containers share the Docker-internal
-`metaclaw-control` network. Only the proxy also joins a non-internal outbound
-network. Attempt containers never receive the Docker socket, host networking,
-host namespaces, devices or privileged mode.
+Runtime, Planner and Executor child processes are trusted at the same operating
+system user boundary. A worktree separates Git state and makes publication and
+cleanup predictable, but it is not a security sandbox: an Executor process can
+technically access paths available to the Runtime user. The Demo therefore must
+run only registered CLIs and must not claim per-Executor filesystem or credential
+isolation.
 
-The control plane may run on the host or in a container. Docker attempts must
-reach it from `metaclaw-control` as the DNS name configured by
-`METACLAW_CONTROL_HOST` (default `metaclaw-control`). Worktree attempts do not
-need the Docker Engine endpoint.
-Containerized Docker compatibility deployments should use a restricted Docker
-socket proxy or a remote Engine endpoint through `DOCKER_HOST`; do not mount
-the Engine socket into attempt containers or native Executor processes.
+Every attempt receives an attempt-private materialized CLI home. Provider keys
+remain in Runtime; the child receives only a random scoped bearer token and the
+loopback URL of its short-lived model gateway. Capability and evidence services
+also use loopback addresses.
 
-When the control plane sees container-local paths but the Docker Engine resolves host paths, configure `METACLAW_DOCKER_HOST_PATH_MAP` as JSON from container prefix to Engine-host prefix. Runtime rejects unmapped bind sources instead of guessing. Provider API keys stay in the trusted control plane: every attempt receives only a random scoped bearer token and the internal URL of its short-lived model gateway.
+## Executor Registry
 
-Docker compatibility topology:
+`$ANYFUSION_CONFIG_HOME/executors.yaml` is the sole static authority. It stores
+absolute binary and source-home paths, environment-file references, inherited
+variable names, driver/session contracts and confirmed permission profiles, but
+never credential values. Loading creates one immutable `configDigest`-bound
+snapshot. A digest change makes previous verification stale; a malformed reload
+keeps the previous valid snapshot.
 
-```bash
-docker network create --internal metaclaw-control
-docker network create metaclaw-egress-public
-docker build -f docker/Dockerfile.egress-proxy -t metaclaw-egress:phase5 .
-docker run -d --name metaclaw-egress --network metaclaw-control --restart unless-stopped metaclaw-egress:phase5
-docker network connect metaclaw-egress-public metaclaw-egress
-```
+Planner reads the current Session-owned Planner projection through Planner Host
+Protocol v2. Kernel and Runtime receive projections from the same loaded snapshot
+and digest. They do not construct another Registry or infer a binding from an
+AgentClass name or environment variable.
 
-The Squid policy permits only public HTTP/HTTPS destinations and rejects loopback, link-local, RFC1918, carrier-grade NAT and IPv6 unique-local ranges after DNS resolution. No proxy port is published to the host. `workspace-engineering` and `restricted-custom` attempts do not receive proxy variables and remain on the internal network only.
+Initial verification creates a temporary Git workspace and independent runtime
+home, checks the absolute binary and version pattern, sends a random first
+challenge, resumes the same session when the driver supports continuation, and
+validates cwd/home handling, output limits, timeout, termination and normalized
+failure. Only `enabled + verified + digest matched` Executors are routable.
 
-## Canonical Docker compatibility images
+Dynamic recovery is deliberately small for the Demo. It checks that the current
+Registry binding and permission profile exist and that provider URL/key settings
+can be loaded. It does not make an extra provider network request; an actual
+attempt reports authentication or network failure through the normal execution
+result.
 
-Build both immutable attempt images after building the application bundles:
+## Worktree and process lifecycle
 
-```bash
-./scripts/build-attempt-images.sh
-```
+- Runtime starts the registered binary with `cwd` set to the assigned Subtask
+  worktree. The Registry driver determines arguments, continuation, result
+  collection and private-home materialization.
+- One Subtask keeps the same branch and physical worktree across retry, fallback
+  and review. Runtime alone publishes the complete branch to local Project
+  `main` after approval.
+- The attempt record stores a backend-neutral runtime handle and the child PID.
+  Cancellation and normal Runtime shutdown terminate the child process group.
+  Startup treats an active persisted attempt as interrupted, makes a best-effort
+  termination of its recorded PID and reports a normalized lost-attempt fact.
+- PID cleanup is intentionally best-effort for the Demo. There is no process
+  fingerprint database or general process supervisor.
+- Schema 35 is fresh-only. Stop Runtime and copy `/data/anyfusion` to one
+  timestamped backup before first startup; older pre-release databases are
+  rejected instead of upgraded or read through a compatibility path.
+- Workspaces persist under
+  `${METACLAW_HOME}/project-worktrees/<project>/workspaces/<task>/<generation>/<subtask>/files`.
+  Cancelled or archived workspaces receive the configured cleanup deadline.
 
-On PowerShell:
+## Permission and audit flow
 
-```powershell
-.\scripts\build-attempt-images.ps1
-```
+Default operations come from the verified Registry permission profile. An
+Executor calls `request_capability` only for a concrete out-of-profile operation.
+Runtime canonicalizes and persists the request, pauses the process when supported,
+checkpoints the worktree, and submits `permission_requested` to Kernel. Kernel
+grants, denies, or escalates; Planner never grants authority directly.
 
-In Docker compatibility mode, MetaClaw resolves each canonical image tag to a
-Docker image ID. Custom AgentClasses must be registered with an image reference,
-its current immutable `sha256:` image ID, a valid permission profile, and the
-command/arguments inside the image. Worktree mode is restricted to the two
-canonical built-ins and does not add a custom registration path. A changed
-Docker tag fails closed until the class is explicitly updated.
+Grants are attempt-bound and budgeted. `use_capability` records and consumes the
+grant ID, expiry, call count and byte count for the supplied operation payload.
+Repository publication is a separate Runtime-owned action for one exact candidate
+commit and Project-main base.
 
-Example:
+These controls provide routing, audit and predictable Git state. They do not
+mediate every native filesystem, network or external side effect. Requests for
+Docker/host sockets, devices, policy mutation, credential probing, cross-Task
+data or persistent security weakening remain denied by policy, but the shared
+Runtime user remains the actual Demo trust boundary.
 
-```text
-/executor register research-bot \
-  --image registry.example/research-bot:1.2.3 \
-  --image-id sha256:<64-hex-digest> \
-  --permission-profile restricted-custom \
-  --command research-bot --args "run --prompt {prompt}"
-```
-
-Historical custom classes without the Docker image/profile triplet remain visible
-for audit but cannot execute. Worktree execution is an explicit trusted backend,
-not a host-process fallback for arbitrary custom classes.
-
-Executor availability uses a structured `probe()` rather than a boolean command
-check. For Docker classes, the recovery probe verifies the local Engine,
-immutable image, `metaclaw-control` network, runtime command, and configuration
-in layers. For worktree classes, it verifies the trusted runtime/profile and
-provider configuration without an Engine or Docker-network probe.
-Authentication/provider-network failures may add the Adapter's minimal remote
-validation. A successful recovery check may only move that checked class from
-`error` to `healthy`. Healthy/unverified classes are not periodically polled,
-disabled classes never auto-recover, and a shared infrastructure result is not
-projected onto classes that were not checked.
-
-## Mount and persistence contract
-
-- Worktree mode starts the child with `cwd` set to `/data/metaclaw/workspace-store/workspaces/<task>/<generation>/<subtask>` and does not mount a second workspace. Canonical Codex uses `danger-full-access` in this mode so its tools operate directly in that worktree without a nested CLI sandbox.
-- Docker mode exposes `/workspace` as the only writable bind-mounted tree; `/source`, `/inputs`, `/handoffs` and a Git worktree's `/workspace/.git` are read-only mounts, with a read-only root filesystem, UID/GID 1000, dropped Linux capabilities and `no-new-privileges`.
-- Canonical Codex Docker attempts also run their own `workspace-write` sandbox with fail-closed non-interactive approval. Only the pinned canonical Codex image receives `seccomp=unconfined` so that nested user namespaces work; every other Docker restriction remains active, and custom images cannot request this exception.
-- Workspaces persist under `${METACLAW_HOME}/workspace-store/workspaces/<task>/<generation>/<subtask>`; only the child process or compatibility container is disposable.
-- Checkpoints are immutable manifests. File bodies live in the SHA-256 CAS; SQLite stores URI, hash, size and reference metadata.
-- Cancelled or archived Task workspaces receive a seven-day cleanup deadline. CAS objects are removed only after the last checkpoint reference disappears. Files explicitly exported outside the managed workspace/CAS roots are not removed.
-
-## Runtime permission and audit flow
-
-Default profile operations do not request permission. An Executor calls `request_capability` only for a concrete out-of-profile operation. Runtime canonicalizes and persists the request, pauses the attempt, checkpoints the now-quiescent workspace, and submits `permission_requested` to the durable Kernel workflow. The Kernel returns grant, deny-to-Executor, or deny-and-escalate-to-Planner. Grants are attempt-bound and budgeted; user authorization is a durable fact from `/permission approve|deny <requestId>`, a gateway action, or a precise Planner interpretation.
-
-The Runtime supplies `permission-profile-v1` rules to both the live attempt and authorization-recovery workflows. Exact Task-registered partitions may receive `additional_read_resource` grants. Only `public-web-research` may receive a `network_target` grant after the target is normalized as credential-free public HTTP(S). Docker compatibility attempts use the egress proxy; worktree demo attempts use the Runtime's normal network namespace. No profile rule permits secrets, external mutation or repository promotion.
-
-A granted response includes a `grantId`, but neither the request nor grant changes sandbox authority. `use_capability` accepts the operation payload, measures its UTF-8 bytes and atomically consumes attempt identity, expiry, call count and byte count. Read/network grants retain the 100-call/100-MiB audit budget; one-shot sensitive and logical requests allow one control payload up to 1 MiB. Budget rejection fails closed.
-
-This initial model is a sandbox profile plus an authorization/audit budget. It does not provide a universal operation broker and does not claim fine-grained enforcement over every native file, network or external operation. A consumed grant proves budgeted authorization was recorded, not that an arbitrary native tool call was mediated. Requests for privileged mode, Docker/host sockets, devices, host namespaces, policy mutation, credential probing, cross-Task data or proxy bypass are always denied by the profile boundary. Future external-mutation or repository-promotion support requires a separately implemented and tested provider adapter/outbox; a grant never exposes raw host credentials or host write access to the attempt container.
-
-## Verification
+## Validation
 
 ```bash
 npm run lint
 npm run build
 docker build -f Dockerfile.test -t metaclaw-test .
 docker run --rm metaclaw-test
-# Run the Docker integration test from a control container with the Engine
-# socket and an explicit host-path map.
-# The default live smoke verifies two turns in one persisted AnyFusion-Pi Planner session.
 npm run smoke:metaclaw
-# The explicit artifact gate exercises Planner -> Kernel -> attempt -> publication.
 npm run smoke:metaclaw -- --scenario artifact
 ```
 
-The Docker integration and artifact smoke require the canonical attempt images
-and a trusted local Docker Engine. Their test bodies run inside a trusted
-control-plane container; the host only performs Docker orchestration. The
-artifact smoke verifies Planner → Kernel → disposable Executor attempt → scoped
-model gateway → persistent workspace/artifact → container cleanup. The default
-smoke instead verifies native Planner-thread continuity and does not prove the
-Executor artifact path. The attempt itself never receives the Engine socket.
-
-Worktree validation additionally requires a Linux Runtime image with the trusted
-Codex/Pi CLIs installed. The focused gate verifies child-process start, loopback
-capability/evidence services, cancellation, checkpoint/delta capture and Git
-publication without sibling Executor containers. Docker integration remains
-compatibility coverage.
+The Ubuntu test image is the authoritative Windows-development test surface.
+The artifact smoke verifies Planner → Kernel → registered CLI child process →
+scoped model gateway → persistent worktree/artifact → controlled publication
+and cleanup. Credentialed smoke must run only after confirming the active
+Registry, Project, database and provider configuration are safe.

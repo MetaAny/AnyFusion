@@ -20,7 +20,6 @@ function subtask(
     contextRefs: [{ kind: 'current_user_input' }],
     requiredCapabilities: ['workspace-engineering'],
     preferredAgentClassList,
-    deliveryKind: 'report',
     acceptance: [{ key: 'complete', description: `complete ${id}`, requiredEvidence: [] }],
     riskLevel: 'low',
   };

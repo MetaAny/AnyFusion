@@ -65,6 +65,37 @@ export function deriveWorkspaceDelta(before: WorkspaceState, after: WorkspaceSta
   };
 }
 
+/** Derives the authoritative result delta from two clean Git commits. */
+export function deriveGitCommitDelta(
+  workspaceRoot: string,
+  beforeCommit: string,
+  afterCommit: string,
+): WorkspaceDelta {
+  const resolvedRoot = resolve(workspaceRoot);
+  const result = spawnSync('git', [
+    '-c', `safe.directory=${resolvedRoot}`,
+    'diff', '--name-only', '-z', `${beforeCommit}..${afterCommit}`,
+  ], {
+    cwd: resolvedRoot,
+    encoding: 'utf8',
+    windowsHide: true,
+  });
+  if (result.status !== 0) {
+    throw new Error(`workspace commit delta failed: ${String(result.stderr || result.error?.message || 'git diff failed').trim()}`);
+  }
+  const paths = result.stdout.split('\0').filter(Boolean);
+  return {
+    kind: 'git_status_delta_v1',
+    changed: paths.slice(0, MAX_TRACKED_PATHS).sort().map(path => ({
+      path,
+      beforeHash: hashGitPath(resolvedRoot, beforeCommit, path),
+      afterHash: hashGitPath(resolvedRoot, afterCommit, path),
+    })),
+    baselineTruncated: false,
+    finalTruncated: paths.length > MAX_TRACKED_PATHS,
+  };
+}
+
 export function parseWorkspaceDelta(value: unknown): WorkspaceDelta | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
@@ -109,4 +140,22 @@ function hashPath(path: string): string | null {
   } catch {
     return null;
   }
+}
+
+function hashGitPath(workspaceRoot: string, commit: string, path: string): string | null {
+  const result = spawnSync('git', [
+    '-c', `safe.directory=${workspaceRoot}`,
+    'show', `${commit}:${path}`,
+  ], {
+    cwd: workspaceRoot,
+    encoding: 'buffer',
+    windowsHide: true,
+    maxBuffer: MAX_HASH_BYTES + 1,
+  });
+  if (result.status !== 0) return null;
+  const content = Buffer.from(result.stdout);
+  if (content.byteLength > MAX_HASH_BYTES) {
+    return `large_git_blob:${content.byteLength}`;
+  }
+  return createHash('sha256').update(content).digest('hex');
 }

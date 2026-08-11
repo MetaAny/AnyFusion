@@ -47,13 +47,11 @@ export function singleSubtaskWorkGraph(input: {
   goal: string;
   title?: string;
   executor?: string;
-  deliveryKind?: SubtaskProposal['deliveryKind'];
   acceptance?: string[];
   riskLevel?: SubtaskProposal['riskLevel'];
   contextRefs?: ContextRef[];
 }): WorkGraphProposal {
   const executor = input.executor === 'pi-agent' ? 'pi-agent' : 'codex-cli';
-  const deliveryKind = input.deliveryKind ?? 'edit';
   return {
     reason: 'single executor work graph',
     subtasks: [{
@@ -64,7 +62,6 @@ export function singleSubtaskWorkGraph(input: {
       contextRefs: input.contextRefs ?? [{ kind: 'current_user_input' }],
       requiredCapabilities: [executor === 'pi-agent' ? 'current-web-research' : 'workspace-engineering'],
       preferredAgentClassList: [executor],
-      deliveryKind,
       acceptance: (input.acceptance ?? ['Satisfy the user request and report verification or remaining risk.'])
         .map((description, index) => ({
           key: `criterion_${index + 1}`,
@@ -85,15 +82,12 @@ export function workGraphPlan(input: {
   canModifyFiles?: boolean;
   matchedBoundary?: string[];
   includeRecentConversationContext?: boolean;
-  deliveryKind?: SubtaskProposal['deliveryKind'];
   priority?: PlanningAgentPlan['task']['priority'];
   contextRefs?: ContextRef[];
   overrides?: Partial<PlanningAgentPlan>;
 } ): PlanningAgentPlan {
   const executor = input.executor ?? 'codex-cli';
-  // Default to a report task. Code/repo tests opt in through code_edit.
   const capabilityClass = input.capabilityClass ?? 'general';
-  const deliveryKind = input.deliveryKind ?? (capabilityClass === 'code_edit' ? 'edit' : 'report');
   return {
     ...basePlan(),
     action: 'plan_work_graph',
@@ -110,7 +104,6 @@ export function workGraphPlan(input: {
       goal: input.goal,
       title: input.title,
       executor,
-      deliveryKind,
       contextRefs: input.contextRefs,
     }),
     ...input.overrides,

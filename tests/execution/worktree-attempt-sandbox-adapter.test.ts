@@ -15,10 +15,9 @@ describe('WorktreeAttemptSandboxAdapter', () => {
     const record = await adapter.create({
       attemptId: 'attempt-1', taskId: 'task-1', generationId: 'generation-1', subtaskId: 'subtask-1',
       workUnitId: 'work-unit-1', leaseToken: 'lease-1', idempotencyKey: 'dispatch-1',
-      imageRef: 'worktree:codex-cli', resolvedImageId: await adapter.resolveImage('worktree:codex-cli'),
       command: process.execPath,
       args: ['-e', `require('node:fs').writeFileSync(${JSON.stringify(outputPath)}, 'done'); console.log('completed')`],
-      environment: {}, controlNetwork: 'metaclaw-control', egressMode: 'disabled',
+      environment: {}, egressMode: 'disabled',
       limits: DEFAULT_ATTEMPT_SANDBOX_LIMITS,
       mounts: [{ source: workspace, target: '/workspace', mode: 'rw' }],
     });
@@ -27,13 +26,41 @@ describe('WorktreeAttemptSandboxAdapter', () => {
       expect(adapter.kind).toBe('worktree');
       expect(adapter.pathMode).toBe('native');
       expect(record.status).toBe('created');
-      await adapter.start(record.containerId);
-      expect(await adapter.wait(record.containerId)).toBe(0);
+      const running = await adapter.start(record.runtimeHandle);
+      expect(running.processId).toBeTypeOf('number');
+      expect(await adapter.wait(record.runtimeHandle)).toBe(0);
       expect(await readFile(outputPath, 'utf8')).toBe('done');
-      expect(await adapter.logs(record.containerId)).toContain('completed');
-      expect((await adapter.inspect(record.containerId))?.status).toBe('exited');
-      await adapter.remove(record.containerId);
-      expect(await adapter.inspect(record.containerId)).toBeNull();
+      expect(await adapter.logs(record.runtimeHandle)).toContain('completed');
+      expect((await adapter.inspect(record.runtimeHandle))?.status).toBe('exited');
+      await adapter.remove(record.runtimeHandle);
+      expect(await adapter.inspect(record.runtimeHandle)).toBeNull();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('stops a running Executor process and its process group during Runtime shutdown', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'anyfusion-worktree-stop-'));
+    const workspace = join(root, 'workspace');
+    await mkdir(workspace);
+    const adapter = new WorktreeAttemptSandboxAdapter();
+    const record = await adapter.create({
+      attemptId: 'attempt-stop', taskId: 'task-stop', generationId: 'generation-stop', subtaskId: 'subtask-stop',
+      workUnitId: 'work-unit-stop', leaseToken: 'lease-stop', idempotencyKey: 'dispatch-stop',
+      command: process.execPath,
+      args: ['-e', 'setInterval(() => undefined, 60_000)'],
+      environment: {}, egressMode: 'disabled',
+      limits: DEFAULT_ATTEMPT_SANDBOX_LIMITS,
+      mounts: [{ source: workspace, target: '/workspace', mode: 'rw' }],
+    });
+
+    try {
+      const running = await adapter.start(record.runtimeHandle);
+      expect(running.processId).toBeTypeOf('number');
+      await adapter.stop(record.runtimeHandle);
+      expect((await adapter.inspect(record.runtimeHandle))?.status).toBe('exited');
+      expect(() => process.kill(running.processId!, 0)).toThrow();
+      await adapter.remove(record.runtimeHandle);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

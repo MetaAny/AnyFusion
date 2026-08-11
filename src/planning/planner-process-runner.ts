@@ -122,6 +122,7 @@ export class PlannerProcessRunner implements PlannerRunner {
         env: {
           ...env,
           ANYFUSION_PLANNER_MODE: '1',
+          ANYFUSION_PLANNER_WORKSPACE: cwd,
           ANYFUSION_PLANNER_HOME: plannerHome,
           ANYFUSION_PLANNER_SESSION_DIR: sessionDir,
           ANYFUSION_PLANNER_SESSION_ID: context.request.sessionId,

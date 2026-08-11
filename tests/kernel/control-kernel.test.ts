@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ControlKernel, type KernelEvent, type KernelSnapshot } from '../../src/kernel/control-kernel.js';
-import { getPlannerExecutorCatalog } from '../../src/executor/builtin-executor-catalog.js';
+import { testPlannerExecutorCatalog } from '../support/executor-registry.js';
 import { workGraphPlan } from '../support/planning-agent-plans.js';
 import { capabilityRequestFingerprint, type NormalizedCapabilityRequest } from '../../src/resource/index.js';
 
@@ -40,7 +40,7 @@ const snapshot: KernelSnapshot = {
   type: 'plan_admission',
   tasks: [],
   runningTaskId: null,
-  executorCatalog: getPlannerExecutorCatalog(),
+  executorCatalog: testPlannerExecutorCatalog(),
   executorStatuses: [],
   v5WorkGraphTaskIds: [],
   eligibleContextRefKeys: [],
@@ -321,7 +321,7 @@ describe('ControlKernel', () => {
     const kernel = new ControlKernel();
     const failed = runtimeEvent({
       type: 'capacity_signal', agentClassName: 'codex-cli', available: false, cycleId: 'cycle_1',
-      attemptKind: 'primary', attemptPayload: null,
+      attemptKind: 'primary', attemptPayload: null, sourceAttemptId: null,
     });
     expect(kernel.decide(failed, dispatchSnapshot()).action).toEqual({
       type: 'probe_capacity', taskId: 'task_1', subtaskId: 'subtask_1', agentClassName: 'pi-agent',
@@ -448,19 +448,50 @@ describe('ControlKernel', () => {
     expect(kernel.decide(fallbackFailure, exhausted).action).toEqual({ type: 'park_for_replan', taskId: 'task_1' });
   });
 
-  it('authorizes exactly one response-only correction and then fails closed', () => {
+  it('authorizes exactly one full contract retry for any Executor and then fails closed', () => {
     const kernel = new ControlKernel();
+    for (const agentClassName of ['codex-cli', 'pi-agent', 'generic-cli']) {
+      const first = runtimeEvent({
+        type: 'handoff_contract_failed', attemptId: 'attempt_1', workUnitId: 'wu_1', agentClassName,
+        contract: { schemaVersion: 2 }, violations: [{ code: 'missing', path: '$.handoffs', message: 'required' }],
+        receiptCount: 1, responseBytes: 1024 * 1024,
+      });
+      expect(kernel.decide(first, dispatchSnapshot([], 'awaiting_decision')).action).toMatchObject({
+        type: 'dispatch_batch',
+        items: [expect.objectContaining({
+          agentClassName,
+          attemptKind: 'contract_correction',
+          sourceAttemptId: 'attempt_1',
+          recoveryMode: 'recovery_packet',
+        })],
+      });
+    }
     const first = runtimeEvent({
-      type: 'handoff_contract_failed', attemptId: 'attempt_1', workUnitId: 'wu_1', agentClassName: 'codex-cli',
+      type: 'handoff_contract_failed', attemptId: 'attempt_1', workUnitId: 'wu_1', agentClassName: 'generic-cli',
       contract: { schemaVersion: 2 }, violations: [{ code: 'missing', path: '$.handoffs', message: 'required' }],
-      receiptCount: 1, responseBytes: 100,
-    });
-    expect(kernel.decide(first, dispatchSnapshot([], 'awaiting_decision')).action).toMatchObject({
-      type: 'dispatch_batch',
-      items: [expect.objectContaining({ agentClassName: 'codex-cli', attemptKind: 'contract_correction' })],
+      receiptCount: 1, responseBytes: 1024 * 1024,
     });
     expect(kernel.decide({ ...first, id: 'contract_2', receiptCount: 2 }, dispatchSnapshot([], 'awaiting_decision')).action).toEqual({
       type: 'block_work', taskId: 'task_1', subtaskId: 'subtask_1',
+    });
+
+    const capacityRecovered = runtimeEvent({
+      type: 'capacity_signal', attemptId: 'attempt_correction_capacity', agentClassName: 'generic-cli',
+      available: true, cycleId: 'cycle_1', attemptKind: 'contract_correction',
+      sourceAttemptId: 'attempt_1',
+      attemptPayload: {
+        protocol: 'completion-correction-v2',
+        completionContract: first.contract,
+        violations: first.violations,
+      },
+    });
+    expect(kernel.decide(capacityRecovered, dispatchSnapshot([], 'awaiting_decision')).action).toMatchObject({
+      type: 'dispatch_batch',
+      items: [expect.objectContaining({
+        attemptKind: 'contract_correction',
+        sourceAttemptId: 'attempt_1',
+        recoveryMode: 'recovery_packet',
+      })],
     });
   });
 
@@ -592,7 +623,7 @@ describe('ControlKernel', () => {
       type: 'wait_for_partition', taskId: 'task_1', subtaskId: 'subtask_1', conflictingLeaseIds: ['lease-1'],
     });
     expect(kernel.decide(runtimeEvent({
-      type: 'sandbox_lost', attemptId: 'attempt-1', containerId: null,
+      type: 'sandbox_lost', attemptId: 'attempt-1', runtimeHandle: null,
       workspaceId: 'workspace-1', checkpointId: 'checkpoint-1',
     }), {
       schemaVersion: 5, type: 'sandbox_recovery', workspaceExists: true,
@@ -651,7 +682,6 @@ function dispatchSnapshot(
     resourceConflictSubtaskIds: [],
     capacityProbeAgentClasses: { subtask_1: attemptedAgentClasses },
     executorStatuses: [],
-    correctionSupportedAgentClasses: ['codex-cli'],
     nativeContinuationAgentClasses: ['codex-cli'],
     attempts: [],
     generationId: 'generation_task_1_1',

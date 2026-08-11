@@ -12,7 +12,8 @@ import {
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
 
 const artifactExpectedLine = 'MetaClaw real task smoke passed.';
@@ -20,7 +21,8 @@ const pythonHelloFileName = 'hello.py';
 const pythonHelloSource = 'print("Hello world")';
 const pythonHelloOutput = 'Hello world';
 export const plannerMemoryMarker = 'planner-memory-sunrise';
-const scenarioNames = new Set(['planner-session', 'artifact', 'python-hello']);
+export const smokeApprovalDirective = '@smoke-approve-repository-promotion';
+const scenarioNames = new Set(['planner-session', 'artifact', 'python-hello', 'pi-research']);
 
 export function readOption(args, name) {
   const inline = args.find(arg => arg.startsWith(`${name}=`));
@@ -90,7 +92,7 @@ export function installPiConfig(input = {}) {
 }
 
 export function bootstrapExecutor(input) {
-  if (input.executorCommand !== 'pi') {
+  if (input.executorCommand !== 'pi' || input.preserveExistingConfig) {
     return null;
   }
 
@@ -113,6 +115,16 @@ export function buildScenarioScript(scenario) {
   if (scenario === 'artifact') {
     return [
       `Create a file named smoke-result.md inside MetaClaw's managed Task workspace. The Runtime will provide the exact authorized target directory to the Executor, so do not ask me for a path. Its content must include this exact line: ${artifactExpectedLine} After creating it, tell me the absolute file path.`,
+      smokeApprovalDirective,
+      '/exit',
+      '',
+    ].join('\n');
+  }
+
+  if (scenario === 'pi-research') {
+    return [
+      '请创建一个持久调研任务，不要直接回复：使用 web_search 和 web_fetch 核验 Node.js 官方首页域名、页面标题和首页对 Node.js 的描述，给出带来源引用的调研报告。不要修改工作区。',
+      smokeApprovalDirective,
       '/exit',
       '',
     ].join('\n');
@@ -120,9 +132,20 @@ export function buildScenarioScript(scenario) {
 
   return [
     `请在当前工作区新建 ${pythonHelloFileName}，内容严格为一行 ${pythonHelloSource}。使用 python3 运行该文件，并确认标准输出严格为 ${pythonHelloOutput}。`,
+    smokeApprovalDirective,
     '/exit',
     '',
   ].join('\n');
+}
+
+export function buildSmokeChildEnv(input) {
+  return {
+    METACLAW_HOME: input.metaclawHome,
+    ANYFUSION_CONFIG_HOME: input.anyFusionConfigHome,
+    METACLAW_PLANNER_SESSION_DIR: join(input.metaclawHome, 'anyfusion-planner', 'sessions'),
+    METACLAW_PLANNER_SCHEMA_PATH: join(input.repoRoot, 'dist', 'planning-agent-plan-v7.schema.json'),
+    ANYFUSION_SMOKE_RUN_ID: input.smokeRunId,
+  };
 }
 
 export function findPythonCommand() {
@@ -136,7 +159,7 @@ export function findPythonCommand() {
   throw new Error('Smoke failed: neither python3 nor python is available for independent verification');
 }
 
-export function readAuthoritativeTaskState(metaclawHome) {
+export function readAuthoritativeTaskState(metaclawHome, smokeRunId) {
   const dbPath = join(metaclawHome, 'metaclaw.db');
   if (!existsSync(dbPath)) {
     throw new Error(`Smoke failed: authoritative database does not exist: ${dbPath}`);
@@ -144,41 +167,51 @@ export function readAuthoritativeTaskState(metaclawHome) {
 
   const db = new Database(dbPath, { readonly: true });
   try {
+    const tasks = db.prepare(`
+      SELECT id, source, smoke_run_id AS smokeRunId, status, title, artifacts_json AS artifactsJson
+      FROM tasks
+      WHERE smoke_run_id = ?
+      ORDER BY created_at, id
+    `).all(smokeRunId);
+    const taskId = tasks.length === 1 ? tasks[0].id : null;
     return {
       acceptedProposalCount: Number(db.prepare(`
-        SELECT COUNT(*) AS count
-        FROM planner_proposal_submissions
-        WHERE status = 'accepted'
-      `).get().count),
-      tasks: db.prepare(`
-        SELECT id, status, title, artifacts_json AS artifactsJson
-        FROM tasks
-        ORDER BY created_at, id
-      `).all(),
+        SELECT COUNT(DISTINCT submission.submission_id) AS count
+        FROM planner_proposal_submissions submission
+        JOIN kernel_decisions decision ON decision.event_id = submission.event_id
+        JOIN tasks task ON task.id = decision.task_id
+        WHERE submission.status = 'accepted' AND task.smoke_run_id = ?
+      `).get(smokeRunId).count),
+      tasks,
       subtasks: db.prepare(`
         SELECT id, task_id AS taskId, status, error, artifacts_json AS artifactsJson
         FROM subtasks
+        WHERE task_id = ?
         ORDER BY created_at, id
-      `).all(),
+      `).all(taskId),
       receipts: db.prepare(`
         SELECT attempt_id AS attemptId, task_id AS taskId, subtask_id AS subtaskId,
+               agent_class_name AS agentClassName,
                terminal_state AS terminalState, error_code AS errorCode,
                error_detail AS errorDetail, completed_at AS completedAt
         FROM executor_attempt_receipts
+        WHERE task_id = ?
         ORDER BY completed_at DESC, attempt_id
-      `).all(),
+      `).all(taskId),
       publications: db.prepare(`
         SELECT id, task_id AS taskId, subtask_id AS subtaskId, status,
                error_summary AS errorSummary
         FROM workspace_publications
+        WHERE task_id = ?
         ORDER BY created_at, id
-      `).all(),
+      `).all(taskId),
       dispatchItems: db.prepare(`
         SELECT attempt_id AS attemptId, task_id AS taskId, subtask_id AS subtaskId,
                status, error_summary AS errorSummary
         FROM kernel_dispatch_items
+        WHERE task_id = ?
         ORDER BY created_at, attempt_id
-      `).all(),
+      `).all(taskId),
     };
   } finally {
     db.close();
@@ -228,6 +261,9 @@ export function verifyAuthoritativeTaskState(state) {
   }
 
   const task = state.tasks[0];
+  if (task.source !== 'system_smoke' || !task.smokeRunId) {
+    throw new Error(`Smoke failed: authoritative Task ${task.id} is not owned by a system_smoke run`);
+  }
   if (task.status !== 'done') {
     throw new Error([
       `Smoke failed: authoritative Task ${task.id} is ${task.status}, not done.`,
@@ -244,6 +280,7 @@ export function verifyAuthoritativeTaskState(state) {
     throw new Error(`Smoke failed: authoritative Subtask ${unfinishedSubtask.id} is ${unfinishedSubtask.status}, not done`);
   }
 
+  const latestReceipts = [];
   for (const subtask of subtasks) {
     const latestReceipt = state.receipts.find(receipt => (
       receipt.taskId === task.id && receipt.subtaskId === subtask.id
@@ -254,6 +291,7 @@ export function verifyAuthoritativeTaskState(state) {
         `Authoritative state: ${formatAuthoritativeFailure(state)}`,
       ].join('\n'));
     }
+    latestReceipts.push(latestReceipt);
   }
 
   const publications = state.publications.filter(publication => publication.taskId === task.id);
@@ -277,6 +315,7 @@ export function verifyAuthoritativeTaskState(state) {
   return {
     taskId: task.id,
     artifacts: subtasks.flatMap(subtask => parseJsonArray(subtask.artifactsJson)),
+    executorNames: [...new Set(latestReceipts.map(receipt => String(receipt.agentClassName)))],
   };
 }
 
@@ -306,7 +345,7 @@ export function verifyArtifactScenario(input) {
     throw new Error('Smoke failed: task summary used an empty quoted artifact path');
   }
 
-  return { artifactPath, taskId: authoritative.taskId };
+  return { artifactPath, taskId: authoritative.taskId, executorNames: authoritative.executorNames };
 }
 
 export function verifyPythonHelloScenario(input) {
@@ -339,7 +378,25 @@ export function verifyPythonHelloScenario(input) {
     throw new Error(`Smoke failed: independent Python stdout was "${(result.stdout ?? '').trim()}"`);
   }
 
-  return { artifactPath: pythonFile, pythonCommand, taskId: authoritative.taskId };
+  return {
+    artifactPath: pythonFile,
+    pythonCommand,
+    taskId: authoritative.taskId,
+    executorNames: authoritative.executorNames,
+  };
+}
+
+export function verifyPiResearchScenario(input) {
+  const authoritative = verifyAuthoritativeTaskState(input.authoritativeState);
+  if (!authoritative.executorNames.includes('pi')) {
+    throw new Error(
+      `Smoke failed: pi-research expected a completed pi receipt, observed ${authoritative.executorNames.join(', ') || 'none'}`,
+    );
+  }
+  return {
+    taskId: authoritative.taskId,
+    executorNames: authoritative.executorNames,
+  };
 }
 
 export function verifyPlannerSessionScenario(input) {
@@ -382,6 +439,213 @@ export function run(command, args, options = {}) {
   return result;
 }
 
+export function cleanupOwnedSmokeArtifacts(input) {
+  if (input.keepArtifacts || input.managedByHost) return;
+  for (const [path, owned] of [
+    [input.metaclawHome, input.ownsMetaclawHome],
+    [input.executorHome, input.ownsExecutorHome],
+    [input.workdir, input.ownsWorkdir],
+    [input.scriptDir, input.ownsScriptDir],
+  ]) {
+    if (owned) rmSync(path, { recursive: true, force: true });
+  }
+}
+
+function waitSync(milliseconds) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+}
+
+function smokeTaskRow(db, smokeRunId) {
+  return db.prepare(`
+    SELECT id, project_id AS projectId, source, smoke_run_id AS smokeRunId, status
+    FROM tasks WHERE smoke_run_id = ?
+  `).get(smokeRunId);
+}
+
+function smokeTaskQuiescence(db, taskId) {
+  const checks = {
+    dispatchItems: Number(db.prepare(`
+      SELECT COUNT(*) AS count FROM kernel_dispatch_items
+      WHERE task_id = ? AND status IN ('pending_launch', 'launching', 'running', 'cancelling', 'uncertain')
+    `).get(taskId).count),
+    publications: Number(db.prepare(`
+      SELECT COUNT(*) AS count FROM workspace_publications
+      WHERE task_id = ? AND status IN (
+        'awaiting_approval', 'pending', 'applying', 'conflicted', 'cancelling', 'uncertain'
+      )
+    `).get(taskId).count),
+    sandboxes: Number(db.prepare(`
+      SELECT COUNT(*) AS count FROM attempt_sandboxes
+      WHERE task_id = ? AND status <> 'removed'
+    `).get(taskId).count),
+    leases: Number(db.prepare(`
+      SELECT COUNT(*) AS count FROM resource_leases
+      WHERE task_id = ? AND released_at IS NULL
+    `).get(taskId).count),
+    workUnits: Number(db.prepare(`
+      SELECT COUNT(*) AS count FROM work_units
+      WHERE claimed_task_id = ? AND state IN ('starting', 'claimed', 'running', 'waiting', 'draining')
+    `).get(taskId).count),
+  };
+  return {
+    quiet: Object.values(checks).every(count => count === 0),
+    checks,
+  };
+}
+
+function runSmokeCommandScript(input, lines, label) {
+  const scriptPath = join(input.scriptDir, `${label}.txt`);
+  const logPath = join(input.scriptDir, `${label}.log`);
+  writeFileSync(scriptPath, [...lines, '/exit', ''].join('\n'));
+  const result = run('node', [
+    join(input.repoRoot, 'dist/index.js'),
+    '--project', input.workdir,
+    '--script', scriptPath,
+  ], {
+    cwd: input.workdir,
+    env: input.childEnv,
+    logPath,
+  });
+  const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+  if (output.includes('操作失败:')) {
+    throw new Error(`Smoke ${label} command failed: ${output.slice(-2_000)}`);
+  }
+  return output;
+}
+
+export function smokeTaskOwnedRuntimePaths(metaclawHome, projectId, taskId) {
+  return [
+    join(metaclawHome, 'project-worktrees', projectId, 'workspaces', taskId),
+  ];
+}
+
+export function finalizeSmokeTask(input) {
+  const dbPath = join(input.metaclawHome, 'metaclaw.db');
+  if (!existsSync(dbPath)) return { taskId: null, purged: false, diagnostics: { databaseMissing: true } };
+  let db = new Database(dbPath);
+  let task = smokeTaskRow(db, input.smokeRunId);
+  if (!task) {
+    db.close();
+    return { taskId: null, purged: false, diagnostics: { taskMissing: true } };
+  }
+  if (task.source !== 'system_smoke' || task.smokeRunId !== input.smokeRunId) {
+    db.close();
+    throw new Error(`Smoke cleanup refused non-owned Task ${task.id}`);
+  }
+  const taskId = task.id;
+  const workspaceRows = db.prepare(`
+    SELECT root_uri AS rootUri, managed_repository_uri AS managedRepositoryUri
+    FROM workspace_records WHERE task_id = ?
+  `).all(taskId);
+  db.close();
+
+  if (!['done', 'archived', 'cancelled'].includes(task.status)) {
+    runSmokeCommandScript(input, [`/task cancel ${taskId}`], 'smoke-cancel');
+  }
+
+  let quiescence = null;
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    db = new Database(dbPath, { readonly: true });
+    task = smokeTaskRow(db, input.smokeRunId);
+    quiescence = task ? smokeTaskQuiescence(db, taskId) : { quiet: true, checks: {} };
+    const terminal = task && ['done', 'archived', 'cancelled'].includes(task.status);
+    db.close();
+    if (!task || (terminal && quiescence.quiet)) break;
+    waitSync(250);
+  }
+  if (!task || !['done', 'archived', 'cancelled'].includes(task.status) || !quiescence?.quiet) {
+    throw new Error(`Smoke Task ${taskId} did not become terminal and quiescent: ${JSON.stringify(quiescence?.checks ?? {})}`);
+  }
+
+  runSmokeCommandScript(input, [`/task purge ${taskId} --confirm ${taskId}`], 'smoke-purge');
+  db = new Database(dbPath, { readonly: true });
+  try {
+    if (db.prepare('SELECT id FROM tasks WHERE id = ?').get(taskId)) {
+      throw new Error(`Smoke purge left Task ${taskId} in the database`);
+    }
+    const residueTables = [
+      'subtasks',
+      'task_events',
+      'executor_attempt_receipts',
+      'kernel_events',
+      'kernel_decisions',
+      'kernel_dispatch_items',
+      'workspace_records',
+      'workspace_publications',
+      'resource_leases',
+      'attempt_sandboxes',
+      'interactions',
+      'task_memory_cards',
+    ];
+    for (const table of residueTables) {
+      const count = Number(db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE task_id = ?`).get(taskId).count);
+      if (count !== 0) throw new Error(`Smoke purge left ${count} ${table} rows for ${taskId}`);
+    }
+    const foreignKeyErrors = db.pragma('foreign_key_check');
+    if (foreignKeyErrors.length > 0) {
+      throw new Error(`Smoke purge failed foreign_key_check: ${JSON.stringify(foreignKeyErrors)}`);
+    }
+  } finally {
+    db.close();
+  }
+  for (const row of workspaceRows) {
+    for (const value of [row.rootUri, row.managedRepositoryUri]) {
+      if (!value) continue;
+      const path = String(value).startsWith('file:')
+        ? fileURLToPath(String(value))
+        : String(value);
+      if (existsSync(path)) throw new Error(`Smoke purge left workspace path: ${path}`);
+    }
+  }
+  for (const path of smokeTaskOwnedRuntimePaths(input.metaclawHome, task.projectId, taskId)) {
+    if (existsSync(path)) throw new Error(`Smoke purge left task-owned runtime path: ${path}`);
+  }
+  return { taskId, purged: true, diagnostics: quiescence.checks };
+}
+
+export function recordSmokeRunAudit(input) {
+  const dbPath = join(input.metaclawHome, 'metaclaw.db');
+  if (!existsSync(dbPath)) return;
+  const db = new Database(dbPath);
+  try {
+    const table = db.prepare(`
+      SELECT name FROM sqlite_master
+      WHERE type = 'table' AND name = 'smoke_run_audits'
+    `).get();
+    if (!table) return;
+    db.transaction(() => {
+      db.prepare(`
+        INSERT INTO smoke_run_audits (
+          run_id, scenario, executor_id, result, diagnostics_json, started_at, completed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(run_id) DO UPDATE SET
+          executor_id = excluded.executor_id,
+          result = excluded.result,
+          diagnostics_json = excluded.diagnostics_json,
+          completed_at = excluded.completed_at
+      `).run(
+        input.runId,
+        input.scenario,
+        input.executorId,
+        input.result,
+        JSON.stringify(input.diagnostics),
+        input.startedAt,
+        input.completedAt,
+      );
+      db.prepare(`
+        DELETE FROM smoke_run_audits
+        WHERE run_id NOT IN (
+          SELECT run_id FROM smoke_run_audits
+          ORDER BY completed_at DESC, run_id DESC
+          LIMIT 20
+        )
+      `).run();
+    })();
+  } finally {
+    db.close();
+  }
+}
+
 function readPlannerDiagnostics(repoRoot, metaclawHome) {
   const dbPath = join(metaclawHome, 'metaclaw.db');
   if (!existsSync(dbPath)) return '';
@@ -422,7 +686,7 @@ function readPlannerInteractions(repoRoot, metaclawHome) {
 }
 
 export function runSmoke(rawArgs = process.argv.slice(2), env = process.env) {
-  if (env.METACLAW_SMOKE_IN_DOCKER !== 'true') {
+  if (env.METACLAW_SMOKE_NATIVE !== 'true' && env.METACLAW_SMOKE_IN_DOCKER !== 'true') {
     runDockerSmoke(rawArgs, env);
     return;
   }
@@ -446,9 +710,22 @@ export function runSmoke(rawArgs = process.argv.slice(2), env = process.env) {
     readOption(rawArgs, '--max-duration') ?? env.METACLAW_SMOKE_MAX_DURATION,
     3600,
   );
+  const keepArtifacts = env.METACLAW_SMOKE_KEEP_ARTIFACTS === 'true';
+  const managedByHost = env.METACLAW_SMOKE_MANAGED_BY_HOST === 'true';
+  const smokeRunId = env.ANYFUSION_SMOKE_RUN_ID?.trim()
+    || `smoke_${Date.now()}_${randomUUID()}`;
+  const startedAt = new Date().toISOString();
+  let smokePassed = false;
+  let executorId = null;
+  let cleanupResult = { taskId: null, purged: false, diagnostics: {} };
+  let cleanupFailure = null;
 
   const smokeRoot = env.METACLAW_SMOKE_ROOT ? resolve(env.METACLAW_SMOKE_ROOT) : tmpdir();
   mkdirSync(smokeRoot, { recursive: true });
+  const ownsMetaclawHome = !env.METACLAW_HOME;
+  const ownsExecutorHome = !env.METACLAW_SMOKE_EXECUTOR_HOME;
+  const ownsWorkdir = !env.METACLAW_SMOKE_WORKDIR;
+  const ownsScriptDir = !env.METACLAW_SMOKE_SCRIPT_DIR;
   const metaclawHome = env.METACLAW_HOME
     ? resolve(env.METACLAW_HOME)
     : mkdtempSync(join(smokeRoot, 'metaclaw-smoke-home-'));
@@ -466,18 +743,35 @@ export function runSmoke(rawArgs = process.argv.slice(2), env = process.env) {
   }
   const scriptPath = join(scriptDir, 'script.txt');
   const outputPath = join(scriptDir, 'metaclaw-output.log');
-  let succeeded = false;
+  const childEnv = buildSmokeChildEnv({
+    metaclawHome,
+    anyFusionConfigHome: resolve(
+      env.ANYFUSION_CONFIG_HOME ?? join(homedir(), '.config', 'anyfusion'),
+    ),
+    repoRoot,
+    smokeRunId,
+  });
 
   try {
-    writeFileSync(join(metaclawHome, 'config.yaml'), buildSmokeConfig({
-      repoRoot,
-      templatePath: env.METACLAW_SMOKE_CONFIG_TEMPLATE,
-      executorCommand,
-      executorTimeout,
-      executorMaxDuration,
-    }));
+    const runtimeConfigPath = join(metaclawHome, 'config.yaml');
+    if (ownsMetaclawHome || managedByHost) {
+      writeFileSync(runtimeConfigPath, buildSmokeConfig({
+        repoRoot,
+        templatePath: env.METACLAW_SMOKE_CONFIG_TEMPLATE,
+        executorCommand,
+        executorTimeout,
+        executorMaxDuration,
+      }));
+    } else if (!existsSync(runtimeConfigPath)) {
+      throw new Error(`Smoke failed: current Runtime config does not exist: ${runtimeConfigPath}`);
+    }
 
-    bootstrapExecutor({ executorCommand, executorHome, repoRoot });
+    bootstrapExecutor({
+      executorCommand,
+      executorHome,
+      repoRoot,
+      preserveExistingConfig: !ownsExecutorHome,
+    });
     writeFileSync(scriptPath, buildScenarioScript(scenario));
 
     if (env.METACLAW_SMOKE_SKIP_BUILD !== 'true') {
@@ -487,31 +781,21 @@ export function runSmoke(rawArgs = process.argv.slice(2), env = process.env) {
       });
     }
     const plannerSessionDir = join(metaclawHome, 'anyfusion-planner', 'sessions');
-    const childEnv = {
-      METACLAW_HOME: metaclawHome,
-      METACLAW_PLANNER_SESSION_DIR: plannerSessionDir,
-      METACLAW_PLANNER_SCHEMA_PATH: join(repoRoot, 'dist', 'planning-agent-plan-v7.schema.json'),
-    };
-    if (executorCommand === 'pi') {
-      childEnv.HOME = executorHome;
-      childEnv.USERPROFILE = executorHome;
-    }
 
-    const runResult = run('node', [join(repoRoot, 'dist/index.js'), '--script', scriptPath], {
+    const runResult = run('node', [
+      join(repoRoot, 'dist/index.js'),
+      '--project', workdir,
+      '--script', scriptPath,
+    ], {
       cwd: workdir,
       env: childEnv,
       logPath: outputPath,
     });
 
     const output = `${runResult.stdout ?? ''}\n${runResult.stderr ?? ''}`;
-    if (executorCommand === 'pi' && !output.includes('pi-agent')) {
-      process.stderr.write(output);
-      throw new Error('Smoke failed: expected route/execution output to mention pi-agent');
-    }
-
     const authoritativeState = scenario === 'planner-session'
       ? null
-      : readAuthoritativeTaskState(metaclawHome);
+      : readAuthoritativeTaskState(metaclawHome, smokeRunId);
 
     const verification = scenario === 'planner-session'
       ? verifyPlannerSessionScenario({
@@ -523,39 +807,83 @@ export function runSmoke(rawArgs = process.argv.slice(2), env = process.env) {
       })
       : scenario === 'artifact'
         ? verifyArtifactScenario({ output, workdir, authoritativeState })
-        : verifyPythonHelloScenario({ output, workdir, authoritativeState });
+        : scenario === 'python-hello'
+          ? verifyPythonHelloScenario({ output, workdir, authoritativeState })
+          : verifyPiResearchScenario({ authoritativeState });
+    executorId = verification.executorNames?.[0] ?? executorCommand;
+    smokePassed = true;
 
     process.stdout.write([
       scenario === 'planner-session'
         ? 'MetaClaw native Planner session smoke passed.'
         : 'MetaClaw real task smoke passed.',
-      `Executor: ${executorCommand}`,
+      `Executor: ${verification.executorNames?.join(', ') ?? executorCommand}`,
       `Scenario: ${scenario}`,
       scenario === 'planner-session'
         ? `Native session: ${verification.nativeSessionPath}`
-        : `Artifact: ${verification.artifactPath}`,
+        : scenario === 'pi-research'
+          ? `Task: ${verification.taskId}`
+          : `Artifact: ${verification.artifactPath}`,
       `Workdir: ${workdir}`,
       '',
     ].join('\n'));
-    succeeded = true;
   } catch (error) {
     const plannerDiagnostics = readPlannerDiagnostics(repoRoot, metaclawHome);
     if (plannerDiagnostics) process.stderr.write(`Planner diagnostics: ${plannerDiagnostics}\n`);
     process.stderr.write([
-      'Smoke failed; diagnostics were preserved:',
-      `  METACLAW_HOME: ${metaclawHome}`,
+      keepArtifacts
+        ? 'Smoke failed; diagnostics were preserved:'
+        : 'Smoke failed; generated artifacts will be removed. Set METACLAW_SMOKE_KEEP_ARTIFACTS=true to preserve them:',
+      ...(keepArtifacts ? [`  METACLAW_HOME: ${metaclawHome}`] : []),
       `  Workdir: ${workdir}`,
-      `  Output: ${outputPath}`,
+      ...(keepArtifacts ? [`  Output: ${outputPath}`] : []),
       '',
     ].join('\n'));
     throw error;
   } finally {
-    if (succeeded && env.METACLAW_SMOKE_MANAGED_BY_HOST !== 'true') {
-      rmSync(metaclawHome, { recursive: true, force: true });
-      rmSync(executorHome, { recursive: true, force: true });
-      rmSync(workdir, { recursive: true, force: true });
-      rmSync(scriptDir, { recursive: true, force: true });
+    if (scenario !== 'planner-session') {
+      try {
+        cleanupResult = finalizeSmokeTask({
+          repoRoot,
+          metaclawHome,
+          scriptDir,
+          workdir,
+          smokeRunId,
+          childEnv,
+        });
+      } catch (error) {
+        cleanupFailure = error instanceof Error ? error : new Error(String(error));
+        process.stderr.write(`Smoke cleanup failed: ${cleanupFailure.message}\n`);
+      }
     }
+    recordSmokeRunAudit({
+      metaclawHome,
+      runId: smokeRunId,
+      scenario,
+      executorId,
+      result: smokePassed && !cleanupFailure ? 'passed' : 'failed',
+      diagnostics: {
+        taskId: cleanupResult.taskId,
+        purged: cleanupResult.purged,
+        cleanup: cleanupResult.diagnostics,
+        cleanupError: cleanupFailure?.message.slice(0, 500) ?? null,
+      },
+      startedAt,
+      completedAt: new Date().toISOString(),
+    });
+    cleanupOwnedSmokeArtifacts({
+      keepArtifacts,
+      managedByHost,
+      metaclawHome,
+      executorHome,
+      workdir,
+      scriptDir,
+      ownsMetaclawHome,
+      ownsExecutorHome,
+      ownsWorkdir,
+      ownsScriptDir,
+    });
+    if (smokePassed && cleanupFailure) throw cleanupFailure;
   }
 }
 
@@ -565,7 +893,9 @@ function runDockerSmoke(rawArgs, env) {
     return;
   }
   const repoRoot = resolve(process.cwd());
-  const anyFusionPiRoot = resolve(repoRoot, '..', 'AnyFusion-Pi');
+  const anyFusionPiRoot = resolve(
+    env.ANYFUSION_PI_ROOT ?? join(repoRoot, '..', 'AnyFusion-Pi'),
+  );
   if (!existsSync(join(anyFusionPiRoot, 'package.json'))) {
     throw new Error(`Smoke requires the sibling AnyFusion-Pi repository at ${anyFusionPiRoot}`);
   }
@@ -594,7 +924,7 @@ function runDockerSmoke(rawArgs, env) {
     }
   }
 
-  let succeeded = false;
+  const keepArtifacts = env.METACLAW_SMOKE_KEEP_ARTIFACTS === 'true';
   try {
     run('docker', [
       'build',
@@ -621,9 +951,8 @@ function runDockerSmoke(rawArgs, env) {
       '-e', 'METACLAW_SMOKE_SCRIPT_DIR=/smoke/script',
       '-e', 'METACLAW_SMOKE_WORKDIR=/workspace',
       '-e', 'METACLAW_SMOKE_MANAGED_BY_HOST=true',
-      '-e', 'METACLAW_HOME=/data/metaclaw',
+      '-e', 'METACLAW_HOME=/data/anyfusion/runtime',
       '-e', `METACLAW_PLANNER_TIMEOUT_MS=${plannerTimeoutMs}`,
-      '-e', 'METACLAW_EXECUTOR_BACKEND=worktree',
       runtimeImage,
       'node', '/app/scripts/smoke-metaclaw-real-task.mjs',
       ...rawArgs,
@@ -632,10 +961,9 @@ function runDockerSmoke(rawArgs, env) {
     const result = run('docker', ['start', '--attach', control], { cwd: repoRoot });
     process.stdout.write(result.stdout ?? '');
     process.stderr.write(result.stderr ?? '');
-    succeeded = true;
   } finally {
     spawnSync('docker', ['rm', '-f', control], { cwd: repoRoot, encoding: 'utf8' });
-    if (succeeded) {
+    if (!keepArtifacts) {
       rmSync(smokeRoot, { recursive: true, force: true });
     } else {
       process.stderr.write(`Docker smoke diagnostics preserved at: ${smokeRoot}\n`);
@@ -645,20 +973,21 @@ function runDockerSmoke(rawArgs, env) {
 
 function buildHelp() {
   return [
-    'Usage: npm run smoke:metaclaw -- [--executor <command>] [--scenario <planner-session|artifact|python-hello>] [--timeout <seconds>] [--max-duration <seconds>]',
+    'Usage: npm run smoke:metaclaw -- [--executor <command>] [--scenario <planner-session|artifact|python-hello|pi-research>] [--timeout <seconds>] [--max-duration <seconds>]',
     '',
     'Environment variables:',
-    '  METACLAW_SMOKE_EXECUTOR      Executor command to place in the isolated config. Defaults to codex.',
+    '  METACLAW_SMOKE_EXECUTOR      Executor command to place in the isolated config. It does not override Planner routing.',
     '  METACLAW_SMOKE_SCENARIO      Scenario to run. Defaults to planner-session (two-turn AnyFusion Planner memory).',
     '  METACLAW_SMOKE_TIMEOUT       Continuous no-output timeout in seconds.',
     '  METACLAW_SMOKE_MAX_DURATION  Legacy max_duration value in seconds.',
     '  METACLAW_PLANNER_TIMEOUT_MS   Planner RPC timeout forwarded to the Runtime; Docker smoke defaults to 180000.',
+    '  METACLAW_SMOKE_KEEP_ARTIFACTS Set to true to preserve smoke data after completion or failure.',
     '  METACLAW_SMOKE_IN_DOCKER      Internal recursion guard; ordinary smoke runs create the control container automatically.',
     '',
     'Examples:',
     '  npm run smoke:metaclaw',
-    '  npm run smoke:metaclaw -- --executor pi --scenario python-hello',
-    '  METACLAW_SMOKE_EXECUTOR=pi METACLAW_SMOKE_SCENARIO=python-hello npm run smoke:metaclaw',
+    '  npm run smoke:metaclaw -- --executor pi --scenario pi-research',
+    '  METACLAW_SMOKE_EXECUTOR=pi METACLAW_SMOKE_SCENARIO=pi-research npm run smoke:metaclaw',
     '',
   ].join('\n');
 }

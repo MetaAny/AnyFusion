@@ -66,7 +66,7 @@ $workspaceVolume = 'metaclaw-shell-workspace'
 # Pre-release schemas are intentionally not migrated. Scope the persistent data
 # volume to the current schema so -Rebuild starts clean after a schema break
 # while preserving the previous volume for manual recovery.
-$dataVolume = 'metaclaw-shell-data-v31-anyfusion-planner'
+$dataVolume = 'metaclaw-shell-data-v35-anyfusion-planner'
 $knownHosts  = Join-Path $repoRoot '.tmp\ssh_known_hosts'
 # Key-based passwordless login. A dedicated key pair lives under .tmp (gitignored)
 # so the global ~/.ssh is untouched. The public key is injected into the
@@ -233,36 +233,40 @@ function Start-ShellContainer {
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $knownHosts) | Out-Null
 
     Write-Host ("Starting persistent SSH container '" + $container + "' ...") -ForegroundColor Cyan
-    # Main process: render provider config, then exec sshd -D so the container
-    # stays up as an SSH server. Executor CLIs are installed in this image and
-    # launched as child processes in their managed worktrees.
+    # Main process: tini runs the image entrypoint, which renders provider
+    # config and then execs sshd -D. Executor CLIs are installed in this image
+    # and launched as child processes in their managed worktrees.
     #
     docker run -d --name $container `
       --network bridge `
       -p "${sshBindHost}:${sshPort}:22" `
-      --entrypoint /bin/bash `
       -v "${workspaceVolume}:/workspace" `
       -v "${dataVolume}:/data" `
       -v "${plannerEnvFile}:${plannerEnvContainerPath}:ro" `
       -v "${codexExecutorEnvFile}:${codexExecutorEnvContainerPath}:ro" `
       -v "${piExecutorEnvFile}:${piExecutorEnvContainerPath}:ro" `
-      -w /workspace `
+      -w /workspace/default `
       -e METACLAW_PLANNER_ENV_FILE=$plannerEnvContainerPath `
       -e METACLAW_CODEX_EXECUTOR_ENV_FILE=$codexExecutorEnvContainerPath `
       -e METACLAW_PI_EXECUTOR_ENV_FILE=$piExecutorEnvContainerPath `
-      -e METACLAW_HOME=/data/metaclaw `
-      -e METACLAW_EXECUTOR_BACKEND=worktree `
-      -e METACLAW_EXECUTOR_CODEX_HOME=/var/lib/metaclaw/codex/executor `
-      -e METACLAW_EXECUTOR_PI_HOME=/root `
+      -e ANYFUSION_DATA_HOME=/data/anyfusion `
+      -e ANYFUSION_CONFIG_HOME=/data/anyfusion/config `
+      -e METACLAW_HOME=/data/anyfusion/runtime `
+      -e METACLAW_EXECUTOR_CODEX_HOME=/data/anyfusion/config/codex `
+      -e METACLAW_EXECUTOR_PI_HOME=/data/anyfusion/config/pi-home `
       -e PI_SKIP_VERSION_CHECK=1 `
       -e PI_TELEMETRY=0 `
       $runtimeImage `
-      -c "exec /opt/metaclaw/entrypoint.sh /usr/sbin/sshd -D"
+      /usr/sbin/sshd -D
 
     if ($LASTEXITCODE -ne 0) {
         Write-Error "Failed to start container."
         exit 1
     }
+
+    # A fresh data volume verifies and registers the canonical Executors before
+    # the entrypoint starts sshd. Do not report readiness until that finishes.
+    Wait-SshReady
 
     # Re-seed the public key (if set up) so passwordless login survives rebuilds.
     Install-SshPublicKey
@@ -313,17 +317,26 @@ function Refresh-ContainerProviderConfigs {
     }
 }
 
-# Wait until sshd is accepting connections on the published port (it starts a
-# moment after `docker run` returns). Times out after ~15s. Uses bash for its
-# /dev/tcp support (the image's default sh is dash, which lacks /dev/tcp).
+# Wait until bootstrap has finished and sshd is accepting connections. A fresh
+# data volume may spend about a minute verifying and registering Executors.
+# Uses bash for /dev/tcp support (the image's default sh lacks it).
 function Wait-SshReady {
-    $deadline = 15
+    $deadline = 180
     for ($i = 0; $i -lt $deadline; $i++) {
+        $running = docker inspect -f '{{.State.Running}}' $container 2>$null
+        if ($LASTEXITCODE -ne 0 -or $running -ne 'true') {
+            Write-Error 'Container stopped before startup completed. Recent logs:'
+            docker logs --tail 80 $container
+            exit 1
+        }
+
         $code = Invoke-DockerQuiet exec $container /bin/bash -c 'exec 3<>/dev/tcp/127.0.0.1/22'
         if ($code -eq 0) { return }
         Start-Sleep -Seconds 1
     }
-    Write-Warning "sshd did not become ready within ${deadline}s; ssh may fail."
+    Write-Error "Container startup did not complete within ${deadline}s. Recent logs:"
+    docker logs --tail 80 $container
+    exit 1
 }
 
 # ssh client flags common to every connect: accept the host key on first connect
@@ -366,7 +379,7 @@ function Enter-Tui {
     Write-Host ("Launching AnyFusion Planner TUI over SSH (port " + $sshPort + ")...") -ForegroundColor Cyan
     Write-Host "Tip: /exit to leave the TUI; Ctrl+C to force-quit. Container keeps running." -ForegroundColor DarkGray
     $args = Ssh-CommonArgs
-    $args += @('-t', 'cd /workspace && node /app/dist/index.js')
+    $args += @('-t', 'cd /workspace/default && node /app/dist/index.js --project /workspace/default')
     & ssh @args
 }
 
@@ -375,7 +388,7 @@ function Enter-Bash {
     Clear-StaleHostKey
     Write-Host ("SSH bash (port " + $sshPort + "). Ctrl+D or 'exit' to leave.") -ForegroundColor DarkGray
     $args = Ssh-CommonArgs
-    $args += @('-t', 'cd /workspace && exec /bin/bash')
+    $args += @('-t', 'cd /workspace/default && exec /bin/bash')
     & ssh @args
 }
 

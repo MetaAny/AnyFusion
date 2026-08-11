@@ -8,12 +8,19 @@ describe('Docker shell SQLite schema isolation', () => {
     const shell = readFileSync(resolve('docker/shell.ps1'), 'utf-8');
     const smoke = readFileSync(resolve('scripts/smoke-metaclaw-real-task.mjs'), 'utf-8');
 
-    expect(runtimeDockerfile).toContain('FROM node:22.19.0-bookworm-slim AS runtime');
+    expect(runtimeDockerfile).toContain(
+      'ARG UBUNTU_IMAGE=ubuntu:24.04@sha256:561618e2c15bf2397621dd04f96926663a3b5616c189cf7e38db7e82f5c538ea',
+    );
+    expect(runtimeDockerfile).toContain('FROM ${UBUNTU_IMAGE} AS node-base');
+    expect(runtimeDockerfile).toContain('FROM node-base AS runtime');
+    expect(runtimeDockerfile).toContain('ARG NODE_VERSION=22.19.0');
+    expect(runtimeDockerfile).toContain("test \"$(npm --version)\" = '10.9.3'");
+    expect(runtimeDockerfile).toContain("grep -q '2.39'");
     expect(runtimeDockerfile).toContain('COPY --from=anyfusion-pi . .');
     expect(runtimeDockerfile).toContain('exec /usr/local/bin/node /opt/anyfusion-planner/app/');
     expect(runtimeDockerfile).toContain('test ! -e /opt/anyfusion-planner/node');
-    expect(runtimeDockerfile).toContain('@openai/codex@0.144.1');
-    expect(runtimeDockerfile).toContain('@earendil-works/pi-coding-agent@0.80.2');
+    expect(runtimeDockerfile).toContain('@openai/codex@0.146.0');
+    expect(runtimeDockerfile).toContain('@earendil-works/pi-coding-agent@0.81.1');
     expect(runtimeDockerfile).toContain('/app/dist/pi-attempt-tools.ts /opt/metaclaw/pi-attempt-tools.ts');
     expect(runtimeDockerfile).toContain('/app/dist/capability-request-cli.js');
     expect(runtimeDockerfile).toContain('/app/dist/capability-use-cli.js');
@@ -64,7 +71,7 @@ describe('Docker shell SQLite schema isolation', () => {
       resolve('docker/codex-config/executor/config.toml'),
       'utf-8',
     );
-    const model = 'gpt-5.6-terra';
+    const model = 'deepseek-v4-flash';
 
     expect(plannerModels.providers.anyint.api).toBe('openai-responses');
     expect(plannerModels.providers.anyint.models).toContainEqual(
@@ -72,15 +79,20 @@ describe('Docker shell SQLite schema isolation', () => {
     );
     expect(plannerSettings.defaultModel).toBe(model);
     expect(plannerSettings.defaultThinkingLevel).toBe('high');
-    expect(plannerModels.providers.anyint.models[0]).not.toHaveProperty('thinkingLevelMap');
+    expect(plannerModels.providers.anyint.models[0]).toHaveProperty('thinkingLevelMap', {
+      high: 'max',
+    });
     expect(piModels.providers.anyint.api).toBe('openai-responses');
     expect(piModels.providers.anyint.models).toContainEqual(
       expect.objectContaining({ id: model }),
     );
     expect(piSettings.defaultModel).toBe(model);
     expect(piSettings.defaultThinkingLevel).toBe('high');
-    expect(piModels.providers.anyint.models[0]).not.toHaveProperty('thinkingLevelMap');
+    expect(piModels.providers.anyint.models[0]).toHaveProperty('thinkingLevelMap', {
+      high: 'max',
+    });
     expect(codexConfig).toContain(`model = "${model}"`);
+    expect(codexConfig).toContain('model_reasoning_effort = "max"');
   });
 
   it('uses a data volume scoped to the current pre-release schema', () => {
@@ -97,15 +109,39 @@ describe('Docker shell SQLite schema isolation', () => {
     );
   });
 
-  it('uses the worktree backend without mounting the Docker socket', () => {
+  it('uses the only native worktree backend without a selector or Docker socket', () => {
     const shell = readFileSync(resolve('docker/shell.ps1'), 'utf-8');
     const runtimeDockerfile = readFileSync(resolve('docker/Dockerfile.runtime'), 'utf-8');
 
-    expect(shell).toContain('-e METACLAW_EXECUTOR_BACKEND=worktree');
-    expect(runtimeDockerfile).toContain('METACLAW_EXECUTOR_BACKEND=worktree');
+    expect(shell).not.toContain('METACLAW_EXECUTOR_BACKEND');
+    expect(runtimeDockerfile).not.toContain('METACLAW_EXECUTOR_BACKEND');
     expect(shell).not.toContain('/var/run/docker.sock');
     expect(shell).not.toContain('function Test-ContainerHasDockerSocket');
     expect(shell).toContain('Start-ShellContainer');
+  });
+
+  it('shares one bootstrap and one persistent layout across native and container launchers', () => {
+    const launcher = readFileSync(resolve('anyfusion'), 'utf-8');
+    const entrypoint = readFileSync(resolve('docker/entrypoint.sh'), 'utf-8');
+    const bootstrap = readFileSync(resolve('scripts/runtime-bootstrap.sh'), 'utf-8');
+    const runtimeDockerfile = readFileSync(resolve('docker/Dockerfile.runtime'), 'utf-8');
+    const shell = readFileSync(resolve('docker/shell.ps1'), 'utf-8');
+
+    expect(launcher).toContain('source "$BOOTSTRAP"');
+    expect(launcher).toContain('anyfusion_bootstrap_runtime');
+    expect(entrypoint).toContain('source /opt/metaclaw/runtime-bootstrap.sh');
+    expect(entrypoint).toContain('ANYFUSION_BOOTSTRAP_AUTO_REGISTER_EXECUTORS');
+    expect(entrypoint).toContain('anyfusion_bootstrap_runtime');
+    expect(bootstrap).toContain('anyfusion_bootstrap_ensure_canonical_executors');
+    expect(bootstrap).toContain('executor show "$executor_id"');
+    expect(bootstrap).toContain('executor register "$executor_id"');
+    expect(bootstrap).toContain('METACLAW_CODEX_EXECUTOR_ENV_FILE');
+    expect(bootstrap).toContain('METACLAW_PI_EXECUTOR_ENV_FILE');
+    expect(runtimeDockerfile).toContain('COPY scripts/runtime-bootstrap.sh /opt/metaclaw/runtime-bootstrap.sh');
+    expect(runtimeDockerfile).toContain('ANYFUSION_CONFIG_HOME=/data/anyfusion/config');
+    expect(runtimeDockerfile).toContain('METACLAW_HOME=/data/anyfusion/runtime');
+    expect(shell).toContain('-w /workspace/default');
+    expect(shell).toContain('node /app/dist/index.js --project /workspace/default');
   });
 
   it('refreshes rendered provider configs from mounted env files before interactive entry', () => {
@@ -123,6 +159,29 @@ describe('Docker shell SQLite schema isolation', () => {
     );
   });
 
+  it('waits for first-run executor registration and sshd before reporting the container ready', () => {
+    const shell = readFileSync(resolve('docker/shell.ps1'), 'utf-8');
+    const startContainer = shell.slice(
+      shell.indexOf('function Start-ShellContainer'),
+      shell.indexOf('function Ensure-ContainerRunning'),
+    );
+    const waitForSsh = shell.slice(
+      shell.indexOf('function Wait-SshReady'),
+      shell.indexOf('function Ssh-CommonArgs'),
+    );
+
+    expect(startContainer.indexOf('Wait-SshReady')).toBeLessThan(
+      startContainer.indexOf('Install-SshPublicKey'),
+    );
+    expect(startContainer.indexOf('Wait-SshReady')).toBeLessThan(
+      startContainer.indexOf('SSH container ready'),
+    );
+    expect(waitForSsh).toContain('$deadline = 180');
+    expect(waitForSsh).toContain("docker inspect -f '{{.State.Running}}' $container");
+    expect(waitForSsh).toContain('docker logs --tail 80 $container');
+    expect(waitForSsh).toContain('exit 1');
+  });
+
   it('does not bootstrap sibling-container topology for the default demo', () => {
     const shell = readFileSync(resolve('docker/shell.ps1'), 'utf-8');
     const persistEnv = readFileSync(resolve('docker/persist-ssh-environment.sh'), 'utf-8');
@@ -134,14 +193,14 @@ describe('Docker shell SQLite schema isolation', () => {
     expect(shell).not.toContain('function Ensure-AttemptImages');
     expect(shell).not.toContain('Dockerfile.attempt-codex');
     expect(shell).not.toContain('Dockerfile.attempt-pi');
-    expect(smoke).toContain("'-e', 'METACLAW_EXECUTOR_BACKEND=worktree'");
+    expect(smoke).not.toContain('METACLAW_EXECUTOR_BACKEND');
     expect(smoke).toContain("'-e', `METACLAW_PLANNER_TIMEOUT_MS=${plannerTimeoutMs}`");
     expect(smoke).not.toContain('src=//var/run/docker.sock');
     expect(smoke).not.toContain("['network', 'create', '--internal'");
     expect(smoke).not.toContain("['network', 'connect'");
     expect(smoke).not.toContain("'docker/Dockerfile.attempt-codex'");
     expect(smoke).not.toContain("'docker/Dockerfile.attempt-pi'");
-    expect(persistEnv).toContain('METACLAW_EXECUTOR_BACKEND');
+    expect(persistEnv).not.toContain('METACLAW_EXECUTOR_BACKEND');
     expect(persistEnv).not.toContain('METACLAW_DOCKER_HOST_PATH_MAP');
   });
 

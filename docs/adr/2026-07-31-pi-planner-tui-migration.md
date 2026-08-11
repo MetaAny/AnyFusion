@@ -159,12 +159,12 @@ TUI、Pi extension、Pi RPC adapter 和 Planner runner 均不得成为第二个 
 不得修改：
 
 - `src/execution/` 的 attempt、sandbox、lease、recovery、publication 和 Git 逻辑；
-- `src/executor/` 的 AgentClass、registry、image、permission profile 和 probe 逻辑；
+- `src/executor/` 的 AgentClass、registry、permission profile 和 probe 逻辑；
 - Codex/Pi Executor 的执行协议；
-- Docker sandbox、workspace、resource partition 和 capability security contract；
-- Executor 使用的 stock Codex 或 Pi attempt runtime。
+- worktree、resource partition 和 capability security contract；
+- Executor 使用的 stock Codex 或 Pi CLI runtime。
 
-Planner fork 和 Planner Node 22 runtime 不得进入 Executor attempt image。
+Planner fork 不得进入 Executor 子进程或与 Executor 共享进程内对象。
 
 ### 4. Storage contract 完全不变
 
@@ -656,7 +656,7 @@ Phase 0 基线目标：
 - native Codex thread/session identity 替换为 Pi Planner session identity；
 - Planner `CODEX_HOME` 替换为隔离的 AnyFusion Planner home；
 - Planner MCP 保持只读；
-- Executor Codex 配置、attempt image 和 runtime 不变。
+- Executor Codex 配置和 CLI runtime 不变。
 
 ## 分阶段实施
 

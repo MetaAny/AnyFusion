@@ -11,15 +11,17 @@ export interface WorkspacePublicationCompletion {
       | { key: string; type: 'artifact'; paths: string[] }
     >;
   }>;
-  completionSchemaVersion: 3;
+  completionSchemaVersion: 4;
 }
 
 export type WorkspacePublicationStatus =
+  | 'awaiting_approval'
   | 'pending'
   | 'applying'
   | 'conflicted'
   | 'integrated'
   | 'parked'
+  | 'denied'
   | 'cancelling'
   | 'cancelled'
   | 'uncertain';
@@ -31,7 +33,10 @@ export interface WorkspacePublicationRecord {
   subtaskId: string;
   sourceAttemptId: string;
   agentClassName: string;
+  mainBaseCommit: string;
   candidateCommit: string;
+  permissionRequestId: string;
+  changedPaths: string[];
   originalCompletion: WorkspacePublicationCompletion;
   topologyLayer: number;
   firstDispatchOrder: number;
@@ -56,7 +61,10 @@ interface PublicationRow {
   subtask_id: string;
   source_attempt_id: string;
   agent_class_name: string;
+  main_base_commit: string;
   candidate_commit: string;
+  permission_request_id: string;
+  changed_paths_json: string;
   original_completion_json: string;
   topology_layer: number;
   first_dispatch_order: number;
@@ -102,7 +110,10 @@ export class WorkspacePublicationRepo {
     subtaskId: string;
     sourceAttemptId: string;
     agentClassName: string;
+    mainBaseCommit: string;
     candidateCommit: string;
+    permissionRequestId: string;
+    changedPaths: string[];
     completion: WorkspacePublicationCompletion;
     topologyLayer: number;
     firstDispatchOrder: number;
@@ -111,9 +122,10 @@ export class WorkspacePublicationRepo {
     this.db.prepare(`
       INSERT INTO workspace_publications (
         id, task_id, generation_id, subtask_id, source_attempt_id, agent_class_name,
-        candidate_commit, original_completion_json, topology_layer, first_dispatch_order,
+        main_base_commit, candidate_commit, permission_request_id, changed_paths_json,
+        original_completion_json, topology_layer, first_dispatch_order,
         status, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'awaiting_approval', ?, ?)
     `).run(
       input.id,
       input.taskId,
@@ -121,13 +133,23 @@ export class WorkspacePublicationRepo {
       input.subtaskId,
       input.sourceAttemptId,
       input.agentClassName,
+      input.mainBaseCommit,
       input.candidateCommit,
+      input.permissionRequestId,
+      JSON.stringify(input.changedPaths),
       JSON.stringify(input.completion),
       input.topologyLayer,
       input.firstDispatchOrder,
       input.createdAt,
       input.createdAt,
     );
+  }
+
+  findByPermissionRequestId(permissionRequestId: string): WorkspacePublicationRecord | null {
+    const row = this.db.prepare(`
+      SELECT * FROM workspace_publications WHERE permission_request_id = ?
+    `).get(permissionRequestId) as PublicationRow | undefined;
+    return row ? rowToPublication(row) : null;
   }
 
   find(id: string): WorkspacePublicationRecord | null {
@@ -141,6 +163,8 @@ export class WorkspacePublicationRepo {
     const row = this.db.prepare(`
       SELECT * FROM workspace_publications
       WHERE task_id = ? AND generation_id = ? AND subtask_id = ?
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1
     `).get(taskId, generationId, subtaskId) as PublicationRow | undefined;
     return row ? rowToPublication(row) : null;
   }
@@ -190,6 +214,22 @@ export class WorkspacePublicationRepo {
       SET status = 'applying', applying_at = ?, updated_at = ?
       WHERE id = ? AND status = 'pending'
     `).run(now, now, id).changes === 1;
+  }
+
+  markApproved(id: string, now: string): boolean {
+    return this.db.prepare(`
+      UPDATE workspace_publications
+      SET status = 'pending', error_summary = NULL, updated_at = ?
+      WHERE id = ? AND status = 'awaiting_approval'
+    `).run(now, id).changes === 1;
+  }
+
+  markDenied(id: string, reason: string, now: string): boolean {
+    return this.db.prepare(`
+      UPDATE workspace_publications
+      SET status = 'denied', error_summary = ?, updated_at = ?
+      WHERE id = ? AND status = 'awaiting_approval'
+    `).run(reason, now, id).changes === 1;
   }
 
   markPending(id: string, errorSummary: string | null, now: string): void {
@@ -259,6 +299,14 @@ export class WorkspacePublicationRepo {
     `).run(now, id);
   }
 
+  markParked(id: string, errorSummary: string, now: string): void {
+    this.db.prepare(`
+      UPDATE workspace_publications
+      SET status = 'parked', error_summary = ?, updated_at = ?
+      WHERE id = ? AND status = 'applying'
+    `).run(errorSummary, now, id);
+  }
+
   requestCancellation(input: {
     taskId: string;
     generationId?: string | null;
@@ -286,7 +334,7 @@ export class WorkspacePublicationRepo {
             cancel_requested_at = ?,
             cancelled_at = ?,
             updated_at = ?
-        WHERE ${where} AND status IN ('pending', 'conflicted', 'parked')
+        WHERE ${where} AND status IN ('awaiting_approval', 'pending', 'conflicted', 'parked', 'denied')
       `).run(input.decisionId, input.now, input.now, input.now, ...parameters);
       this.db.prepare(`
         UPDATE workspace_publications
@@ -336,7 +384,7 @@ export class WorkspacePublicationRepo {
     return Boolean(this.db.prepare(`
       SELECT 1 FROM workspace_publications
       WHERE task_id = ?${generationFilter}
-        AND status IN ('pending', 'applying', 'conflicted', 'cancelling', 'uncertain')
+        AND status IN ('awaiting_approval', 'pending', 'applying', 'conflicted', 'cancelling', 'uncertain')
       LIMIT 1
     `).get(taskId, ...(generationId ? [generationId] : [])));
   }
@@ -383,7 +431,10 @@ function rowToPublication(row: PublicationRow): WorkspacePublicationRecord {
     subtaskId: row.subtask_id,
     sourceAttemptId: row.source_attempt_id,
     agentClassName: row.agent_class_name,
+    mainBaseCommit: row.main_base_commit,
     candidateCommit: row.candidate_commit,
+    permissionRequestId: row.permission_request_id,
+    changedPaths: JSON.parse(row.changed_paths_json) as string[],
     originalCompletion: JSON.parse(row.original_completion_json) as WorkspacePublicationCompletion,
     topologyLayer: row.topology_layer,
     firstDispatchOrder: row.first_dispatch_order,

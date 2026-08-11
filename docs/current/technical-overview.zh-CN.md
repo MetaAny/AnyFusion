@@ -2,9 +2,12 @@
 
 [English Technical Overview](technical-overview.md) | [中文首页](../../README.zh-CN.md)
 
-> 当前实现基线（2026-08-07）：PlanningAgentPlan v7、Work Graph
-> v6、Kernel event/snapshot/decision contract v5、Completion Protocol v3，
-> 以及不保留预发布升级路径的 fresh-only SQLite schema v31。`KernelWorkflow` 串行完成
+> 当前实现基线（2026-08-11）：PlanningAgentPlan v7、Work Graph
+> v6、Kernel event/snapshot/decision contract v5、Completion Protocol v4，
+> fresh-only SQLite schema v35、一个显式 Project 仓库、用户审批后的整分支
+> 发布，以及来自
+> `$ANYFUSION_CONFIG_HOME/executors.yaml` 的 digest-bound Executor Registry
+> Snapshot。`KernelWorkflow` 串行完成
 > event、Decision 和 application，attempt supervisor 在单一活跃顶层 Task
 > 内并行启动最多四个隔离 attempt。ADR-0011 保持有效；多顶层 Task 调度
 > 属于未来独立路线图。
@@ -22,14 +25,14 @@ AnyFusion 是一个本地优先的 AI Task OS。它把自然语言需求变成�
 - 当前强制单一活跃顶层任务，避免 ControlKernel 与 work-unit dispatch 加固期间出现多任务并存的歧义。
 - 通过本地 SQLite FTS 索引向 PlanningAgent 提供显式的历史任务检索。
 - 将复杂任务规划为显式 subtasks、验收标准和聚合规则。
-- 将工作表示为 task-owned subtask graph，排序候选 agent classes，并让空闲 executor work units claim ready subtasks。
+- 将工作表示为 task-owned subtask graph，按当前注册表快照校验候选 Executor，并让空闲 executor work units claim ready subtasks。
 - Planner → ControlKernel → Runtime 是唯一策略主链；验收、retry、fallback、replan 和 recovery 不再由第二套 Agentic Loop 解释。
 - 每个活动 MetaClaw session 绑定一个持久 AnyFusion-Pi Planner session；已确认偏好和运行时事实通过只读查询边界按需获取。
 - 生成文件自动记录为任务产物。
 - 飞书回复、文件同步和 Markdown 在线预览由后端统一处理。
 - 本地 Gateway 支持多个终端连接同一个 AnyFusion runtime。
 - 默认本地界面使用平级 AnyFusion-Pi Planner TUI，保留对话历史、resume/fork/archive、压缩、命令、补全、interrupt 和只读工具渲染。
-- 在不转移 Task、Kernel 或 Executor 权限的前提下增加响应式只读 AnyFusion 任务面板；原 Ink UI 完整保留为备用模块。
+- 在不转移 Task、Kernel、Executor Registry 或 Runtime 权限的前提下增加响应式只读任务面板和 Executor 注册窗口；原 Ink UI 完整保留为备用模块。
 - 提供 `npm run smoke:anyfusion` 烟测，默认验证同一持久 AnyFusion-Pi Planner session 的两轮对话记忆；文件产物场景可显式选择。
 
 ## 核心架构
@@ -61,9 +64,9 @@ flowchart LR
   Frontier --> Batch[dispatch_batch<br/>持久 child items]
   Batch --> Attempt[AttemptSupervisor<br/>最多四个 attempt]
   Attempt --> Context[SubtaskExecutionContext<br/>直接 handoff 与选定 evidence]
-  Context --> Executors[ExecutionRuntime<br/>canonical Codex / Pi sandbox]
-  Executors --> Verify[Completion Protocol v3<br/>delta、receipt 与 candidate commit]
-  Verify --> Publish[Git publication gate<br/>稳定顺序集成]
+  Context --> Executors[ExecutionRuntime<br/>verified registry driver]
+  Executors --> Verify[Completion Protocol v4<br/>结果说明、可选结果文件与 candidate commit]
+  Verify --> Publish[用户审批 Git publication<br/>完整 candidate 分支]
   Publish --> Delivery[交付和 UI<br/>TUI 进度、飞书、文件、预览链接]
   Conversation --> Delivery
   Clarify --> Delivery
@@ -71,26 +74,34 @@ flowchart LR
   Stop --> Delivery
   Delivery --> User
 
-  Session <--> Store[(本地 SQLite<br/>任务、subtasks、agent classes、<br/>work units、events、memory)]
+  Session <--> Store[(本地 SQLite schema 35<br/>Project、任务、审批、<br/>work units、events、memory)]
   Workflow -. audit .-> Decisions[(kernel_decisions)]
   TaskOS <--> Store
   Graph <--> Store
   Attempt <--> Store
 ```
 
-所有自然语言输入统一进入隔离的 AnyFusion-Pi `PlanningAgent`，产出严格 v7 `PlanningAgentPlan`。Work Graph 使用 v6 契约，Planner 不枚举资源 claim 或 execution layer。`ControlKernel` 根据 frontier、pending/active item、AgentClass、资源和 slot 事实授权确定性 batch；Execution 并行运行 attempt，并由 publication worker 按拓扑层、首次授权顺序和 Subtask ID 发布成果。
+所有自然语言输入统一进入隔离的 AnyFusion-Pi `PlanningAgent`，产出严格 v7 `PlanningAgentPlan`。Work Graph 使用 v6 契约，Planner 不枚举资源 claim、宿主路径、分支名或 execution layer。`ControlKernel` 根据 frontier、pending/active item、AgentClass、资源和 slot 事实授权确定性 batch；Execution 并行运行 attempt，并由 publication worker 在用户审批后发布完整候选分支。
+
+启动时通过 `anyfusion --project <path>` 选择 Project；未指定时使用
+`~/AnyFusionProjects/default`。该路径必须恰好是普通 Git 仓库顶层，不能位于
+更高层 Git 仓库内部。已有仓库必须干净、位于 `main`，且不能包含嵌套仓库或
+submodule；非 Git 目录由 Runtime 初始化并提交到 `main`。Runtime 将解析后的
+Project 根目录显式传给 Session、Planner 和 Gateway，不再把启动目录推断为
+Task 源目录。
 
 AnyFusion-Pi `PlanningAgent` 使用专用 process runner，而不复用 Executor adapter。一个活动 MetaClaw session 对应一个持久 Pi session 文件。非交互入口以 `--mode rpc` 启动 Planner，通过 stdin/stdout 交换 JSONL；同一 session 的 turn 串行执行，避免多个进程并发写入 session 文件。Planner fork 管理对话历史和固定 system instructions；MetaClaw 不再从 SQLite interaction 重建提示词。Provider/Model 与 Planner 工具由 AnyFusion 固定管理。每个语义 turn 通过受限原生 `submit_planning_proposal({ plan })` 工具提交；runtime 注入 session、turn、user input 和 deterministic submission identity。rejection 是当前 ReAct turn 的结构化反馈，transport uncertain 与 rejection 严格分离；不存在 assistant 文本 proposal parser、proposal 专用 retry、repair prompt 或外层 validation loop。
 
 本地 AnyFusion-Pi TUI 与 RPC runner 通过 mode-`0600` Unix JSONL `PlannerTuiBridge` 和 Host Protocol v2 共用同一 proposal 工具链。bridge 还提供有界只读 Task 投影、`command_complete/command_completion`，并透传用户明确输入的 MetaClaw slash command。Pi 复用原生异步编辑器、候选列表、Tab、上下键和 tool-call 机制；命令树遍历、replacement range、hint/error、动态 Task/Executor 候选、参数校验与执行仍唯一来自 `MetaclawSession → CommandCatalog/InputController`。MetaClaw 持久化 proposal submission，实现 rejected revision、accepted turn lock、identical replay 和 conflict；Pi 只展示补全数据或权威结果，不获得通用 mutation API，也不能直接调用 Kernel、调度、Execution 或 Executor。
 
-Executor 健康恢复是事件驱动的。`ExecutorRecoveryRefreshService` 只检查
-enabled 且持久健康状态已经是 `error` 的 AgentClass，对同一 class 的并发
-刷新进行合并，单次 probe 最长 30 秒，并把有界、脱敏的恢复证据和真实
-attempt 历史分开保存。成功 probe 只允许 `error -> healthy`；`disabled`
-是管理锁，healthy/unverified 不会被反向巡检。触发点是 Session 启动、
-planning cycle、Task resume/recovery、Executor 配置变化和
-`/executor refresh [name|all]`。
+Executor 安装验证与动态健康是两道不同门禁。只有
+`enabled + verified + configDigest matched` 的 Executor 才进入 Planner 和
+Kernel 候选；YAML 摘要变化后旧 verification 立即 stale。对于已经可路由
+但健康状态为 `error` 的 Executor，`ExecutorRecoveryRefreshService` 合并
+并发检查，单次 probe 最长 30 秒，并把有界、脱敏的恢复证据和真实 attempt
+历史分开保存。成功 probe 只允许 `error -> healthy`；`disabled` 是管理锁。
+触发点是 Session 启动、planning cycle、Task resume/recovery、Executor
+配置变化和 `/executor refresh [name|all]`。
 
 Planning 与恢复刷新并行开始，但 Kernel 准入前必须等待两者汇合。相关候选
 恢复时，Planner 可在同一个持久 AnyFusion-Pi Planner session 中修订一次提案。已有 Task
@@ -133,11 +144,13 @@ flowchart LR
   Ready --> Batch[Kernel dispatch_batch<br/>持久 attempt items]
   Batch --> Attempt[Attempt supervisor<br/>独立 claim 与运行]
   Attempt --> Run[ExecutionRuntime<br/>传输并执行]
-  Run --> Verify[Completion Protocol v3<br/>delta、receipt 与 candidate]
-  Verify --> Publish[Git publication gate]
-  Publish --> Done{是否集成？}
-  Done -->|是| Result[原子发布 result、handoff、<br/>artifact、workspace state 与 done]
-  Done -->|冲突| Repair[Kernel 授权原 AgentClass repair]
+  Run --> Verify[Completion Protocol v4<br/>receipt 与 candidate]
+  Verify --> Approval[repository_promotion<br/>用户审批]
+  Approval -->|通过| Publish[完整 candidate 分支<br/>合并到 Project main]
+  Approval -->|拒绝| Block[阻塞并保留<br/>branch/worktree]
+  Publish -->|base 未变化| Result[原子发布 result、handoff、<br/>artifact、workspace state 与 done]
+  Publish -->|main 已变化| Resync[保留 worktree；<br/>Executor 重新同步 main]
+  Resync --> Approval
 ```
 
 这就是 Task OS 路径。任务状态、恢复上下文、Kernel 授权、Subtask 状态、WorkUnit/resource lease、产物捕获、验收和 Git publication 都在这里发生。ADR-0011 仍保持一个已接纳的顶层任务，但该 Task 内互不依赖的 Subtasks 已可并行。
@@ -167,18 +180,35 @@ conversation / task 的边界很重要：
 
 当前 direct reply 路径是显式的：MetaClaw 把当前轮发送给已绑定的持久 AnyFusion-Pi Planner session，PlanningAgent 仅在需要时通过 MCP 查询确认偏好或运行时事实，runtime 直接交付 `response.directReply`，不 claim executor work unit。
 
-[AnyFusion Task OS 架构与策略升级方案](../archive/plans/2026-06-14-metaclaw-task-os-architecture-strategy-upgrade.md) 中的本轮主线已经进入代码：确定性任务检索索引、PlanningAgent work graph proposal、统一 `ControlKernel` authorization、持久化 subtasks、work-unit claiming、汇总与验收都已实现并有针对性测试覆盖。Executor Discovery、远程 Registry、弹性 work-unit spawn 和大规模多客户端 Gateway 扩展仍然不是本轮重点。
+[AnyFusion Task OS 架构与策略升级方案](../archive/plans/2026-06-14-metaclaw-task-os-architecture-strategy-upgrade.md)
+中的主线已经进入代码：确定性任务检索索引、PlanningAgent work graph
+proposal、统一 `ControlKernel` authorization、持久化 subtasks、work-unit
+claiming、汇总与验收都已实现并有针对性测试覆盖。本地主机 Executor
+discovery、注册和验证已经实现；远程 Registry、弹性 work-unit spawn 和
+大规模多客户端 Gateway 扩展仍然明确不在当前范围。
 
-重要边界：Agentic Loop 已作为核心架构层实现并测试；当前交互式/script session 默认执行路径仍沿用 session runtime，只有明确接入策略/编排循环的功能路径才会调用它。这样可以在增强复杂任务验收能力的同时，保持现有用户路径稳定。
+重要边界：PlanningAgent → Durable KernelWorkflow → ControlKernel →
+Runtime 是唯一生产策略主链。已移除的 Agentic Loop/ExecutionPolicy
+实现不得重新成为第二套路由、retry、fallback、replan 或 recovery 权威。
 
 ## 当前执行器
 
+AnyFusion 会初始化 `$ANYFUSION_CONFIG_HOME/executors.yaml`，其中包含受控
+Capability，以及 Codex、Pi、Hermes 的发现 Profile。命令存在并不代表可路由；
+Executor 必须先注册、通过当前配置摘要的 verification，并处于 enabled。
+
 | 执行器 | 命令 | 适合任务 | 安装要求 |
 | --- | --- | --- | --- |
-| Codex CLI | `codex` | 仓库修改、测试、确定性实现、带 patch 的代码审查 | 统一 Runtime 已内置并配置；只有直接 Linux 开发才需本机安装 |
-| Pi Agent | `pi` | 调研、报告生成、多步骤信息综合、agentic CLI 工作流 | 统一 Runtime 已内置并配置；只有直接 Linux 开发才需本机安装 |
+| Codex CLI | `codex` | 仓库修改、测试、确定性实现、带 patch 的代码审查 | 安装并登录，发现真实绝对路径，再确认和验证注册 |
+| Pi Agent | `pi` | 调研、报告生成、带来源的信息综合 | 安装并登录，发现真实绝对路径，再确认和验证注册 |
+| Hermes Agent | `hermes` 或 `hermes-agent` | 支持显式 session recovery 的通用 agentic 工作 | 安装并配置，发现真实绝对路径，再确认和验证注册 |
+| 通用会话 CLI | 用户提供 | 具备可验证两轮会话协议的受控自定义能力 | 提供完整 `cli-session` 绑定并通过验证 |
 
-默认 worktree 后端只执行 canonical `codex-cli` 与 `pi-agent`。获批后，Runtime claim 或创建 WorkUnit，再把对应 CLI 作为统一 Runtime 的子进程启动，并把 `cwd` 设为当前 Subtask Git worktree。该路径不扩展第三方 Executor 注册；旧 Docker attempt 后端仍可通过 `METACLAW_EXECUTOR_BACKEND=docker` 显式启用。
+每个 installation binding 保存绝对 binary path、版本探测、driver、绝对源
+runtime home、环境文件引用、继承环境变量名、确认后的 permission profile
+和 backend 支持，不保存凭证值。Driver 声明 session resume、evidence
+affordance、结果收集和私有 home materializer。Kernel 授权后 Runtime 才
+claim/provision WorkUnit，并通过 `SandboxedExecutorAdapter` 使用该 binding。
 
 ## 前提条件
 
@@ -187,25 +217,22 @@ conversation / task 的边界很重要：
 - Node.js `>=22.19.0`。
 - npm。
 - Git。
-- Unix-like shell 环境，优先支持 macOS 和 Linux；Windows 用户推荐使用 WSL2，这是当前支持的可靠安装路径。
+- Ubuntu 24.04；Windows 用户通过 Docker 运行同一套 Ubuntu Runtime。
 - `better-sqlite3` 的原生编译工具链。
 
 推荐安装编译工具：
 
 ```bash
-# macOS
-xcode-select --install
-
-# Ubuntu / Debian
+# Ubuntu 24.04
 sudo apt-get update
 sudo apt-get install -y build-essential python3 make g++
 ```
 
 执行器前提：
 
-- 统一 Runtime 镜像已内置 Codex/Pi CLI 和配置。
-- 直接 Linux 开发时，在本机安装并配置要使用的 canonical CLI。
-- 只有 Docker 兼容模式才需要构建或拉取 canonical attempt 镜像。
+- 安装并认证 CLI，然后注册真实绝对路径和私有源 runtime home。
+- Windows 开发环境在唯一 Ubuntu Runtime 容器中使用同样的 Linux CLI；
+  不为 Executor 注册或构建单独镜像。
 
 飞书集成前提：
 
@@ -238,10 +265,10 @@ npm run smoke:anyfusion
 ```text
 MetaClaw native Planner session smoke passed.
 Scenario: planner-session
-Native session: /var/lib/metaclaw/codex/planner/sessions/...jsonl
+Native session: ~/.local/share/anyfusion/runtime/planner-sessions/...jsonl
 ```
 
-`setup.sh` 会安装 AnyFusion 本身、构建 CLI、执行 `npm link`、生成 `~/.metaclaw/config.yaml`，并自动检测当前系统里的 Executor。
+`setup.sh` 会安装 AnyFusion 本身、构建 CLI、执行 `npm link`、生成 `~/.local/share/anyfusion/runtime/config.yaml`，并自动检测当前系统里的 Executor。
 
 在交互式终端里，它会展示检测到的 Executor 列表，让用户选择要接入哪几个 Executor，并选择哪个作为默认 Executor。如果选择了缺失但支持自动安装的 Executor，setup 可以直接安装。没有任何 Executor 可用时，默认 fallback 是安装 Codex CLI：
 
@@ -257,20 +284,21 @@ codex
 
 安装核验清单：
 
-- `node --version` 是 `>=20`。
+- `node --version` 是 `>=22.19.0`。
 - `./setup.sh` 最后显示“安装完成”。
-- `~/.metaclaw/config.yaml` 已生成。
+- `~/.local/share/anyfusion/runtime/config.yaml` 已生成。
 - 新开一个 shell 后，`anyfusion --help` 可用。
-- 默认 executor 命令可用，例如 `codex --help`。
+- `anyfusion executor list` 中需要参与路由的 Executor 均为
+  `enabled / verified`。
 - `npm run smoke:anyfusion` 通过，并打印原生 Planner session 路径。
 
 setup 可选参数：
 
 ```bash
-# 默认不覆盖已有 ~/.metaclaw/config.yaml
+# 默认不覆盖已有 ~/.local/share/anyfusion/runtime/config.yaml
 METACLAW_OVERWRITE_CONFIG=false ./setup.sh
 
-# 强制重写 ~/.metaclaw/config.yaml
+# 强制重写 ~/.local/share/anyfusion/runtime/config.yaml
 METACLAW_OVERWRITE_CONFIG=true ./setup.sh
 
 # 只构建，不执行 npm link
@@ -301,54 +329,27 @@ anyfusion --help
 
 ## Windows 安装
 
-Windows 用户推荐使用 WSL2 + Ubuntu。这样可以提供 AnyFusion 当前需要的 Unix-like shell、原生编译工具链、socket、进程行为和 executor 兼容性。
+Windows 只负责 Docker 编排。Runtime、Planner、Codex 和 Pi 全部运行在同一个
+Ubuntu 24.04 Runtime 容器内，因此本机和 Ubuntu 服务器使用相同应用逻辑和
+Linux 进程行为。
 
-先在 Windows PowerShell 中安装 WSL2：
+将 `AnyFusion` 和兄弟仓库 `AnyFusion-Pi` 放在同一目录，创建三份 provider
+配置，然后在 PowerShell 中执行：
 
 ```powershell
-wsl --install -d Ubuntu
+Copy-Item docker\planner-pi.env.example docker\planner-pi.env
+Copy-Item docker\executor-codex.env.example docker\executor-codex.env
+Copy-Item docker\executor-pi.env.example docker\executor-pi.env
+.\docker\shell.ps1 -Start
+.\docker\shell.ps1 -SetupSsh
+.\docker\shell.ps1
 ```
 
-如果系统提示重启，重启后打开 Ubuntu，在 WSL 内安装依赖：
-
-```bash
-sudo apt-get update
-sudo apt-get install -y git curl build-essential python3 make g++
-
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt-get install -y nodejs
-
-node --version
-npm --version
-git --version
-```
-
-然后在 WSL Ubuntu shell 内安装并验证 AnyFusion：
-
-```bash
-git clone https://github.com/MetaAny/AnyFusion.git
-cd AnyFusion
-./setup.sh
-anyfusion --help
-npm run smoke:anyfusion
-```
-
-如果 setup 过程中安装了 Codex CLI，先在 WSL 里打开一次 Codex 并完成登录，再执行真实任务：
-
-```bash
-codex
-```
-
-Windows 安装核验清单：
-
-- 在 WSL Ubuntu 里运行 AnyFusion 命令，不要在 Windows PowerShell 里直接运行。
-- 仓库建议放在 WSL 文件系统，例如 `~/AnyFusion`，不要放在 `/mnt/c/...`，这样文件和 SQLite 性能更稳定。
-- `node --version` 是 `>=20`。
-- 新开一个 WSL shell 后，`anyfusion --help` 可用。
-- 默认 executor 在 WSL 内可用，例如 `codex --help`。
-- `npm run smoke:anyfusion` 成功完成
-
-Windows 原生 PowerShell 不是当前推荐的主要运行环境。高级用户可以使用 Node.js 22.19+、Git、Visual Studio Build Tools、`npm install`、`npm run build` 和 `node dist/index.js` 直接开发，但 `setup.sh`、`anyfusion.sh`、Unix socket Gateway 行为以及下游 executor CLI 可能和 Linux/macOS 不一致。Windows 的受支持路径是统一 Docker runtime；直接 Linux 开发可使用 WSL2。
+源码变化后使用 `-Rebuild`。Runtime 状态和 Executor 配置持久化在
+`/data/anyfusion`，默认 Project 持久化在 `/workspace/default`。容器启动时会通过
+统一注册服务自动补齐缺失的 canonical `codex` 和 `pi` Executor，并完成验证、启用
+和 Registry reload；已存在的定义直接跳过。`-Start` 和 `-Rebuild` 会等待 bootstrap
+和 SSH 真正就绪后再报告成功。Windows 原生 Node.js 不是受支持的 Runtime 路径。
 
 ## 安装执行器
 
@@ -356,66 +357,74 @@ AnyFusion 不内置下游执行器 CLI。你需要自己安装要使用的执行
 
 ### 注册自定义 Executor
 
-Executor 是 AnyFusion 可以分配 subtask 的运行时工人。一个已注册 Executor 现在包含三层信息：
+Executor Registry 顶层固定为 `schemaVersion`、`capabilities`、`profiles`
+和 `executors`。Capability 定义受控交付契约、affordance、恢复安全和最小
+权限；Profile 定义发现规则和已知 driver；Executor 定义路由画像、启用
+状态和 installation binding。
 
-- `AgentClass`：适用领域、能力、风险等级、输入/输出类型、适用场景、route-intent affinity 和 runtime 默认配置。
-- 运行绑定：不可变 Docker image ID、受控 permission profile、容器内命令/参数、安装检测命令和可选项目地址。
-- 至少一个 executor `WorkUnit`：一个具体的空闲 runtime slot，一次 claim 一个 ready subtask。
+在 AnyFusion-Pi TUI 输入 `/executor register` 会打开统一注册窗口。基础页
+确认 Profile、描述、Capability 和主要用例；高级页确认绝对 binary path、
+私有 runtime home、环境来源和有效 permission。Codex、Pi、Hermes 使用
+已知 Profile；Generic CLI 会展开完整 `cli-session` 协议。
 
-如果不确定具体该填什么，使用问答式注册向导：
-
-```bash
-/executor register wizard
-```
-
-向导会依次询问 Executor 名称、是否从项目地址推断、运行命令、非交互参数、安装检测命令、适用领域和能力。如果提供 GitHub 项目地址，AnyFusion 会尝试从 `package.json` 或 README 示例推断 CLI 信息；如果无法可靠推断，会自动回到手动填写。
-
-也可以一次性注册：
+CLI、slash command 和 TUI 调用同一个注册应用服务：
 
 ```bash
-/executor register research-bot \
-  --image registry.example/research-bot:1.2.3 \
-  --image-id sha256:<64-hex-digest> \
-  --permission-profile restricted-custom \
-  --command research-bot \
-  --args "run --prompt {prompt}" \
-  --check "research-bot --version" \
-  --project-url https://github.com/example/research-bot \
-  --domains research,reporting \
-  --capabilities research,report_generation
+anyfusion executor discover
+anyfusion executor register codex-local \
+  --profile codex \
+  --binary /usr/local/bin/codex \
+  --home /home/user/.codex \
+  --description "仓库工程与验证" \
+  --capabilities workspace-engineering \
+  --use-cases "实现,测试,代码审查"
+anyfusion executor verify codex-local
+anyfusion executor enable codex-local
+anyfusion executor disable codex-local
+anyfusion executor show codex-local
+anyfusion executor list
+anyfusion executor reload
 ```
 
-`{prompt}` 会被替换为 subtask 提示词。如果 `--args` 不包含 `{prompt}`，AnyFusion 会把 prompt 追加为最后一个参数。image ID 必须匹配引用镜像，permission profile 必须来自受控目录。缺少绑定、镜像标签漂移或 profile 无效都会 fail closed；不存在宿主进程 fallback。路由 capability 仍与权限事实分离，不把权限细节暴露给 Planner。
+通用 CLI 必须提供 `--driver cli-session`、版本参数/匹配表达式、permission
+profile、initial/resume 参数、session ID 提取、timeout 和 terminate signal；
+final output pattern 可选。模板支持 `{prompt}`、`{sessionId}` 和可选
+`{outputPath}`。
 
-`codex-cli` 与 `pi-agent` 完全由 canonical built-in definitions 管理。启动时会把这两个名称对应的全部静态字段、不可变镜像绑定和 permission profile 强制收敛，常规注册接口也拒绝覆盖或删除。非 canonical capability 仍是自由注册元数据，不会自动进入受控 Planner catalog；缺少 image/profile 的历史自定义类保留审计记录但不可执行。
+验证会创建临时 Git 工作区和独立 runtime home，检查版本、第一轮随机
+challenge、session ID 提取、同 session 第二轮 challenge，以及 cwd/home
+隔离、输出上限、timeout、中止和错误归一化。只有全部成功后才原子替换
+YAML、按精确 `configDigest` 保存 verification、启用 Executor 并刷新
+snapshot。手工修改 YAML 后必须 `/executor reload` 或重启；摘要变化会让
+旧 verification stale，加载失败则继续使用上一份有效 snapshot。
 
 Phase 5 的权限产品边界是 sandbox profile 加持久 request/grant/use 审计预算。`use_capability` 会原子消费 attempt identity、expiry、调用次数和字节预算，但它不是通用 operation broker，也不证明每个原生文件、网络或外部动作都经过细粒度中介。当前实际强制边界仍是容器 mount、egress profile 和 resource lease。
 
-Executor 扩展契约：
+Executor 定义契约：
 
 必需的路由字段：
 
-- `name`：稳定的 Executor 名称，例如 `research-bot` 或 `finance-research-agent`。
-- `domains`：适用领域，例如 `research`、`finance`、`software`。
-- `capabilities`：能力标签，例如 `research`、`report_generation`、`multi_tool`、`coding`、`tests`。
+- `id`：稳定的小写 Executor ID。
+- `description`：非空路由描述。
+- `capabilities`：至少一个受控 Capability ID。
+- `primaryUseCases`：至少一个主要用例。
+- `enabled`：管理启用状态。
+- `binding`：绝对 binary/home、版本、driver、环境和确认后的权限事实。
 
 建议的路由字段：
 
 - `inputTypes`：支持输入类型，例如 `text`、`files`、`image`。
 - `outputTypes`：输出类型，例如 `markdown`、`report`、`code`、`patch`、`json`。
-- `primaryUseCases`：适合路由给它的典型任务。
 - `avoidUseCases`：不适合路由给它的任务。
 - `riskLevel`：`low`、`medium` 或 `high`。
-- `intentAffinity`：按 route intent 记录的 affinity，例如 `repo_execution`、`research_workflow`、`memory_agent_ops` 和 `general`。
-- `projectUrl`：项目仓库或文档地址。
+- `affinity`：可选的有界 route-intent 权重。
 
 Executor 健康状态与近期结果属于动态状态。Planner 通过 `list_executor_status` 读取，不再将其保存为 AgentClass 的静态路由元数据。Runtime 在故障发生点持久化有界、脱敏的诊断事实，但不把它们被动注入每轮 Planner 上下文；用户追问执行为何失败或阻塞时，Planner 才通过显式只读诊断工具查询并用自然语言解释。
 
-必需的运行绑定：
-
-- `runtimeCommand`：本机 `PATH` 上可执行的命令，例如 `research-bot`。
-- `runtimeArgs`：非交互运行参数，例如 `["run", "--prompt", "{prompt}"]`。
-- `runtimeCheckCommand`：安装或可用性检测命令，例如 `research-bot --version`。
+Planner 只接收 enabled、verified、digest-matched 的路由投影。Kernel 独立
+复核 membership、Capability 覆盖和健康；Runtime 仅在 Kernel 授权后获得
+driver/path/home/environment binding。健康与近期结果继续通过
+`list_executor_status` 提供。
 
 运行行为要求：
 
@@ -437,11 +446,15 @@ Executor 健康状态与近期结果属于动态状态。Planner 通过 `list_ex
 常用管理命令：
 
 ```bash
+/executor discover
 /executor list
 /executor show <name>
-/executor register wizard
-/executor unregister <name>
-/executor feedback <taskId>
+/executor register
+/executor verify <name>
+/executor enable <name>
+/executor disable <name>
+/executor reload
+/executor refresh <name|all>
 ```
 
 ### Codex CLI
@@ -480,7 +493,7 @@ AnyFusion 调用方式：
 pi -p "<prompt>"
 ```
 
-Pi attempt 默认通过统一的 `SandboxedExecutorAdapter` seam 在当前 Subtask worktree 中运行 `pi` 子进程；Docker 兼容模式仍使用 canonical `metaclaw-executor-pi:phase5` 镜像。
+Pi attempt 通过统一的 `SandboxedExecutorAdapter` seam，在当前 Subtask worktree 中运行 Registry 已验证的 `pi` 子进程。Windows 开发环境只用一个 Ubuntu Runtime 容器，不再构建独立 Executor 镜像。
 
 ## Executor 与 Skill 的差异
 
@@ -488,7 +501,10 @@ Executor 和 Skill 是生态里的不同层。
 
 Executor 是“谁来干活”。Skill 是“干活时带什么方法、知识和工具规范”。
 
-Executor 是 AgentClass runtime，例如 canonical Codex CLI 与 Pi Agent。它可以作为 worktree 子进程运行，也可以走 Docker 兼容后端；它决定模型、工具链、权限、运行环境、上下文窗口、文件读写能力、非交互执行方式、成本和可靠性边界。
+Executor 是由 Registry binding 派生的 AgentClass 兼容值，例如已确认的
+Codex、Pi、Hermes 或通用 session CLI。它可以作为 worktree 子进程运行，
+不再选择第二种 Docker 执行后端；driver/binding 决定模型工具链、权限、运行环境、
+session、结果收集和私有 home 边界。
 
 Skill 更像轻量能力包。它描述某一类工作应该怎么做：怎么做期货分析、怎么做代码审查、怎么跑调研流程、怎么输出报告格式。Skill 可以改善某个 Executor 的表现，但不会自动改变这个 Executor 的 runtime、权限、工具或安装状态。
 
@@ -538,46 +554,45 @@ anyfusion
 - bridge 断开、数据过期或格式错误会明确降级 Task 投影或 proposal 提交，不能伪装 Task 已创建，也不得终止普通对话。
 - 设置 `METACLAW_STANDBY_TUI=1` 可启动完整保留的 Ink 备用实现；该模块不是默认入口，也不承担本次迁移后的持续功能开发。
 
-或使用项目脚本：
+也可以不安装全局链接，直接使用仓库 launcher：
 
 ```bash
-./anyfusion.sh start
+./anyfusion --project /path/to/project
 ```
 
 首次启动会创建：
 
 ```text
-~/.metaclaw/
-├── config.yaml
-├── metaclaw.db
-└── gateway.sock
+~/.local/share/anyfusion/
+└── runtime/
+    ├── config.yaml
+    ├── metaclaw.db
+    └── gateway.sock
 ```
 
 连接已有实例：
 
 ```bash
-./anyfusion.sh connect
+anyfusion --connect
 ```
 
-运行管理：
+以前台方式运行 Gateway：
 
 ```bash
-./anyfusion.sh status
-./anyfusion.sh logs
-./anyfusion.sh logs -f
-./anyfusion.sh restart
-./anyfusion.sh stop
+anyfusion gateway run --project /path/to/project
 ```
 
-安装或管理用户级 Gateway 服务：
+Gateway 初始化和诊断继续使用明确的 CLI 命令：
 
 ```bash
-./anyfusion.sh gateway install
-./anyfusion.sh gateway start
-./anyfusion.sh gateway status
-./anyfusion.sh gateway restart
-./anyfusion.sh gateway stop
+anyfusion gateway setup
+anyfusion gateway doctor
+anyfusion gateway pairing list
 ```
+
+仓库不再保留第二套后台进程 launcher，也不再生成 systemd 服务。Demo 阶段
+直接以前台方式运行 Gateway；服务器需要常驻时，由现有进程管理器包装
+`anyfusion gateway run`。
 
 直接 Gateway 模式：
 
@@ -586,18 +601,28 @@ anyfusion --gateway
 anyfusion --connect
 ```
 
-### 在 Docker 中运行（macOS / Windows / 容器化）
+### Linux 服务器裸机 launcher
 
-在 macOS 和 Windows 上，`docker/` 工作流将 Linux Runtime 作为 SSH 服务运行，为原生 TUI 提供真实 PTY，并允许通过 shell 或 VS Code Remote-SSH 浏览 `/workspace`。这条受支持路径需要 Docker Desktop，因为 Runtime 与 Executor CLI 依赖 Linux。一次 BuildKit 构建以 MetaClaw 为默认 context，并以兄弟 AnyFusion-Pi 仓库为必需的 `anyfusion-pi` context。最终镜像只包含一份 Node 22.19+，MetaClaw control process 位于 `/app`，隔离的 Planner process 位于 `/opt/anyfusion-planner/app`，两者保留独立依赖树；canonical Codex/Pi attempt 直接在该 Runtime 内作为 worktree 子进程运行。
+仓库根目录的 `anyfusion` 命令是本 Linux 服务器的默认 launcher。它构建
+MetaClaw 和兄弟 AnyFusion-Pi，并将 MetaClaw 与 Planner 作为独立宿主机
+Node.js 进程启动。已验证的 Registry binding 复用宿主机安装命令，在受管
+Subtask worktree 中运行；这条服务器启动路径不使用 Docker。
 
-完整 Runtime image 内置 MetaClaw CLI、v7 schema、编译后的 Planner MCP server、构建后的 AnyFusion-Pi 应用、版本化 host bridge、Codex/Pi CLI 与对应配置。`docker/Dockerfile.runtime` 构建两个仓库 context，并把两个独立应用树复制进最终镜像。Planner launcher 与 MetaClaw 注入的 `/app/dist/planner-mcp.js` 命令都使用 `/usr/local/bin/node`，禁止存在 `/opt/anyfusion-planner/node`。默认 launcher 只启动这一个 Runtime 容器，不挂 Docker socket、不构建 sibling Executor 镜像，也不创建 attempt control network。任一仓库源码变化后都使用 `docker/shell.ps1 -Rebuild`；只保留 workspace/data volume。完整要求见 [Phase 5 Runtime Security](phase-5-runtime-security.md)。
+每次 attempt 使用 driver materializer 创建的私有 home；支持 evidence
+服务的 driver 还会获得 attempt-scoped model gateway token。Runtime 数据
+位于 `~/.local/share/anyfusion/runtime`，Executor Registry 位于
+`$ANYFUSION_CONFIG_HOME`，通常是 `~/.config/anyfusion`。使用
+`anyfusion --no-build` 复用当前构建产物，使用
+`anyfusion smoke --scenario artifact` 完成本机端到端 gate。原有 Runtime
+Dockerfile 和 `docker/shell.ps1` 提供同一套 Ubuntu Runtime，用于 CI 和
+Windows 宿主机开发。
 
 ## 配置
 
 编辑：
 
 ```bash
-~/.metaclaw/config.yaml
+~/.local/share/anyfusion/runtime/config.yaml
 ```
 
 示例：
@@ -606,7 +631,6 @@ anyfusion --connect
 version: 1
 
 executor:
-  command: codex
   timeout: 300
   max_duration: 3600
 
@@ -659,11 +683,21 @@ integrations:
     public_base_url: ""
 ```
 
+Executor 静态定义和 installation binding 不在应用配置或 SQLite 中，而只在：
+
+```bash
+$ANYFUSION_CONFIG_HOME/executors.yaml
+```
+
+该文件权限为 `0600`，只引用环境文件和需要继承的变量名，不得保存凭证值。
+手工编辑后使用 `anyfusion executor reload` 或 `/executor reload`；加载失败
+时上一份有效 snapshot 继续生效。
+
 启动前导出飞书密钥：
 
 ```bash
 export FEISHU_APP_SECRET="your Feishu app secret"
-./anyfusion.sh start
+anyfusion gateway run --project /path/to/project
 ```
 
 ## 飞书交付和在线预览
@@ -675,7 +709,7 @@ AnyFusion 将“文档生成”和“飞书交付”分开处理：
 - 飞书后端把最终答案发回聊天。
 - 如果文件上传能力可用，飞书后端会上传任务产物。
 - 如果配置了 Markdown Preview，Markdown 产物会附带在线预览链接。
-- 投递尝试会写入 `~/.metaclaw/gateway-audit.jsonl`。
+- 投递尝试会写入 `~/.local/share/anyfusion/gateway-audit.jsonl`。
 
 执行器不应该直接调用飞书云文档 API。用户说“飞书云文档”或“在线预览”时，AnyFusion 会要求执行器产出本地 Markdown 产物，后端负责飞书同步和预览链接。
 
@@ -731,7 +765,7 @@ AnyFusion 会：
 3. 检索可用的历史任务上下文。
 4. 计算语义优先级。
 5. 让 planner 选择 planner outcome，或构建 subtask work graph。
-6. 持久化带依赖、候选 agent classes 和验收标准的 ready subtasks。
+6. 持久化带依赖、受控 Capability、snapshot 校验候选和验收标准的 ready subtasks。
 7. 为每个 ready subtask claim 一个空闲 executor work unit，并持续记录进展。
 8. 保存结果摘要、文件产物和任务记忆。
 9. 给出下一步建议。
@@ -753,6 +787,7 @@ AnyFusion 会：
 /task unblock <id>
 /task unblock <id> /tmp/evidence-v4.pdf
 /task cancel <id>
+/task purge <taskId> --confirm <taskId>
 /task <taskId> subtask cancel <subtaskId...>
 /task <taskId> accept-partial
 /task index rebuild
@@ -773,6 +808,12 @@ AnyFusion-Pi 下游原生 TUI 是默认本地入口。Planner fork 持有会话�
 原 Ink TUI 完整保留在 `src/tui/`，可通过 `METACLAW_STANDBY_TUI=1` 启动，但它是
 备用模块而不是第二套持续维护的前端。飞书与 Gateway 是后端交付面，不依赖本地使用哪套 TUI。
 
+Task purge 比 cancel 更强，只接受 `done`、`archived` 或 `cancelled` 且
+dispatch、publication、sandbox、lease、WorkUnit 已静默的 Task。服务先写
+最小审计和事务级授权，再删除 Task 级 graph、receipt、handoff、publication、
+搜索、memory、workspace 和 artifact 事实。普通 SQL 删除 immutable receipt、
+handoff 或 merge attempt 仍被 trigger 阻止；事务失败时审计与删除一起回滚。
+
 ## 任务检索
 
 AnyFusion 会用本地 SQLite FTS5 建立任务检索索引，让历史工作可以被重新发现。用户不需要记住准确 task id；Planner 可先用查询文本搜索，再读取明确选中的任务上下文。
@@ -784,7 +825,11 @@ AnyFusion 会用本地 SQLite FTS5 建立任务检索索引，让历史工作可
 /task index search 合同 风险 矩阵
 ```
 
-该索引是确定性读模型，不是语义路由器。PlanningAgent 决定历史任务是否相关，调用 `search_tasks` 搜索，再通过 `get_task_context` 读取选中的记录。Runtime 不根据用户措辞推断任务连续性、相关历史、时间线意图或恢复/参考模式。
+该索引是确定性读模型，不是语义路由器。PlanningAgent 决定历史任务是否相关，
+调用 `search_tasks` 搜索，再通过 `get_task_context` 读取选中的记录。Runtime
+不根据用户措辞推断任务连续性、相关历史、时间线意图或恢复/参考模式。
+`source = system_smoke` 的 Task 默认不进入普通 Task pool、搜索和记忆生成，
+只有显式诊断路径可查看。
 
 ## 单 Task 并发调度模型
 
@@ -801,21 +846,49 @@ AnyFusion 当前只调度一个活跃顶层 Task。Work Graph 纯函数从依赖
 自然语言 dispatch 拆成 Planner 理解、Kernel 授权和 Runtime 执行三层。除 slash command、显式 ID、路径、URL 和附件外，raw input 都进入 `PlanningAgent`；自然语言“记住”不再是快路。Planner 可按需调用只读 MCP，并通过原生 proposal 工具提交严格 v7 `PlanningAgentPlan`。Work Graph 使用 v6 契约；授权确认只能解释同一 Task 中既有精确 request ID，不能修改 target、scope 或 grant。
 
 - `direct_reply`、`clarification`、`task_control` 或 `no_action`：除非 kernel 把 plan 重写为可执行工作，否则不应 claim executor work unit。
-- `plan_work_graph`：planner 提出一个 work graph proposal，节点是未来的 `Subtask` 记录。每个 proposal 都带有依赖、验收标准、`deliveryKind: edit | report`、受控的 `requiredCapabilities` 和完整有序的 canonical AgentClass 候选集合。
+- `plan_work_graph`：planner 提出一个 work graph proposal，节点是未来的
+  `Subtask` 记录。每个 proposal 都带有依赖、验收标准、
+  受控的 `requiredCapabilities` 和来自当前
+  Planner Registry projection 的完整有序 Executor ID 集合。
 
-`ControlKernel` v5 验证 schema、priority、task status、单活跃任务冲突、Work Graph、AgentClass 和 scheduling snapshot，也唯一决定 batch dispatch、Task/Subtask 取消、显式部分接受、generation replan、deferred availability、Executor recovery、retry/fallback、merge repair/conflict replan、permission grant/deny/escalate、partition wait 和 sandbox recovery。
+`ControlKernel` v5 验证 schema、priority、task status、单活跃任务冲突、
+Work Graph、Registry digest、Executor membership、Capability 覆盖、健康和
+scheduling snapshot，也唯一决定 batch dispatch、Task/Subtask 取消、显式
+部分接受、generation replan、deferred availability、Executor recovery、
+retry/fallback、permission
+grant/deny/escalate、partition wait 和 sandbox recovery。
 
-`DurableKernelWorkflow` 负责 event inbox、Decision/application 原子 issuance、幂等 Runtime apply 和 observation drain。`WorkGraphRuntimeService` 只持久化或投影 Kernel 授权的 v6 Work Graph revision。`KernelExecutionRuntime` 构造快照并应用授权；`AttemptSupervisor` 管理 durable child launch；`SubtaskAttemptRunner` 负责 attempt-aware claim、唯一 context、Completion Protocol、receipt 和 candidate commit；`WorkspacePublicationWorker` 负责稳定 Git 集成与原子 completion 发布。
+`DurableKernelWorkflow` 负责 event inbox、Decision/application 原子 issuance、幂等 Runtime apply 和 observation drain。`WorkGraphRuntimeService` 只持久化或投影 Kernel 授权的 v6 Work Graph revision。`KernelExecutionRuntime` 构造快照并应用授权；`AttemptSupervisor` 管理 durable child launch；`SubtaskAttemptRunner` 负责 attempt-aware claim、唯一 context、Completion Protocol、receipt 和精确 candidate commit；`WorkspacePublicationWorker` 负责应用用户审批的 Project `main` promotion 并原子发布 completion facts。
 
 旧版 `ExecutorRouter`、`ExecutorRoutingCoordinator`、`ExecutionPolicyPlanner` 以及 `IntentOrchestrator` 路由子系统已整体删除——不再有独立的 executor-selection 层。`repo_execution`、`research_workflow` 等旧 route intent 名称仅作为 agent class 排序的 affinity key 保留。
 
-## 复杂任务策略和 Agentic Loop
+## 复杂任务策略和 Kernel 控制循环
 
 AnyFusion 可以把复杂需求表示成 work graph，而不是把整段需求一次性塞给一个 executor。图没有 single/multi execution mode；Planner 只在受控能力交接或必要交付边界建立多个 Subtasks。每条 `dependencies` 边同时是拓扑与 keyed `text`/`artifact` handoff contract。
 
-`SubtaskExecutionContext` 是唯一生产 Executor 输入。Task 标题/目标仅作背景，当前 Subtask 目标是唯一操作指令，越界 sibling 只暴露标题。Runtime 不把 Task/Subtask/attempt/WorkUnit 身份及 acceptance/handoff key 交给模型复制。Completion Protocol v3 的模型侧严格 JSON 只允许 `evidence` 与可空 `noChangeReason`，或受控 `failure`；模型提供的身份和 artifacts 会被拒绝。Runtime 在校验前计算一次权威 workspace delta：`report` 必须零变化，`edit` 的有变化/零变化分别要求空原因/非空原因；新增和修改文件由 Runtime 生成 artifacts，删除只保留在 delta/evidence。delta 截断或不确定时 fail-closed，随后 Runtime 根据绑定 Subtask 与 outgoing contract 生成权威内部 envelope 并执行预算和直接边汇总校验。
+`SubtaskExecutionContext` 是唯一生产 Executor 输入。Task 标题/目标仅作背景，当前 Subtask 目标是唯一操作指令，越界 sibling 只暴露标题。Runtime 不把 Task/Subtask/attempt/WorkUnit 身份及 acceptance/handoff key 交给模型复制。Completion Protocol v4 要求 marker 前有非空 Markdown 结果说明；成功时严格 JSON 为 `{}` 或只包含可选 `resultFilePaths`，失败时使用受控 `failure`。Runtime 校验声明的结果文件确实存在且位于工作区内，用结果说明生成 acceptance evidence 和文本 handoff，用结果文件生成 artifact handoff。Subtask 可以修改工作区，也可以不修改；workspace delta 仍由 Runtime 独立记录并用于 Git 发布校验。若修改了文件，Executor 必须提交并同步本地 `main`；未修改文件时只需保持工作树干净。随后 Runtime 根据绑定 Subtask 与 outgoing contract 生成权威内部 envelope，并执行预算和直接边汇总校验。
 
-在 active session path 中，proposal 只有在 `ControlKernel` 授权并创建 durable application 后才会成为持久化 Work Graph v6 `Subtask` revision。未发布产品使用 fresh-only SQLite schema v31；所有更早的预发布 schema 都会被拒绝，不提供升级或双读路径。当前 schema 包含持久化 Planner proposal turn/submission 与 accepted-turn lock，并包含 durable workflow、graph revision、resource/workspace/permission/sandbox、dispatch/publication/merge audit、cancellation cleanup、lease revocation、generation replan request、deferred availability proposal、bounded Executor recovery checks 和 `full | partial_accepted` completion kind。Kernel 与 Task 事件保留完整历史；Skill 过程事件只保留为 attempt 生命周期内的 verifier evidence，只有终态事件落库并在同一事务更新 effect summary。下游只有在直接依赖 publication 成功后才进入 frontier，并合并其完整 Git ancestry；integration branch 不会隐式成为 sibling 基线。Executor 成功先进入 `awaiting_integration`，publication 成功后才原子发布 completion facts。文本允许 Git 三方合并；二进制路径独占且不自动合并。冲突由原 AgentClass 最多修三次，再独立 conflict replan 一次，仍失败则 park。
+第一次 Completion Protocol 失败后，Kernel 可以授权一次持久化名称仍为 `contract_correction` 的完整重试。它不再是无工具格式修复：新 Executor session 复用原 Subtask worktree，重新建立同 AgentClass 的 permission profile、mount、resource lease、evidence/capability MCP、完整工具与网络策略，并接收原目标、acceptance 和包含本次 violations 的 bounded recovery packet。新 attempt 不继承来源 attempt 的一次性 capability grant，也不把错误提取的原始中间响应作为主要任务输入。Runtime 按新 attempt 的基线和最终状态重新计算权威 workspace delta，并正常执行 Completion 与 publication 验收；第二次 contract failure 直接 blocked。Pi terminal event 提取和 correction 额度按 source attempt 统计仍是独立技术债。
+
+在 active session path 中，proposal 只有在 `ControlKernel` 授权并创建 durable
+application 后才会成为持久化 Work Graph v6 `Subtask` revision。未发布产品
+使用 fresh-only SQLite schema v35；所有 v34 或更早预发布 schema 都会带
+精确路径拒绝，不提供迁移、自动删除或双读。Schema 35 保留 Project、
+publication、Executor Registry、process runtime 与 purge 基线，并删除过时的
+Subtask delivery-kind 列；同时保留
+Planner proposal、durable workflow、graph revision、
+resource/workspace/permission/sandbox、dispatch/publication/immutable merge
+audit、cancellation cleanup、lease revocation、generation replan、deferred
+availability、bounded recovery 和 partial completion 事实。普通运行期间
+Kernel 与 Task 事件保留完整历史；Skill 过程事件只保留为 attempt 生命周期
+内的 verifier evidence，只有终态事件落库并原子更新 effect summary。下游
+只有在直接依赖获得审批并合并到 Project `main` 后才进入 frontier，并从更新
+后的 `main` 创建自己的 worktree。Executor 只有在修改文件时才必须提交全部改动、
+合并当前本地 `main`、自行解决冲突；无论是否改动都必须保持分支干净。Runtime 校验 assigned branch 与
+`main` ancestry 后创建 `awaiting_approval` 的 `repository_promotion` 请求。
+审批通过后完整分支合并到 `main` 并删除 worktree/branch；拒绝则阻塞并保留。
+若审批期间 `main` 已变化，Runtime 保留 worktree，让 Executor 重新同步后再
+生成新的审批。当前不执行 remote Git 操作，也不做按文件选择性发布。
 
 已经脱离生产链路的 `ExecutionStrategyPlanner`、`ExecutionPolicy`、`MultiExecutorOrchestrator` 和 `AgenticLoopController` 实现已删除。work graph 与 work unit dispatch 成为权威路径后，这些旧实现不再参与运行时。`ExecutionAggregator` 继续供验证流水线执行结构化的多结果证据检查。
 
@@ -878,7 +951,26 @@ anyfusion --script /tmp/anyfusion-flow.txt
 
 `--script` 会逐行执行输入，空行和以 `#` 开头的行会被忽略。
 
-`npm run smoke:anyfusion` 默认运行 `planner-session`：在同一个 MetaClaw session 中发送两轮对话，确认第二轮能回忆本轮未重复的口令，并确认只创建一个持久 AnyFusion-Pi Planner session 文件。执行器产物回归仍可显式运行 `--scenario artifact` 或 `--scenario python-hello`。
+`npm run smoke:anyfusion` 默认运行 `planner-session`：在同一个 MetaClaw
+session 中发送两轮对话，确认第二轮能回忆本轮未重复的口令，并确认只创建
+一个持久 AnyFusion-Pi Planner session 文件。执行器产物回归仍可显式运行
+`--scenario artifact` 或 `--scenario python-hello`；真实公网研究 gate 使用
+`anyfusion smoke --executor pi --scenario pi-research --timeout 300`。
+
+真实 Task smoke 使用当前主库、当前工作区和同一份 `executors.yaml`。每个
+smoke Task 都带 `source = system_smoke` 和唯一 `smoke_run_id`，因此默认从
+普通 Task pool、搜索和记忆生成隐藏。runner 无论成功失败都会通过正式命令
+取消未终态的自有 Task、等待资源静默、只 purge 精确匹配的 Task，删除
+workspace/artifact/临时 home，检查 foreign key，并把 `smoke_run_audits`
+轮转到最近 20 条。未确认当前主机 Registry、数据库和 provider 配置安全前，
+不要运行带真实凭证的 smoke。
+
+2026-08-08 的主机验收已注册并验证 Codex 与 Pi，跑通真实 Codex artifact
+Task 和真实 Pi `web_search`/`web_fetch` 调研 Task，并在正式 purge 后确认
+Task 级数据库、workspace、artifact、CAS 和活动资源零残留。Hermes
+driver/Profile 支持已实现，但本次未注册、未纳入验收。精确 run ID 和关闭
+证据记录在
+[schema 32 完成计划](../plans/2026-08-07-unified-executor-registry-and-schema-32.md)。
 
 针对性测试：
 
@@ -902,7 +994,7 @@ src/
 ├── core/           # 窄共享基础类型和规范化 KernelFailure 事实
 ├── delivery/       # 验收、产物抽取、聚合检查和最终交付准备
 ├── execution/      # 已授权副作用：workflow apply、probe、claim、attempt、sandbox、Git publication
-├── executor/       # Executor adapter，以及 AgentClass admin/seeder、prompt、skill package
+├── executor/       # Registry config/snapshot/registration、driver、adapter、prompt、skill package
 ├── gateway/        # 本地 Gateway server/client 和飞书 Gateway runtime
 ├── guidance/       # 主动引导、任务信号、引导策略和仪表盘编排
 ├── integrations/   # 外部集成辅助能力，例如 Markdown preview
@@ -915,7 +1007,7 @@ src/
 ├── resource/       # Partition identity、冲突、permission profile 与 bounded grant 纯规则
 ├── session/        # Session 协调、PlanningAgent/ControlKernel wiring 与状态投影
 ├── storage/        # SQLite migrations 和 repositories
-├── task/           # 任务状态机和 runtime
+├── task/           # 任务状态机、runtime 和受控 purge service
 ├── tui-bridge/     # 原生 Planner TUI 进程与只读 Unix JSONL bridge
 ├── tui/            # 完整保留的备用 Ink 终端 UI
 ├── utils/          # 配置、路径、日志、ID 等通用工具

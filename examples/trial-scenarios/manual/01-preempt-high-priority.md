@@ -7,7 +7,7 @@
 1. 启动 Metaclaw：
 
 ```bash
-./metaclaw.sh start
+anyfusion
 ```
 
 2. 输入一个真实研究任务：

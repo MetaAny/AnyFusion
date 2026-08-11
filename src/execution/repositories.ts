@@ -5,9 +5,8 @@ export interface AttemptSandboxPersistenceRecord {
   subtaskId: string;
   workUnitId: string;
   workspaceId: string;
-  containerId: string;
-  imageRef: string;
-  imageId: string;
+  runtimeHandle: string;
+  processId: number | null;
   status: 'created' | 'running' | 'paused' | 'exited' | 'removed' | 'lost';
   leaseToken: string;
   labels: Record<string, string>;
@@ -22,11 +21,11 @@ export interface AttemptSandboxPersistenceRecord {
 export interface AttemptSandboxRepositoryPort {
   create(record: AttemptSandboxPersistenceRecord): AttemptSandboxPersistenceRecord;
   find(attemptId: string): AttemptSandboxPersistenceRecord | null;
-  findByContainerId(containerId: string): AttemptSandboxPersistenceRecord | null;
+  findByRuntimeHandle(runtimeHandle: string): AttemptSandboxPersistenceRecord | null;
   listActive(): AttemptSandboxPersistenceRecord[];
   update(attemptId: string, changes: Partial<Pick<
     AttemptSandboxPersistenceRecord,
-    'status' | 'exitCode' | 'resultCollectedAt' | 'cleanupStatus' | 'cleanupError' | 'updatedAt'
+    'processId' | 'status' | 'exitCode' | 'resultCollectedAt' | 'cleanupStatus' | 'cleanupError' | 'updatedAt'
   >>): void;
 }
 

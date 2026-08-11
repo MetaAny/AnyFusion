@@ -1,30 +1,55 @@
-FROM node:22.19.0-bookworm-slim
+ARG UBUNTU_IMAGE=ubuntu:24.04@sha256:561618e2c15bf2397621dd04f96926663a3b5616c189cf7e38db7e82f5c538ea
+FROM ${UBUNTU_IMAGE}
+
+ARG NODE_VERSION=22.19.0
+ARG NODE_SHA256=c0649af18e6a24f6fe5535a3e86b341dd49a8e71117c8b68bde973ef834f16f2
 
 WORKDIR /app
 
 ENV CI=true
+ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends \
-    bash \
-    build-essential \
-    ca-certificates \
-    curl \
-    g++ \
-    git \
-    make \
-    python3 \
-  && rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+  apt-get -o Acquire::Retries=5 update; \
+  apt-get -o Acquire::Retries=5 install -y --no-install-recommends ca-certificates; \
+  sed -i \
+    -e 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g' \
+    -e 's|http://security.ubuntu.com|https://security.ubuntu.com|g' \
+    /etc/apt/sources.list.d/ubuntu.sources; \
+  apt-get -o Acquire::Retries=5 update; \
+  attempt=1; \
+  until apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+    bash build-essential curl g++ git make python3 xz-utils; do \
+      if [ "$attempt" -ge 3 ]; then exit 1; fi; \
+      attempt=$((attempt + 1)); \
+      apt-get -o Acquire::Retries=5 update; \
+  done; \
+  curl -fsSLO "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz"; \
+  echo "${NODE_SHA256}  node-v${NODE_VERSION}-linux-x64.tar.xz" | sha256sum -c -; \
+  tar -xJf "node-v${NODE_VERSION}-linux-x64.tar.xz" -C /usr/local --strip-components=1; \
+  rm "node-v${NODE_VERSION}-linux-x64.tar.xz"; \
+  npm install -g npm@10.9.3; \
+  rm -rf /var/lib/apt/lists/*
 
 COPY package.json package-lock.json ./
 
 RUN npm ci
 
-RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.80.2
+RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.81.1
 
 # Stock Codex and Pi CLIs are installed only for Executor integration tests; Planner uses the AnyFusion-Pi process boundary.
-RUN npm install -g --ignore-scripts @openai/codex@0.144.1
+RUN npm install -g --ignore-scripts @openai/codex@0.146.0 \
+  && test "$(node --version)" = 'v22.19.0' \
+  && test "$(npm --version)" = '10.9.3' \
+  && test "$(codex --version)" = 'codex-cli 0.146.0' \
+  && test "$(pi --version)" = '0.81.1' \
+  && ldd --version 2>&1 | head -n 1 | grep -q '2.39'
 
 COPY . .
+
+# Windows Docker build contexts can preserve the launcher's checkout line endings.
+RUN sed -i 's/\r$//' anyfusion
+
+RUN npm run build
 
 CMD ["npm", "test"]

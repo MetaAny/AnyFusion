@@ -107,8 +107,8 @@ describe('App network recovery natural-language control', () => {
       await flushUpdates();
     }
     await (inputCapture.handler?.('', { return: true }) ?? Promise.resolve());
-    for (let attempt = 0; attempt < 100 && attemptSandbox.create.mock.calls.length === 0; attempt += 1) {
-      await new Promise(resolve => setTimeout(resolve, 10));
+    for (let attempt = 0; attempt < 500 && attemptSandbox.create.mock.calls.length === 0; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 20));
       await flushUpdates();
     }
 

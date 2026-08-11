@@ -74,7 +74,6 @@ function workGraphPlan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgen
         contextRefs: [{ kind: 'current_user_input' }],
         requiredCapabilities: ['workspace-engineering'],
         preferredAgentClassList: ['codex-cli'],
-        deliveryKind: 'edit',
         acceptance: [{ key: 'tests', description: 'List changed files and provide test evidence.', requiredEvidence: ['test result'] }],
         riskLevel: 'low',
       }],

@@ -5,7 +5,7 @@
 ## 真实验收
 
 1. 用真实 `codex-cli` 运行：
-   `./metaclaw.sh start`
+   `anyfusion`
 2. 输入真实任务：
    `请帮我总结一下当前这个项目的定位`
 3. 预期结果：

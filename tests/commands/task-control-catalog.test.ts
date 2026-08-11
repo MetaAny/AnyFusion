@@ -4,13 +4,11 @@ import { createDefaultCommandCatalog } from '../../src/commands/command-tree.js'
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { runMigrations } from '../../src/storage/migrations.js';
-import { AgentClassService } from '../../src/executor/agent-class-service.js';
 
 function createHarness() {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   runMigrations(db);
-  new AgentClassService({ db }).seedDefaults();
   const taskRepo = new TaskRepo(db);
   const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-command-control');
   const abortTask = vi.fn().mockReturnValue(1);

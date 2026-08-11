@@ -1,4 +1,4 @@
-import type { PlannerExecutorCatalog } from '../executor/builtin-executor-catalog.js';
+import type { PlannerExecutorCatalog } from '../executor/executor-registry-types.js';
 import { validatePlanningAgentPlan } from '../planning/planning-agent-plan-validator.js';
 import type { PlanningAgentPlan } from '../planning/planning-types.js';
 import {
@@ -104,6 +104,7 @@ export type KernelEvent =
       cycleId: string;
       attemptKind: KernelAttemptKind;
       attemptPayload: KernelAttemptPayload;
+      sourceAttemptId: string | null;
     })
   | (KernelEventEnvelope & {
       type: 'execution_outcome';
@@ -152,7 +153,7 @@ export type KernelEvent =
     })
   | (KernelEventEnvelope & {
       type: 'sandbox_lost';
-      containerId: string | null;
+      runtimeHandle: string | null;
       workspaceId: string;
       checkpointId: string | null;
     })
@@ -245,7 +246,6 @@ export type KernelSnapshot =
       resourceConflictSubtaskIds: string[];
       capacityProbeAgentClasses: Record<string, string[]>;
       executorStatuses: KernelExecutorStatusProjection[];
-      correctionSupportedAgentClasses: string[];
       nativeContinuationAgentClasses: string[];
       attempts: KernelAttemptFact[];
       generationId: string;
@@ -475,8 +475,6 @@ export interface KernelDecision {
 }
 
 const STATE_CHANGE_ACTIONS = new Set<KernelPlanProposal['action']>(['task_control', 'plan_work_graph']);
-const MAX_CORRECTION_INPUT_BYTES = 128 * 1024;
-
 /** Pure strategic interpreter for every Phase 3 control-plane event. */
 export class ControlKernel {
   decide(event: KernelEvent, snapshot: KernelSnapshot): KernelDecision {
@@ -733,10 +731,10 @@ export class ControlKernel {
       return event.available
         ? decision(event, singleDispatchBatch(
             event, event.taskId, subtask.id, event.agentClassName, 'contract_correction',
-            event.attemptId ?? null, 'fresh', resourceGrantForSubtask(snapshot, subtask.id),
+            event.sourceAttemptId, 'recovery_packet', resourceGrantForSubtask(snapshot, subtask.id),
             event.attemptPayload,
-          ), 'response-only correction capacity confirmed')
-        : decision(event, { type: 'block_work', taskId: event.taskId, subtaskId: subtask.id }, 'response-only correction capacity unavailable');
+          ), 'full contract retry capacity confirmed')
+        : decision(event, { type: 'block_work', taskId: event.taskId, subtaskId: subtask.id }, 'full contract retry capacity unavailable');
     }
     if (event.available) {
       return decision(event, singleDispatchBatch(
@@ -774,7 +772,7 @@ export class ControlKernel {
       return decision(event, { type: 'block_work', taskId, subtaskId: event.subtaskId ?? null }, 'failure facts are incomplete');
     }
     if (event.attemptKind === 'contract_correction') {
-      return decision(event, { type: 'block_work', taskId, subtaskId: subtask.id }, 'response-only correction failed and cannot enter ordinary recovery');
+      return decision(event, { type: 'block_work', taskId, subtaskId: subtask.id }, 'contract retry failed and cannot enter ordinary recovery');
     }
     if (failure.code === 'startup_orphaned_work') {
       return decision(event, { type: 'block_work', taskId, subtaskId: subtask.id }, 'startup orphaned work requires explicit recovery');
@@ -956,18 +954,18 @@ export class ControlKernel {
 
   private decideContractFailure(event: Extract<KernelEvent, { type: 'handoff_contract_failed' }>, snapshot: Extract<KernelSnapshot, { type: 'dispatch' }>): KernelDecision {
     if (!event.taskId || !event.subtaskId) return decision(event, { type: 'block_work', taskId: event.taskId ?? '', subtaskId: event.subtaskId ?? null }, 'contract failure identity is incomplete');
-    if (event.receiptCount !== 1 || event.responseBytes > MAX_CORRECTION_INPUT_BYTES || !snapshot.correctionSupportedAgentClasses.includes(event.agentClassName)) {
-      return decision(event, { type: 'block_work', taskId: event.taskId, subtaskId: event.subtaskId }, 'response-only correction is unavailable or already exhausted');
+    if (event.receiptCount !== 1) {
+      return decision(event, { type: 'block_work', taskId: event.taskId, subtaskId: event.subtaskId }, 'contract retry is already exhausted');
     }
     return decision(event, singleDispatchBatch(
       event, event.taskId, event.subtaskId, event.agentClassName, 'contract_correction',
-      event.attemptId ?? null, 'fresh', resourceGrantForSubtask(snapshot, event.subtaskId),
+      event.attemptId ?? null, 'recovery_packet', resourceGrantForSubtask(snapshot, event.subtaskId),
       {
         protocol: 'completion-correction-v2',
         completionContract: event.contract,
         violations: event.violations,
       },
-    ), 'one response-only contract correction authorized');
+    ), 'one full contract retry authorized');
   }
 
   private decideTimer(event: Extract<KernelEvent, { type: 'timer_tick' }>, snapshot: Extract<KernelSnapshot, { type: 'timer' }>): KernelDecision {

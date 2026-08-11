@@ -1,15 +1,17 @@
 import type { ExecutorInput } from '../../src/executor/adapter.js';
-import { COMPLETION_MARKER_V3 } from '../../src/execution/completion-protocol.js';
+import { COMPLETION_MARKER_V4 } from '../../src/execution/completion-protocol.js';
+import { isAbsolute, relative } from 'node:path';
 
 export function completionResponse(
   input: ExecutorInput,
   body = 'completed',
   artifacts: string[] = [],
 ): string {
-  return `${body}\n\n${COMPLETION_MARKER_V3}\n${JSON.stringify({
-    evidence: ['tests were not run: deterministic test fixture'],
-    noChangeReason: input.context.currentSubtask.deliveryKind === 'edit' && artifacts.length === 0
-      ? 'The deterministic test executor made no workspace changes.'
-      : null,
+  const workspaceRoot = input.context.workspaceContext.workingDirectory;
+  const resultFilePaths = artifacts.map(path => (
+    isAbsolute(path) ? relative(workspaceRoot, path).replaceAll('\\', '/') : path
+  ));
+  return `${body}\n\n${COMPLETION_MARKER_V4}\n${JSON.stringify({
+    ...(resultFilePaths.length > 0 ? { resultFilePaths } : {}),
   })}`;
 }

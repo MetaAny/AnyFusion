@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, writeFileSync } from 'fs';
-import { homedir } from 'os';
-import { join, resolve } from 'path';
+import { join } from 'path';
+import { resolveMetaclawDir } from '../utils/paths.js';
 import type { MemoryEngine } from './memory-engine.js';
 
 export interface MemoryVaultExportResult {
@@ -15,7 +15,7 @@ function ensureDir(path: string): void {
 }
 
 function defaultVaultDir(): string {
-  return resolve(homedir(), '.metaclaw', 'vault');
+  return join(resolveMetaclawDir(), 'vault');
 }
 
 function yamlString(value: string | null): string {
