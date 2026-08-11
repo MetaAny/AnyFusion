@@ -1,9 +1,9 @@
 # Pi Executor 完成提交与终止事件技术债
 
 - **记录日期**：2026-08-10
-- **状态**：部分已解决（Completion 提示词冲突已于 2026-08-11 修复；Pi 终止事件与 correction 额度仍待修复）
+- **状态**：部分已解决（Completion 提示词冲突与 response-only correction 已于 2026-08-11 修复；Pi 终止事件与 correction 额度仍待修复）
 - **优先级**：P0 可靠性
-- **范围**：Pi Executor JSONL 终止判定、Completion Protocol v4 提交、响应纠错额度、attempt 诊断保留
+- **范围**：Pi Executor JSONL 终止判定、Completion Protocol v4 提交、完整 contract retry 额度、attempt 诊断保留
 - **关联契约**：[ADR-0021](../adr/0021-work-graph-v4-subtask-execution-contract.md)、[ADR-0022](../adr/0022-unified-kernel-control-plane-and-decision-ledger.md)、[ADR-0026](../adr/0026-phase-6-single-task-reliability-closure.md)
 
 ## 1. 摘要
@@ -29,13 +29,15 @@ attempt 中断。第二次 Pi attempt 在 Runtime 重启后独立启动，持续
 4. Runtime 因退出码为 `0` 且该中间文本非空，把调用当作成功 Executor 响应；
 5. Completion Protocol 正确拒绝了缺少 marker 的文本；
 6. 用户显式 unblock 后产生的新 primary attempt 又被 Subtask 历史 receipt 总数
-   判定为“已经耗尽 correction”，因此没有获得本次 attempt 自己的一次格式纠错。
+   判定为“已经耗尽 correction”，因此没有获得本次 attempt 自己的一次完整重试。
 
 Completion Protocol 的明确终止边界仍然保留。2026-08-11 已先完成最小化修复：
 删除 `edit | report` 任务类型和 workspace 是否允许变化的限制，统一要求非空结果
 说明，可选返回现有的工作区内结果文件路径。这样消除了“必须提交 Git”与“不得修改
-工作区”的直接提示词冲突。Pi JSONL 终止事件适配、bounded 诊断和 correction 额度
-归属仍是独立的未完成技术债。本轮不实现 Pi 专用 `submit_completion` 工具，但保留
+工作区”的直接提示词冲突。同日还把旧 response-only correction 改成同 AgentClass、
+同 worktree、普通权限和完整工具的一次新 session 重试；重试接收 violations recovery
+packet，而不是只包装错误提取的中间文本。Pi JSONL 终止事件适配、bounded 诊断和
+correction 额度归属仍是独立的未完成技术债。本轮不实现 Pi 专用 `submit_completion` 工具，但保留
 “由 Executor 通过专属工具显式提交最终结果”的方向，作为完成边界的未来可靠性优化。
 
 ## 2. 真实复现记录
@@ -234,8 +236,8 @@ Worktree attempt 的 stdout/stderr JSONL 只保存在 adapter 内存中。结果
    可能隐藏了真正的末轮错误。
 3. 两次长调研 attempt 都没有形成可验证完成提交，说明自然语言 trailer 在长 ReAct
    工具循环后可靠性不足。
-4. 短 smoke 和 response-only correction 能正确输出 marker，说明问题不是 Pi 完全
-   不支持该格式，而是完成边界依赖 prompt 的方法不够稳健。
+4. 历史短 smoke 和旧 response-only correction 能正确输出 marker，说明问题不是 Pi
+   完全不支持该格式；但把中间过程包装成合法 trailer 也证明纯格式纠正可能制造假成功。
 5. 即使修复终止提取，也不能保证长任务每次都手写正确 marker；专用工具仍有价值。
 
 ## 6. Kernel 审核与 correction 额度问题
@@ -286,31 +288,33 @@ continuation 都可能被历史格式失败剥夺自己的 correction。
 workspace 限制造成的提示词冲突。专属完成工具并未被否定或删除，仍是后续降低长工具
 循环中 trailer 遗漏风险的候选设计。
 
-### 7.1 方案 A：继续使用 trailer，只修 prompt 和 correction
+### 7.1 当前方案：继续使用 trailer，并把 correction 改成完整重试
 
 做法：
 
 - 保留 literal marker + JSON；
 - 修复 Pi 终止事件解析；
 - 修复 correction 额度作用域；
-- 依赖 response-only correction 修正偶发格式问题。
+- 第一次 contract failure 由 Kernel 授权同 AgentClass、同 worktree 的完整 Executor
+  重试；新 session 使用普通权限和工具，并重新执行最终验收。
 
 优点：
 
 - 改动最小；
 - 所有 Executor 继续使用一个 Completion Protocol 表面；
-- 现有 validator 和 correction prompt 可以复用。
+- 现有 validator、worktree、permission/tool 和 publication 路径可以复用；
+- 避免只把错误提取的中间过程包装成结构化假成功。
 
 缺点：
 
 - 长工具循环后仍依赖模型记得输出特殊 trailer；
 - 自然语言正文、marker 和 JSON 仍混合在一个自由文本通道；
 - Pi 的最终完成声明仍不具备工具级 terminal 语义；
-- correction 会增加一次模型调用和额外失败面。
+- 完整 retry 会增加一次模型调用、工具执行成本和额外失败面。
 
-结论：当前 Demo 采用这一方向作为立即修复，并进一步删除 `deliveryKind`、`evidence`
-和 `noChangeReason`，只保留必填结果说明与可选结果文件路径；它不代表最终放弃专属
-提交工具。
+结论：当前 Demo 已采用这一方向，并进一步删除 `deliveryKind`、`evidence` 和
+`noChangeReason`，只保留必填结果说明与可选结果文件路径；它不代表最终放弃专属
+提交工具。旧 response-only Adapter 接口、无工具进程和专用 correction prompt 已删除。
 
 ### 7.2 方案 B：Runtime 自动包装最后一段 Markdown
 
@@ -445,7 +449,8 @@ Kernel event/snapshot 应提供 source attempt 是否已经使用 correction 的
 - marker 前的非空 Markdown 是必填结果说明；
 - 成功 JSON 只保留可选 `resultFilePaths`；
 - 删除 `deliveryKind`、workspace 变化限制、`evidence` 和 `noChangeReason`；
-- response-only correction 继续修正偶发格式错误。
+- 第一次 contract failure 进入同 AgentClass、同 worktree、完整权限/工具的新 session
+  retry；第二次失败 fail closed。
 
 ### P1（未来优化）：评估 Executor 专属完成提交工具
 
@@ -489,7 +494,9 @@ Kernel event/snapshot 应提供 source attempt 是否已经使用 correction 的
 
 ### Kernel correction
 
-- 第一个 primary contract failure 获得一次 correction；
+- 第一个 primary contract failure 获得一次完整 `contract_correction` retry；
+- retry 复用原 Subtask worktree、普通工具和权限边界，但使用新 Executor session；
+- recovery packet 包含 violations，不把错误提取的原始中间文本作为任务输入；
 - 同一 source attempt 的 correction 再次失败后 blocked；
 - 用户显式 unblock 后的新 primary attempt 获得新的 correction；
 - fallback 和 continuation 各自按 source attempt 判断；
@@ -533,7 +540,8 @@ Kernel event/snapshot 应提供 source attempt 是否已经使用 correction 的
 marker，其中一个可复现诱因是旧提示词同时要求 Git 提交与 report 不修改工作区。
 该冲突已通过 Completion Protocol v4 和删除任务类型解决。
 
-剩余问题是 AnyFusion 尚未按 Pi JSONL terminal event 语义判断成功，而是可能把退出码
-`0` 和最后非空 assistant 文本误当作成功响应；Kernel 还把 correction 额度绑定到了
-Subtask 历史 receipt 总数。后续优先修这两点及 bounded 诊断；Executor 专属完成提交
-工具继续保留为下一阶段可靠性优化，不因本轮协议简化而关闭。
+response-only correction 已被完整 retry 替代，因而不会再在无工具环境中包装错误提取
+的中间文本。剩余问题是 AnyFusion 尚未按 Pi JSONL terminal event 语义判断成功，仍
+可能把退出码 `0` 和最后非空 assistant 文本误当作成功响应；Kernel 也仍把 correction
+额度绑定到 Subtask 历史 receipt 总数。后续优先修这两点及 bounded 诊断；Executor
+专属完成提交工具继续保留为下一阶段可靠性优化，不因本轮协议简化而关闭。

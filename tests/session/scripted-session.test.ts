@@ -349,7 +349,7 @@ describe('scripted session', () => {
     expect(blockedTask).toBeTruthy();
     const fallbackArtifact = resolve(process.cwd(), 'metaclaw-tasks', blockedTask!.id, 'feishu-document.md');
     expect(blockedTask?.artifacts).not.toContain(fallbackArtifact);
-    expect(result.output.join('\n')).toContain('response-only correction failed and cannot enter ordinary recovery');
+    expect(result.output.join('\n')).toContain('contract retry is already exhausted');
     expect(result.output.join('\n')).not.toContain('已记录 1 个任务产物');
   });
 });

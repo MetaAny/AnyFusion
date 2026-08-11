@@ -6,6 +6,9 @@
 - Scope: Pi Executor、Execution Runtime、Control Kernel 恢复事实、持久化 Adapter、Completion Protocol 入口判定
 - Governing ADRs: ADR-0020、ADR-0021、ADR-0022、ADR-0023、ADR-0024、ADR-0026
 - Related debt: `docs/tech-debt/pi-executor-completion-submission-and-terminal-event-debt.md`
+- Amendment (2026-08-11): `contract_correction` 已改为新 session、同 worktree、完整权限与
+  工具的 `recovery_packet` retry；本计划后续只设计真正的持久 Pi session continuation，
+  不再以 response-only correction 作为当前基线。
 
 ## 1. Goal
 
@@ -35,8 +38,9 @@ completion 的 Pi attempt，能够由 Kernel 授权一个新的 `continuation` a
 - Runtime 只能退回 `recovery_packet` 和重新构造的大段执行上下文；
 - Pi JSONL 提取器未按 `stopReason`/`agent_end` 判定 terminal，可能把上一轮
   `toolUse` 状态文本当作最终回答；
-- 当前 response-only correction 使用新临时目录、`--no-session`、`--no-tools`，只能
-  重写格式，不能继续被中断的任务。
+- 历史 response-only correction 曾使用新临时目录、`--no-session`、`--no-tools`，只能
+  重写格式；当前 `contract_correction` 已改为新 session、同 worktree、普通权限和完整
+  工具的 full retry，但仍不恢复已清理的 Pi session 历史。
 
 2026-08-11 的真实模型 smoke 进一步证明：
 
@@ -67,16 +71,18 @@ Runtime 继续负责并重新绑定：
 
 Session 不是事件账本、工作区快照或完成事实，不得成为 Kernel decision 的隐藏输入。
 
-### 3.2 拆分 format correction 与 execution continuation
+### 3.2 拆分 full contract retry 与 native session continuation
 
 保留两个不同语义：
 
 | 路径 | 适用条件 | Session/worktree/tools | 结果 |
 | --- | --- | --- | --- |
-| `contract_correction` | 已确认 `agent_end + stop`，完整最终正文存在，但 trailer 不合法 | 新临时 session；无 Task worktree；无工具 | 只允许修正格式 |
+| `contract_correction` | 第一次 Completion Protocol 校验失败 | 新 session；同一 Task worktree；普通权限和完整工具；bounded recovery packet | 检查已有成果、完成剩余验收并重新提交 completion |
 | `continuation` | `error`、`aborted`、缺失 `agent_end`、terminal `toolUse`、provider/transport interruption 或安全暂停 | fork 持久 session；同一 worktree；正常受控工具 | 继续执行并提交 completion |
 
-不得再把 terminal error 先降格为“最后一段非空文本”，然后进入 format correction。
+不得再把 terminal error 先降格为“最后一段非空文本”，然后把它包装成 completion。
+在 terminal parser 修复前，这类错误提取仍可能误触发 full retry；retry 能检查 worktree
+和继续工作，但不能替代正确的 Pi terminal event 分类。
 
 本计划不修改 correction 次数额度；先保证第一次授权路径的语义正确。
 
@@ -262,19 +268,19 @@ opaque driver token；Pi native continuation 的权威来源改为 durable check
 4. Subtask/worktree/checkpoint 保留。
 5. 用户 resume 后由 Kernel 授权 continuation，而不是 Application Shell 直接启动进程。
 
-### 6.4 Format Correction
+### 6.4 Full Contract Retry
 
-1. Parser 已确认正常 terminal `stop`。
-2. Completion validator 证明唯一问题属于 trailer/JSON 格式。
-3. Kernel 可授权现有 `contract_correction`。
-4. Response-only 进程不读取 session/worktree，也不执行任务。
-5. 输入不是完整最终正文时不得进入该路径。
+1. Completion validator 产生第一次 contract failure。
+2. Kernel 可授权现有 `contract_correction`。
+3. Runtime 启动新 session，复用同一 worktree，并重建普通权限、工具和 MCP 边界。
+4. Retry 接收原任务上下文与 violations recovery packet，不以错误提取文本为任务输入。
+5. Retry 再次 contract failure 后 blocked，不进入 continuation/fallback。
 
 ## 7. Delivery Stages
 
 ### Stage 0: Fault-Injection Feedback Loop
 
-- 保留真实 provider response-only smoke，用于证明 format correction 能力；
+- 保留受控 Pi full-retry smoke，用于证明新进程包含完整工具、recovery packet 和最终 marker；
 - 新增多轮 Pi primary smoke：第一次模型轮次产生工具调用，网关在后续模型响应注入
   connection reset/502/stream truncation；
 - 验证当前基线会错误提取中间文本或无法 native resume；
@@ -357,7 +363,7 @@ Exit gate：SQLite foreign-key、文件 residue、权限和敏感信息扫描通
 - continuation 新 PID 使用 fork 后的 `--session`；
 - config Home 仍是 attempt-private；
 - continuation 工具集与 primary 相同；
-- response-only format correction 仍是 no-session/no-tools；
+- `contract_correction` 使用新 session、同 worktree 和与 primary 相同的工具集；
 - source session 丢失时不静默创建空会话。
 
 ### Terminal And Recovery Semantics
@@ -368,8 +374,8 @@ Exit gate：SQLite foreign-key、文件 residue、权限和敏感信息扫描通
 - continuation 看到旧工具结果并完成；
 - tool start 无 tool end 形成 uncertain effect；
 - user cancel 不自动 continuation；
-- normal stop + malformed trailer 只走 format correction；
-- incomplete intermediate text 永远不能被 format correction 包装为 success。
+- normal stop + malformed trailer 可进入一次 full contract retry；
+- incomplete intermediate text 不得被直接包装为 success；terminal parser 修复后应先归类为 execution failure/continuation 候选。
 
 ### Kernel/Runtime
 
@@ -415,7 +421,7 @@ Exit gate：SQLite foreign-key、文件 residue、权限和敏感信息扫描通
 
 - ADR-0023：native continuation 的 session checkpoint 和 Kernel 授权语义；
 - ADR-0024：session payload 的 Runtime 私有存储、权限和清理；
-- ADR-0021 amendment：format correction 与 interrupted continuation 的完成边界；
+- ADR-0021 amendment：full contract retry 与 interrupted native continuation 的完成边界；
 - `CONTEXT.md`：attempt-private config Home 与 durable session directory 的分离；
 - `docs/current/technical-overview.md`；
 - `docs/current/technical-overview.zh-CN.md`；

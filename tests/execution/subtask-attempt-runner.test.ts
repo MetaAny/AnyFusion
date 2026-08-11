@@ -82,7 +82,6 @@ function setup(rawResponse: string) {
       taskId: 'task_phase2', executionId: 'exec_1', status: 'success', executorName: 'codex-cli',
       output: rawResponse, error: null, artifacts: [], subtaskResults: [], durationMs: 10,
   });
-  const runResponseOnly = vi.fn();
   const runtimeForRunner = {
     run: async (invocation: {
       executorInput?: { sandbox?: { workspacePath?: string } };
@@ -93,8 +92,6 @@ function setup(rawResponse: string) {
       }
       return result;
     },
-    supportsResponseOnly: vi.fn().mockReturnValue(true),
-    runResponseOnly,
   };
   const attemptSandbox: AttemptSandboxPort = {
     create: vi.fn(), start: vi.fn(), wait: vi.fn(), logs: vi.fn(),
@@ -176,19 +173,6 @@ function setup(rawResponse: string) {
       authorize(input);
       return attemptRunner.run(input);
     },
-    runCorrection: async (input: Parameters<SubtaskAttemptRunner['runCorrection']>[0]) => {
-      authorize({
-        ...input,
-        attemptKind: 'contract_correction',
-        recoveryMode: 'fresh',
-        attemptPayload: {
-          protocol: 'completion-correction-v2',
-          completionContract: input.completionContract as never,
-          violations: input.violations,
-        },
-      });
-      return attemptRunner.runCorrection(input);
-    },
   };
   return {
     db,
@@ -198,8 +182,6 @@ function setup(rawResponse: string) {
     workUnitRepo,
     executionRuntime: {
       run,
-      runResponseOnly,
-      supportsResponseOnly: runtimeForRunner.supportsResponseOnly,
     },
     dispatchItems,
     workflow: new KernelWorkflowRepo(db),
@@ -595,7 +577,7 @@ describe('SubtaskAttemptRunner', () => {
     expect(setupResult.workUnitRepo.findById('executor-codex')).toMatchObject({ state: 'idle' });
   });
 
-  it('stages only a corrected response from one isolated response-only attempt', async () => {
+  it('retries a malformed completion as one full attempt in the original worktree', async () => {
     const setupResult = setup('first malformed response');
     const first = await setupResult.runner.run({
       attemptId: 'attempt_primary', executionId: 'exec_1', taskId: 'task_phase2', subtaskId: setupResult.a.id,
@@ -604,25 +586,56 @@ describe('SubtaskAttemptRunner', () => {
     expect(first.outcome).toBe('contract_failed');
     if (first.outcome !== 'contract_failed') return;
     setupResult.workUnitRepo.updateState('executor-codex', 'idle');
-    setupResult.executionRuntime.runResponseOnly.mockResolvedValue({
-      success: true, output: validResponse(), exitCode: 0, durationMs: 5,
+    setupResult.executionRuntime.run.mockResolvedValueOnce({
+      taskId: 'task_phase2', executionId: 'exec_1', status: 'success', executorName: 'codex-cli',
+      output: validResponse(), error: null, artifacts: [], subtaskResults: [], durationMs: 5,
     });
 
-    const corrected = await setupResult.runner.runCorrection({
-      attemptId: 'attempt_correction', sourceAttemptId: first.attemptId, executionId: 'exec_1',
-      taskId: 'task_phase2', subtaskId: setupResult.a.id, agentClassName: 'codex-cli',
-      completionContract: first.completionContract, violations: first.violations,
+    const corrected = await setupResult.runner.run({
+      attemptId: 'attempt_correction', sourceAttemptId: first.attemptId, attemptKind: 'contract_correction',
+      recoveryMode: 'recovery_packet', executionId: 'exec_1', taskId: 'task_phase2',
+      subtaskId: setupResult.a.id, agentClassName: 'codex-cli', executionMode: 'follow-up',
+      defaultResourceGrant: setupResult.defaultResourceGrant,
+      attemptPayload: {
+        protocol: 'completion-correction-v2',
+        completionContract: first.completionContract,
+        violations: first.violations,
+      },
     });
     expect(corrected).toMatchObject({ outcome: 'completed', output: 'A completed.' });
-    expect(setupResult.executionRuntime.runResponseOnly).toHaveBeenCalledTimes(1);
-    const correctionPrompt = setupResult.executionRuntime.runResponseOnly.mock.calls[0][1];
-    expect(correctionPrompt).toContain('first malformed response');
-    expect(correctionPrompt).toContain('{"resultFilePaths":["<optional workspace-relative result file path>"]}');
-    expect(correctionPrompt).toContain('The marker must appear before the JSON object.');
-    expect(correctionPrompt).toContain('Do not wrap the JSON in a Markdown code fence.');
-    expect(correctionPrompt).not.toContain('Completion contract:');
-    expect(correctionPrompt).not.toContain('task_phase2_a');
-    expect(correctionPrompt).not.toContain('acceptanceEvidence');
+    expect(setupResult.executionRuntime.run).toHaveBeenCalledTimes(2);
+    const primaryInvocation = setupResult.executionRuntime.run.mock.calls[0]![0];
+    const retryInvocation = setupResult.executionRuntime.run.mock.calls[1]![0];
+    expect(retryInvocation.executorInput.sandbox.workspacePath)
+      .toBe(primaryInvocation.executorInput.sandbox.workspacePath);
+    expect(retryInvocation.executorInput.sandbox.capabilityBinding).not.toBeNull();
+    expect(retryInvocation.executorInput.sandbox.capabilityBinding.bearerToken)
+      .not.toBe(primaryInvocation.executorInput.sandbox.capabilityBinding.bearerToken);
+    expect(retryInvocation.executorInput.context.evidenceTools.binding).not.toBeNull();
+    expect(retryInvocation.executorInput.context.currentSubtask).toMatchObject({
+      goal: 'complete task_phase2_a',
+      acceptance: [{ description: 'done' }],
+    });
+    expect(retryInvocation.executorInput.context.recovery).toMatchObject({
+      mode: 'recovery_packet',
+      sourceAttemptId: 'attempt_primary',
+      packet: expect.objectContaining({
+        sourceAttemptId: 'attempt_primary',
+        completionRetry: expect.objectContaining({
+          protocol: 'completion-correction-v2',
+          violations: first.violations,
+          instructions: expect.arrayContaining([
+            'Inspect the existing worktree and preserve correct work from the source attempt.',
+            'Complete every remaining acceptance criterion and verify the resulting files before finishing.',
+          ]),
+        }),
+        unknownItems: expect.arrayContaining([
+          'Verify the current workspace and remaining acceptance criteria before making changes.',
+        ]),
+      }),
+    });
+    expect(JSON.stringify(retryInvocation.executorInput.context.recovery))
+      .not.toContain('first malformed response');
     expect(setupResult.db.prepare(`
       SELECT attempt_id, terminal_state, raw_response FROM executor_attempt_receipts ORDER BY completed_at, attempt_id
     `).all()).toEqual(expect.arrayContaining([

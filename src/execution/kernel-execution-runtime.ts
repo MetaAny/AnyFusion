@@ -50,7 +50,6 @@ interface FocusContext {
 
 interface DispatchStableFacts {
   executorStatuses: Extract<KernelSnapshot, { type: 'dispatch' }>['executorStatuses'];
-  correctionSupportedAgentClasses: string[];
   nativeContinuationAgentClasses: string[];
 }
 
@@ -530,7 +529,6 @@ export class KernelExecutionRuntime {
       resourceConflictSubtaskIds: [],
       capacityProbeAgentClasses,
       executorStatuses: stableFacts.executorStatuses,
-      correctionSupportedAgentClasses: stableFacts.correctionSupportedAgentClasses,
       nativeContinuationAgentClasses: stableFacts.nativeContinuationAgentClasses,
       attempts: attemptFacts,
       generationId: activeRevision?.generationId ?? `generation_${taskId}_1`,
@@ -593,8 +591,6 @@ export class KernelExecutionRuntime {
       .map(agentClass => agentClass.name);
     return {
       executorStatuses: this.deps.kernelExecutorStatusProjector.list(),
-      correctionSupportedAgentClasses: agentClassNames
-        .filter(name => this.deps.attemptRunner.supportsResponseOnly(name)),
       nativeContinuationAgentClasses: agentClassNames
         .filter(name => this.deps.attemptRunner.supportsContinuation(name)),
     };
@@ -654,6 +650,7 @@ export class KernelExecutionRuntime {
         agentClassName: action.agentClassName, available, cycleId: input.executionId,
         attemptKind: 'primary',
         attemptPayload: null,
+        sourceAttemptId: null,
       });
     }
     if (action.type === 'wait_for_capacity') {
@@ -939,35 +936,20 @@ export class KernelExecutionRuntime {
     );
     this.deps.callbacks.appendOutput(...this.deps.presentation.formatExecutorDispatch(item.agentClassName));
 
-    const outcome = item.attemptKind === 'contract_correction'
-      && item.attemptPayload?.protocol === 'completion-correction-v2'
-      && item.sourceAttemptId
-      ? await this.deps.attemptRunner.runCorrection({
-          attemptId: item.attemptId,
-          sourceAttemptId: item.sourceAttemptId,
-          executionId: input.executionId,
-          taskId: item.taskId,
-          subtaskId: item.subtaskId,
-          agentClassName: item.agentClassName,
-          completionContract: item.attemptPayload.completionContract,
-          violations: item.attemptPayload.violations as Parameters<
-            SubtaskAttemptRunner['runCorrection']
-          >[0]['violations'],
-        })
-      : await this.deps.attemptRunner.run({
-          attemptId: item.attemptId,
-          executionId: input.executionId,
-          taskId: item.taskId,
-          subtaskId: item.subtaskId,
-          agentClassName: item.agentClassName,
-          executionMode: input.request.executionMode,
-          attemptKind: item.attemptKind,
-          attemptPayload: item.attemptPayload,
-          sourceAttemptId: item.sourceAttemptId,
-          recoveryMode: item.recoveryMode,
-          defaultResourceGrant: item.resourceGrant,
-          onProgress: input.progressTracker.onProgress,
-        });
+    const outcome = await this.deps.attemptRunner.run({
+      attemptId: item.attemptId,
+      executionId: input.executionId,
+      taskId: item.taskId,
+      subtaskId: item.subtaskId,
+      agentClassName: item.agentClassName,
+      executionMode: input.request.executionMode,
+      attemptKind: item.attemptKind,
+      attemptPayload: item.attemptPayload,
+      sourceAttemptId: item.sourceAttemptId,
+      recoveryMode: item.recoveryMode,
+      defaultResourceGrant: item.resourceGrant,
+      onProgress: input.progressTracker.onProgress,
+    });
     this.deps.callbacks.clearRunningExecutorName(item.taskId, item.attemptId);
 
     if (outcome.outcome === 'capacity_unavailable') {
@@ -978,6 +960,7 @@ export class KernelExecutionRuntime {
         cycleId: input.executionId,
         attemptKind: item.attemptKind,
         attemptPayload: item.attemptPayload,
+        sourceAttemptId: item.sourceAttemptId,
       });
     }
     if (outcome.outcome === 'partition_conflict') {

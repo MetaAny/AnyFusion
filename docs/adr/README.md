@@ -17,7 +17,7 @@ concurrent dispatch, Git publication, cancellation and generation recovery.
 ADR-0023 owns the durable-workflow evolution. The earlier v3 contract and
 migration record are archived as ADR-0019.
 
-ADR-0022 is the origin authority for the unified Kernel event/snapshot/decision Interface, decision ledger, `awaiting_decision`, synchronous control loop, capacity candidate switching, and response-only correction. Its contract has since been amended through ADR-0023/0024/0025/0026 and the current Kernel wire version is v5.
+ADR-0022 is the origin authority for the unified Kernel event/snapshot/decision Interface, decision ledger, `awaiting_decision`, synchronous control loop, capacity candidate switching, and the single full contract retry. Its contract has since been amended through ADR-0023/0024/0025/0026 and the current Kernel wire version is v5.
 
 ADR-0023 is the current authority for the durable KernelWorkflow, structured failure and availability rules, idempotent application recovery, Work Graph revisions, continuation, outbox, manual recovery, and the 2026-07-30 deferred-availability/executor-recovery amendment.
 
@@ -41,7 +41,7 @@ publication to local `main`.
 | Resource partitions and Executor attempts | [ADR-0024](0024-resource-partition-sandbox-and-runtime-elevation.md) | Partition identity/conflicts, persistent worktree, child-process lifecycle, leases, elevation and recovery |
 | Core modules and dependencies | [ADR-0020](0020-core-module-ownership-and-dependency-direction.md) | Planner/Kernel/Runtime control loop, module owners, Application Shell, persistence adapters and phase design gates |
 | Durable Kernel workflow and recovery | [ADR-0023](0023-durable-kernel-workflow-recovery-and-availability.md) | Durable inbox/application/outbox, structured failure, retry/fallback, deferred availability, Executor recovery, continuation and revisions |
-| Unified Kernel control plane | [ADR-0022](0022-unified-kernel-control-plane-and-decision-ledger.md) | Versioned event/snapshot/decision contract, ledger-first loop, attempt landing, capacity recovery and response-only correction |
+| Unified Kernel control plane | [ADR-0022](0022-unified-kernel-control-plane-and-decision-ledger.md) | Versioned event/snapshot/decision contract, ledger-first loop, attempt landing, capacity recovery and one full contract retry |
 | Work Graph and Subtask execution foundation | [ADR-0021](0021-work-graph-v4-subtask-execution-contract.md) | dependency/context/handoff/completion/evidence semantics retained by the active v5 graph; concurrent dispatch and publication amendments live in ADR-0025/0026 |
 | Executor registry and static routing contracts | [ADR-0018](0018-supported-routing-contracts-and-unified-executor-definitions.md) | `executors.yaml`, Routing Capability, profiles, bindings, digest-bound verification and controlled projections |
 | Dynamic AgentClass status | [ADR-0017](0017-kernel-executor-status-projection.md) | bounded health/outcome/recovery projection, static/dynamic fact split, and `error` versus `disabled` semantics |
