@@ -9,7 +9,7 @@ import { SubtaskRepo } from '../../src/storage/subtask-repo.js';
 import { WorkUnitRepo } from '../../src/storage/work-unit-repo.js';
 import { WorkUnitClaimService } from '../../src/execution/work-unit-claim-service.js';
 import { SubtaskAttemptRunner } from '../../src/execution/subtask-attempt-runner.js';
-import { COMPLETION_MARKER_V3 } from '../../src/execution/completion-protocol.js';
+import { COMPLETION_MARKER_V4 } from '../../src/execution/completion-protocol.js';
 import { testExecutorAgentClasses } from '../support/executor-registry.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
@@ -31,7 +31,7 @@ function node(id: string, dependencies: Subtask['dependencies'] = []): Subtask {
     id, taskId: 'task_phase2', graphRevision: 1, generationId: 'generation_phase2',
     title: id, goal: `complete ${id}`, status: 'ready',
     dependencies, contextRefs: [], requiredCapabilities: ['workspace-engineering'],
-    preferredAgentClassList: ['codex-cli'], deliveryKind: 'report',
+    preferredAgentClassList: ['codex-cli'],
     acceptance: [{ key: 'done', description: 'done', requiredEvidence: [] }], riskLevel: 'low',
     result: '', artifacts: [], verification: { warnings: [], completionSchemaVersion: null }, error: null,
     createdAt: '2026-07-17T00:00:00.000Z', updatedAt: '2026-07-17T00:00:00.000Z',
@@ -240,10 +240,7 @@ function authorizeRunningAttempt(
 }
 
 function validResponse(): string {
-  return `A completed.\n\n${COMPLETION_MARKER_V3}\n${JSON.stringify({
-    evidence: ['verified A'],
-    noChangeReason: null,
-  })}`;
+  return `A completed.\n\n${COMPLETION_MARKER_V4}\n{}`;
 }
 
 function prepareGitCandidate(workspacePath: string): void {
@@ -401,15 +398,7 @@ describe('SubtaskAttemptRunner', () => {
   });
 
   it('blocks a handoff that would exceed the downstream aggregate budget', async () => {
-    const rawResponse = `A completed.\n\n${COMPLETION_MARKER_V3}\n${JSON.stringify({
-      evidence: [
-        'x'.repeat(1_000),
-        'x'.repeat(1_000),
-        'x'.repeat(1_000),
-        'x'.repeat(997),
-      ],
-      noChangeReason: null,
-    })}`;
+    const rawResponse = `${'x'.repeat(4_000)}\n\n${COMPLETION_MARKER_V4}\n{}`;
     const setupResult = setup(rawResponse);
     setupResult.subtaskRepo.upsert(node('task_phase2_c'));
     setupResult.db.prepare(`
@@ -628,7 +617,7 @@ describe('SubtaskAttemptRunner', () => {
     expect(setupResult.executionRuntime.runResponseOnly).toHaveBeenCalledTimes(1);
     const correctionPrompt = setupResult.executionRuntime.runResponseOnly.mock.calls[0][1];
     expect(correctionPrompt).toContain('first malformed response');
-    expect(correctionPrompt).toContain('{"evidence":["<concise evidence>"],"noChangeReason":null}');
+    expect(correctionPrompt).toContain('{"resultFilePaths":["<optional workspace-relative result file path>"]}');
     expect(correctionPrompt).toContain('The marker must appear before the JSON object.');
     expect(correctionPrompt).toContain('Do not wrap the JSON in a Markdown code fence.');
     expect(correctionPrompt).not.toContain('Completion contract:');

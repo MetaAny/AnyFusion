@@ -118,13 +118,20 @@ describe('Docker shell SQLite schema isolation', () => {
   it('shares one bootstrap and one persistent layout across native and container launchers', () => {
     const launcher = readFileSync(resolve('anyfusion'), 'utf-8');
     const entrypoint = readFileSync(resolve('docker/entrypoint.sh'), 'utf-8');
+    const bootstrap = readFileSync(resolve('scripts/runtime-bootstrap.sh'), 'utf-8');
     const runtimeDockerfile = readFileSync(resolve('docker/Dockerfile.runtime'), 'utf-8');
     const shell = readFileSync(resolve('docker/shell.ps1'), 'utf-8');
 
     expect(launcher).toContain('source "$BOOTSTRAP"');
     expect(launcher).toContain('anyfusion_bootstrap_runtime');
     expect(entrypoint).toContain('source /opt/metaclaw/runtime-bootstrap.sh');
+    expect(entrypoint).toContain('ANYFUSION_BOOTSTRAP_AUTO_REGISTER_EXECUTORS');
     expect(entrypoint).toContain('anyfusion_bootstrap_runtime');
+    expect(bootstrap).toContain('anyfusion_bootstrap_ensure_canonical_executors');
+    expect(bootstrap).toContain('executor show "$executor_id"');
+    expect(bootstrap).toContain('executor register "$executor_id"');
+    expect(bootstrap).toContain('METACLAW_CODEX_EXECUTOR_ENV_FILE');
+    expect(bootstrap).toContain('METACLAW_PI_EXECUTOR_ENV_FILE');
     expect(runtimeDockerfile).toContain('COPY scripts/runtime-bootstrap.sh /opt/metaclaw/runtime-bootstrap.sh');
     expect(runtimeDockerfile).toContain('ANYFUSION_CONFIG_HOME=/data/anyfusion/config');
     expect(runtimeDockerfile).toContain('METACLAW_HOME=/data/anyfusion/runtime');
@@ -145,6 +152,29 @@ describe('Docker shell SQLite schema isolation', () => {
     expect(mainDispatch.indexOf('Refresh-ContainerProviderConfigs')).toBeLessThan(
       mainDispatch.indexOf('if ($Bash)'),
     );
+  });
+
+  it('waits for first-run executor registration and sshd before reporting the container ready', () => {
+    const shell = readFileSync(resolve('docker/shell.ps1'), 'utf-8');
+    const startContainer = shell.slice(
+      shell.indexOf('function Start-ShellContainer'),
+      shell.indexOf('function Ensure-ContainerRunning'),
+    );
+    const waitForSsh = shell.slice(
+      shell.indexOf('function Wait-SshReady'),
+      shell.indexOf('function Ssh-CommonArgs'),
+    );
+
+    expect(startContainer.indexOf('Wait-SshReady')).toBeLessThan(
+      startContainer.indexOf('Install-SshPublicKey'),
+    );
+    expect(startContainer.indexOf('Wait-SshReady')).toBeLessThan(
+      startContainer.indexOf('SSH container ready'),
+    );
+    expect(waitForSsh).toContain('$deadline = 180');
+    expect(waitForSsh).toContain("docker inspect -f '{{.State.Running}}' $container");
+    expect(waitForSsh).toContain('docker logs --tail 80 $container');
+    expect(waitForSsh).toContain('exit 1');
   });
 
   it('does not bootstrap sibling-container topology for the default demo', () => {

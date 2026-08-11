@@ -64,6 +64,53 @@ anyfusion_bootstrap_render() {
   sed "s|__OPENAI_BASE_URL__|${base_url}|g" "$template" > "$output"
 }
 
+anyfusion_bootstrap_ensure_executor() {
+  local executor_id="$1"
+  local profile_id="$2"
+  local binary_path="$3"
+  local runtime_home="$4"
+  local env_file="$5"
+  local description="$6"
+  local capabilities="$7"
+  local use_cases="$8"
+
+  if node "$ANYFUSION_APP_ENTRY" executor show "$executor_id" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  printf '[INFO] Registering and verifying Executor %s...\n' "$executor_id"
+  node "$ANYFUSION_APP_ENTRY" executor register "$executor_id" \
+    --profile "$profile_id" \
+    --binary "$binary_path" \
+    --home "$runtime_home" \
+    --env-files "$env_file" \
+    --description "$description" \
+    --capabilities "$capabilities" \
+    --use-cases "$use_cases"
+}
+
+anyfusion_bootstrap_ensure_canonical_executors() {
+  anyfusion_bootstrap_ensure_executor \
+    codex \
+    codex \
+    "$(command -v codex)" \
+    "$METACLAW_EXECUTOR_CODEX_HOME" \
+    "$METACLAW_CODEX_EXECUTOR_ENV_FILE" \
+    'Repository implementation, testing, and code review.' \
+    workspace-engineering \
+    implementation,testing,code-review
+
+  anyfusion_bootstrap_ensure_executor \
+    pi \
+    pi \
+    "$(command -v pi)" \
+    "$METACLAW_EXECUTOR_PI_HOME" \
+    "$METACLAW_PI_EXECUTOR_ENV_FILE" \
+    'Current public-web research and source verification.' \
+    current-web-research \
+    research,source-verification,cited-reports
+}
+
 anyfusion_bootstrap_runtime() {
   local default_data_home="${XDG_DATA_HOME:-$HOME/.local/share}/anyfusion"
   local default_config_home="${XDG_CONFIG_HOME:-$HOME/.config}/anyfusion"
@@ -132,5 +179,8 @@ anyfusion_bootstrap_runtime() {
       || anyfusion_bootstrap_fail "Missing Runtime entry: $ANYFUSION_APP_ENTRY"
     node "$ANYFUSION_APP_ENTRY" executor list >/dev/null
     node "$ANYFUSION_APP_ENTRY" executor discover >/dev/null
+    if [[ "${ANYFUSION_BOOTSTRAP_AUTO_REGISTER_EXECUTORS:-0}" == '1' ]]; then
+      anyfusion_bootstrap_ensure_canonical_executors
+    fi
   fi
 }

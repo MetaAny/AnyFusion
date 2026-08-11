@@ -181,7 +181,7 @@ process.stdout.write(JSON.stringify({
   type: 'message_end',
   message: {
     role: 'assistant',
-    content: [{ type: 'text', text: 'Corrected report.\\n<!-- metaclaw:completion:v3 -->\\n{"evidence":["research complete"],"noChangeReason":null}' }],
+    content: [{ type: 'text', text: 'Corrected report.\\n<!-- metaclaw:completion:v4 -->\\n{}' }],
   },
 }) + '\\n');
 `);
@@ -204,7 +204,7 @@ process.stdout.write(JSON.stringify({
 
       expect(adapter.supportsResponseOnly).toBe(true);
       expect(result).toMatchObject({ success: true, exitCode: 0 });
-      expect(result.output).toContain('<!-- metaclaw:completion:v3 -->');
+      expect(result.output).toContain('<!-- metaclaw:completion:v4 -->');
       expect(create).not.toHaveBeenCalled();
       const capture = JSON.parse(readFileSync(capturePath, 'utf8'));
       expect(capture.args).toEqual(expect.arrayContaining([
@@ -490,7 +490,7 @@ function executorInput(
     context: {
       taskBackground: { id: 'task_1', title: 'Task', goal: 'Research', instruction: 'background_only' as const },
       currentSubtask: {
-        id: subtaskId, title: 'Research', goal: 'Research', deliveryKind: 'report' as const,
+        id: subtaskId, title: 'Research', goal: 'Research',
         acceptance: [{ key: 'done', description: 'done', requiredEvidence: [] }],
       },
       incomingHandoffs: [], outgoingHandoffRequirements: [], selectedEvidence: [], outOfScopeSiblings: [],

@@ -115,7 +115,6 @@ export interface Subtask {
   contextRefs: ContextRef[];
   requiredCapabilities: string[];
   preferredAgentClassList: string[];
-  deliveryKind: 'edit' | 'report';
   acceptance: WorkGraphAcceptanceCriterion[];
   riskLevel: AgentClassRiskLevel;
   result: string;

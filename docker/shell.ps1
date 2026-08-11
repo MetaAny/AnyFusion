@@ -66,7 +66,7 @@ $workspaceVolume = 'metaclaw-shell-workspace'
 # Pre-release schemas are intentionally not migrated. Scope the persistent data
 # volume to the current schema so -Rebuild starts clean after a schema break
 # while preserving the previous volume for manual recovery.
-$dataVolume = 'metaclaw-shell-data-v34-anyfusion-planner'
+$dataVolume = 'metaclaw-shell-data-v35-anyfusion-planner'
 $knownHosts  = Join-Path $repoRoot '.tmp\ssh_known_hosts'
 # Key-based passwordless login. A dedicated key pair lives under .tmp (gitignored)
 # so the global ~/.ssh is untouched. The public key is injected into the
@@ -264,6 +264,10 @@ function Start-ShellContainer {
         exit 1
     }
 
+    # A fresh data volume verifies and registers the canonical Executors before
+    # the entrypoint starts sshd. Do not report readiness until that finishes.
+    Wait-SshReady
+
     # Re-seed the public key (if set up) so passwordless login survives rebuilds.
     Install-SshPublicKey
     Write-Host ("SSH container ready on 127.0.0.1:" + $sshPort + " (user=" + $sshUser + " password=" + $sshPassword + ").") -ForegroundColor Green
@@ -313,17 +317,26 @@ function Refresh-ContainerProviderConfigs {
     }
 }
 
-# Wait until sshd is accepting connections on the published port (it starts a
-# moment after `docker run` returns). Times out after ~15s. Uses bash for its
-# /dev/tcp support (the image's default sh is dash, which lacks /dev/tcp).
+# Wait until bootstrap has finished and sshd is accepting connections. A fresh
+# data volume may spend about a minute verifying and registering Executors.
+# Uses bash for /dev/tcp support (the image's default sh lacks it).
 function Wait-SshReady {
-    $deadline = 15
+    $deadline = 180
     for ($i = 0; $i -lt $deadline; $i++) {
+        $running = docker inspect -f '{{.State.Running}}' $container 2>$null
+        if ($LASTEXITCODE -ne 0 -or $running -ne 'true') {
+            Write-Error 'Container stopped before startup completed. Recent logs:'
+            docker logs --tail 80 $container
+            exit 1
+        }
+
         $code = Invoke-DockerQuiet exec $container /bin/bash -c 'exec 3<>/dev/tcp/127.0.0.1/22'
         if ($code -eq 0) { return }
         Start-Sleep -Seconds 1
     }
-    Write-Warning "sshd did not become ready within ${deadline}s; ssh may fail."
+    Write-Error "Container startup did not complete within ${deadline}s. Recent logs:"
+    docker logs --tail 80 $container
+    exit 1
 }
 
 # ssh client flags common to every connect: accept the host key on first connect

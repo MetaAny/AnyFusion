@@ -14,7 +14,6 @@ function subtask(overrides: Partial<SubtaskProposal> = {}): SubtaskProposal {
     contextRefs: [{ kind: 'current_user_input' }],
     requiredCapabilities: ['workspace-engineering'],
     preferredAgentClassList: ['codex-cli'],
-    deliveryKind: 'edit',
     acceptance: [{ key: 'tests_pass', description: 'tests pass', requiredEvidence: ['test result'] }],
     riskLevel: 'low',
     ...overrides,

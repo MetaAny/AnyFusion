@@ -1,9 +1,9 @@
 # Pi Executor 完成提交与终止事件技术债
 
 - **记录日期**：2026-08-10
-- **状态**：待修复
+- **状态**：部分已解决（Completion 提示词冲突已于 2026-08-11 修复；Pi 终止事件与 correction 额度仍待修复）
 - **优先级**：P0 可靠性
-- **范围**：Pi Executor JSONL 终止判定、Completion Protocol v3 提交、响应纠错额度、attempt 诊断保留
+- **范围**：Pi Executor JSONL 终止判定、Completion Protocol v4 提交、响应纠错额度、attempt 诊断保留
 - **关联契约**：[ADR-0021](../adr/0021-work-graph-v4-subtask-execution-contract.md)、[ADR-0022](../adr/0022-unified-kernel-control-plane-and-decision-ledger.md)、[ADR-0026](../adr/0026-phase-6-single-task-reliability-closure.md)
 
 ## 1. 摘要
@@ -31,10 +31,12 @@ attempt 中断。第二次 Pi attempt 在 Runtime 重启后独立启动，持续
 6. 用户显式 unblock 后产生的新 primary attempt 又被 Subtask 历史 receipt 总数
    判定为“已经耗尽 correction”，因此没有获得本次 attempt 自己的一次格式纠错。
 
-Completion Protocol 的 fail-closed 边界不应放宽。需要修复的是 Pi 终止事件适配、
-attempt 诊断保留和 correction 额度归属。中期应让 Pi 通过专用
-`submit_completion` 工具提交结构化完成结果，由 Runtime 构造权威 Completion
-Envelope，而不是继续要求模型在自然语言末尾手写 marker 和 JSON。
+Completion Protocol 的明确终止边界仍然保留。2026-08-11 已先完成最小化修复：
+删除 `edit | report` 任务类型和 workspace 是否允许变化的限制，统一要求非空结果
+说明，可选返回现有的工作区内结果文件路径。这样消除了“必须提交 Git”与“不得修改
+工作区”的直接提示词冲突。Pi JSONL 终止事件适配、bounded 诊断和 correction 额度
+归属仍是独立的未完成技术债。本轮不实现 Pi 专用 `submit_completion` 工具，但保留
+“由 Executor 通过专属工具显式提交最终结果”的方向，作为完成边界的未来可靠性优化。
 
 ## 2. 真实复现记录
 
@@ -240,13 +242,13 @@ Worktree attempt 的 stdout/stderr JSONL 只保存在 adapter 内存中。结果
 
 ### 6.1 不应放宽 completion 边界
 
-以下规则应继续严格执行：
+Completion Protocol v4 继续严格执行以下最小规则：
 
 - 必须有一个明确、唯一的完成提交；
-- workspace delta 必须权威且可确定；
-- report 必须零 workspace delta；
-- edit 的 no-change reason 必须和 delta 一致；
-- artifact 必须来自 Runtime 计算出的 created/modified paths；
+- marker 前必须有非空结果说明；
+- 成功 JSON 只能是 `{}` 或可选 `resultFilePaths`；
+- 声明的结果文件必须真实存在且位于工作区内；
+- workspace delta 仍由 Runtime 独立记录，Git 发布候选必须保持干净；
 - acceptance 和 handoff identity 必须由 Runtime 注入；
 - 中间文本、截断响应和错误状态不得发布。
 
@@ -278,7 +280,11 @@ continuation 都可能被历史格式失败剥夺自己的 correction。
 该调整仍由 Kernel 决定是否授权 correction；Runtime 只提供绑定 source attempt 的
 事实，不能自行重试。
 
-## 7. 方案比较
+## 7. 当前选择与未来方案
+
+当前 Demo 先采用统一的 Completion Protocol v4 最小接口，快速消除任务类型和
+workspace 限制造成的提示词冲突。专属完成工具并未被否定或删除，仍是后续降低长工具
+循环中 trailer 遗漏风险的候选设计。
 
 ### 7.1 方案 A：继续使用 trailer，只修 prompt 和 correction
 
@@ -302,7 +308,9 @@ continuation 都可能被历史格式失败剥夺自己的 correction。
 - Pi 的最终完成声明仍不具备工具级 terminal 语义；
 - correction 会增加一次模型调用和额外失败面。
 
-结论：适合作为立即止血，但不应作为 Pi 的最终可靠完成通道。
+结论：当前 Demo 采用这一方向作为立即修复，并进一步删除 `deliveryKind`、`evidence`
+和 `noChangeReason`，只保留必填结果说明与可选结果文件路径；它不代表最终放弃专属
+提交工具。
 
 ### 7.2 方案 B：Runtime 自动包装最后一段 Markdown
 
@@ -339,9 +347,8 @@ continuation 都可能被历史格式失败剥夺自己的 correction。
 
 ```ts
 {
-  body: string;
-  evidence: string[];
-  noChangeReason: string | null;
+  resultDescription: string;
+  resultFilePaths?: string[];
 }
 ```
 
@@ -382,7 +389,9 @@ continuation 都可能被历史格式失败剥夺自己的 correction。
 - tool schema 只能保证结构，不能自动保证报告内容质量；
 - Codex、Hermes 和 generic CLI 暂时仍需要 trailer 或各自的结构化提交机制。
 
-结论：推荐作为 Pi 的目标方案，但应在终止事件解析和 correction 作用域修复之后实施。
+结论：本轮不实施，但保留为未来优化方案。应先完成 Pi 终止事件解析、bounded 诊断和
+correction 额度修复，再结合真实长任务数据决定先为 Pi 落地，还是抽象为多个 Executor
+可复用的专属提交工具。
 
 ## 8. 推荐最小实施顺序
 
@@ -430,26 +439,22 @@ Receipt 或 attempt runtime parsing facts 至少保存：
 Kernel event/snapshot 应提供 source attempt 是否已经使用 correction 的事实。删除
 `receiptCount === 1` 对 Subtask 历史总数的依赖。
 
-### P1：增加 Pi `submit_completion`
+### 已完成：统一 Completion Protocol v4
 
-- 在 Pi attempt extension 注册工具；
-- 加入 Pi `--tools` allowlist；
-- 使用 sequential execution；
-- 接受成功结果时返回 `terminate: true`；
-- Runtime 要求恰好一次成功 submission；
-- submission 前的 assistant 文本只属于执行 trace；
-- submission 后出现额外模型轮次或第二次 submission 时 fail closed；
-- 工具未调用但 Pi 正常 `stop` 时仍按缺少完成提交处理；
-- tool result、`agent_end` 和 process settlement 三者都必须观察到。
+- 所有 Executor 使用同一个 trailer；
+- marker 前的非空 Markdown 是必填结果说明；
+- 成功 JSON 只保留可选 `resultFilePaths`；
+- 删除 `deliveryKind`、workspace 变化限制、`evidence` 和 `noChangeReason`；
+- response-only correction 继续修正偶发格式错误。
 
-初期只迁移 Pi。Codex、Hermes 和 generic CLI 保留 Completion Protocol v3 trailer，
-避免一次性设计通用 Executor completion RPC。
+### P1（未来优化）：评估 Executor 专属完成提交工具
 
-### P2：评估删除 Pi response-only 格式纠错
-
-当 `submit_completion` 稳定后，Pi 的 marker/JSON 格式纠错将不再必要。response-only
-correction 仍可保留给 trailer-based drivers，以及工具参数通过结构校验但后续
-completion/delta 校验失败的可修复场景。
+- 先以 Pi 长工具循环为主要验证场景；
+- 工具只要求必填结果说明和可选结果文件路径，并保留受控失败结构；
+- Runtime 继续注入 identity、acceptance、handoff 和权威 workspace delta；
+- 工具成功提交可形成明确 terminal 边界，不再依赖模型手写 marker；
+- 不让工具直接写 Task/Kernel storage，也不绕过 receipt、publication 或用户审批；
+- 是否推广到 Codex、Hermes 和 generic CLI，由 Pi 实测结果再决定。
 
 ## 9. 建议验收测试
 
@@ -464,18 +469,23 @@ completion/delta 校验失败的可修复场景。
 - JSONL 混入普通 stderr diagnostics 时仍能解析合法事件；
 - 达到日志截断上限时 fail closed。
 
-### Completion tool
+### Completion Protocol v4
 
-- 一次合法 `submit_completion` + `terminate: true` 成功；
-- 没有工具提交时 contract failure；
-- 两次提交时 contract failure；
-- completion tool 与其他非 terminal tool 同批调用时 fail closed；
-- 工具参数 schema 不合法时 Pi 可收到结构化错误并重新提交；
-- 工具成功后出现额外 assistant 轮次时 fail closed；
+- 非空结果说明 + marker + `{}` 成功；
+- 可选 `resultFilePaths` 只接受存在的工作区相对文件；
+- 有 workspace 变化和无 workspace 变化都能成功；
+- 旧 `deliveryKind`、`evidence`、`noChangeReason` 和 v3 marker 被拒绝；
+- failure 正确进入受控 Executor failure；
+- Runtime 注入 acceptance、handoff 和 identity，模型不能覆盖。
+
+### 未来 Completion tool（实施时）
+
+- 一次合法提交形成唯一 terminal completion；
+- 没有提交、重复提交或提交后继续模型轮次时 fail closed；
+- `resultDescription` 必填且非空；
+- `resultFilePaths` 仍只接受真实存在的工作区相对文件；
 - failure submission 正确进入受控 Executor failure；
-- report 修改 workspace 时仍由 Runtime 拒绝；
-- edit 零 delta 且缺少 no-change reason 时仍由 Runtime 拒绝；
-- Runtime 注入 acceptance、handoff、artifact 和 identity，模型不能覆盖。
+- Runtime 仍注入 acceptance、handoff、workspace delta 和 identity。
 
 ### Kernel correction
 
@@ -497,9 +507,10 @@ completion/delta 校验失败的可修复场景。
 
 ## 10. 非目标
 
-- 不降低 Completion Protocol 的 workspace、artifact、acceptance 或 handoff 校验。
+- 不移除 Completion Protocol 的明确 marker、结果文件、acceptance 或 handoff 校验。
 - 不把 Kernel 变成自然语言结果质量评审器。
-- 不在本技术债中设计所有 Executor 的统一 completion RPC。
+- 不在当前 Demo 的本轮简化中立即增加 Executor completion RPC 或 Pi 专用完成工具；
+  该方向继续作为未来优化保留。
 - 不因为 Pi 工具方案而让 Planner、Executor 或 extension 直接写 Task/Kernel storage。
 - 不让 tool submission 绕过 immutable receipt、workspace delta、publication 或用户审批。
 - 不恢复远程 Git fetch/pull/push。
@@ -510,7 +521,7 @@ completion/delta 校验失败的可修复场景。
 实施时至少同步：
 
 - `CONTEXT.md` 的 Completion Protocol 和 Attempt Receipt 说明；
-- ADR-0021 的 Pi 工具化完成提交 amendment；
+- 若实施专属工具，补充 ADR-0021 的 Executor 工具化完成提交 amendment；
 - `docs/current/technical-overview.md`；
 - `docs/current/technical-overview.zh-CN.md`；
 - `docs/current/phase-5-runtime-security.md` 的 attempt-private tool 和诊断边界；
@@ -519,10 +530,10 @@ completion/delta 校验失败的可修复场景。
 ## 12. 当前结论
 
 此次世界杯任务再次 blocked 的直接原因是 Runtime 收到的逻辑结果没有 Completion
-Protocol marker。更深层的首要技术问题是 AnyFusion 没有按 Pi JSONL terminal event
-语义判断成功，而是把退出码 `0` 和最后非空 assistant 文本误当作成功响应。
+marker，其中一个可复现诱因是旧提示词同时要求 Git 提交与 report 不修改工作区。
+该冲突已通过 Completion Protocol v4 和删除任务类型解决。
 
-Kernel 对缺失完成边界 fail closed 是正确的；Kernel 错误之处在于把 correction 额度
-绑定到了 Subtask 历史 receipt 总数。推荐先修 Pi 终止解析和 correction 作用域，再
-以现有 Planner proposal tool 为模板，为 Pi 增加 attempt-bound、terminal
-`submit_completion` 工具。
+剩余问题是 AnyFusion 尚未按 Pi JSONL terminal event 语义判断成功，而是可能把退出码
+`0` 和最后非空 assistant 文本误当作成功响应；Kernel 还把 correction 额度绑定到了
+Subtask 历史 receipt 总数。后续优先修这两点及 bounded 诊断；Executor 专属完成提交
+工具继续保留为下一阶段可靠性优化，不因本轮协议简化而关闭。

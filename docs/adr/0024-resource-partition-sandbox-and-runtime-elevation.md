@@ -73,7 +73,7 @@ For the local interactive Pi surface, the exact request is projected only after 
 
 ### Persistence and recovery
 
-SQLite schema 34 separates resource leases/waits, workspace/checkpoints/content references, permission requests/grants/user authorizations and attempt process lifecycle. The old unused worktree lease shape remains legacy audit. Resource and WorkUnit leases are attempt-bound, heartbeat-driven and idempotent. Startup reads active attempt records, makes a best-effort termination of each recorded PID, and converts interrupted attempts into normalized facts for the durable Kernel workflow. Pre-release schema 34 is fresh-only.
+SQLite schema 35 separates resource leases/waits, workspace/checkpoints/content references, permission requests/grants/user authorizations and attempt process lifecycle. The old unused worktree lease shape remains legacy audit. Resource and WorkUnit leases are attempt-bound, heartbeat-driven and idempotent. Startup reads active attempt records, makes a best-effort termination of each recorded PID, and converts interrupted attempts into normalized facts for the durable Kernel workflow. Pre-release schema 35 is fresh-only.
 
 Phase 5 remains serial. Partition conflicts and wait relationships are exercised now so Phase 6 may derive concurrent dispatch without changing identity, authorization or recovery semantics.
 

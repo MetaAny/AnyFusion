@@ -32,7 +32,6 @@ export interface WorkGraphSubtask {
   contextRefs: ContextRef[];
   requiredCapabilities: string[];
   preferredAgentClassList: string[];
-  deliveryKind: 'edit' | 'report';
   acceptance: WorkGraphAcceptanceCriterion[];
   riskLevel: 'low' | 'medium' | 'high';
 }

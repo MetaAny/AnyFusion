@@ -25,12 +25,12 @@ function harness(source: 'user' | 'system_smoke' = 'user') {
   db.prepare(`
     INSERT INTO subtasks (
       id, task_id, title, goal, status, dependencies_json, context_refs_json,
-      required_capabilities_json, preferred_agent_class_list_json, delivery_kind,
+      required_capabilities_json, preferred_agent_class_list_json,
       acceptance_json, risk_level, result, artifacts_json, verification_json,
       error, created_at, updated_at, graph_revision, generation_id
     ) VALUES (
       'subtask_1', ?, 'Subtask', 'Work', 'done', '[]', '[]',
-      '["workspace-engineering"]', '["repo-codex"]', 'edit',
+      '["workspace-engineering"]', '["repo-codex"]',
       '[]', 'low', 'done', '[]', '{}', NULL, ?, ?, 1, 'generation_1'
     )
   `).run(task.id, task.createdAt, task.updatedAt);
@@ -38,7 +38,7 @@ function harness(source: 'user' | 'system_smoke' = 'user') {
     INSERT INTO subtask_handoffs (
       task_id, from_subtask_id, to_subtask_id, attempt_id, items_json,
       completion_schema_version, created_at
-    ) VALUES (?, 'subtask_1', 'subtask_1', 'attempt_1', '[]', 3, ?)
+    ) VALUES (?, 'subtask_1', 'subtask_1', 'attempt_1', '[]', 4, ?)
   `).run(task.id, task.createdAt);
   return { db, taskId: task.id };
 }

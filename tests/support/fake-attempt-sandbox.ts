@@ -1,12 +1,13 @@
 import { vi } from 'vitest';
 import { execFile } from 'node:child_process';
+import { isAbsolute, relative } from 'node:path';
 import { promisify } from 'node:util';
 import type {
   AttemptSandboxPort,
   AttemptSandboxRecord,
   CreateAttemptSandboxInput,
 } from '../../src/execution/attempt-sandbox.js';
-import { COMPLETION_MARKER_V3 } from '../../src/execution/completion-protocol.js';
+import { COMPLETION_MARKER_V4 } from '../../src/execution/completion-protocol.js';
 
 export interface FakeAttemptSandboxResponse {
   body?: string;
@@ -75,7 +76,7 @@ export class FakeAttemptSandbox implements AttemptSandboxPort {
     if (response.rawOutput !== undefined) return response.rawOutput;
     if ((response.exitCode ?? 0) !== 0) return response.body ?? 'fake sandbox failed';
     if (response.failure) {
-      return `${response.body ?? response.failure.summary}\n\n${COMPLETION_MARKER_V3}\n${JSON.stringify({
+      return `${response.body ?? response.failure.summary}\n\n${COMPLETION_MARKER_V4}\n${JSON.stringify({
         failure: response.failure,
       })}`;
     }
@@ -139,11 +140,11 @@ export function completionResponseFromSandboxInput(
   body = 'completed',
   artifacts: string[] = [],
 ): string {
-  const isEdit = input.args.join('\n').includes('Delivery kind: edit');
-  return `${body}\n\n${COMPLETION_MARKER_V3}\n${JSON.stringify({
-    evidence: ['tests were not run: deterministic fake sandbox'],
-    noChangeReason: isEdit && artifacts.length === 0
-      ? 'The deterministic test executor made no workspace changes.'
-      : null,
+  const workspaceRoot = input.mounts.find(mount => mount.target === '/workspace')?.source ?? '';
+  const resultFilePaths = artifacts.map(path => (
+    isAbsolute(path) ? relative(workspaceRoot, path).replaceAll('\\', '/') : path
+  ));
+  return `${body}\n\n${COMPLETION_MARKER_V4}\n${JSON.stringify({
+    ...(resultFilePaths.length > 0 ? { resultFilePaths } : {}),
   })}`;
 }

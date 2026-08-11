@@ -11,7 +11,6 @@ export interface ExecutionSubtask {
     resources: string[];
     recalledTaskIds: string[];
   };
-  deliveryKind: 'edit' | 'report';
   acceptance: string[];
   riskLevel: 'low' | 'medium' | 'high';
 }

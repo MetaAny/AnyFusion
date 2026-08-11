@@ -58,6 +58,12 @@ The model-facing Completion Protocol hard-upgrades to v3. A successful report co
 
 After a successful Executor response and before completion validation, Runtime computes and persists one authoritative workspace delta. `report` requires zero created/modified/deleted paths and null `noChangeReason`; changed `edit` requires a null reason; zero-delta `edit` requires a non-empty reason. Runtime derives artifacts from created/modified files only, while deletions remain visible in delta/evidence. Truncated or indeterminate delta fails closed, and response-only correction reuses the source attempt's persisted delta. Runtime then materializes authoritative acceptance and handoff identities. Completion v2, the original v1 blocking-code set, patch/artifact heuristics, and old output-kind execution paths are historical only and are rejected rather than dual-read or repaired.
 
+### Unified Completion Protocol v4 amendment (2026-08-11)
+
+For the pre-release Demo, PlanningAgentPlan v7 and Work Graph v6 remove `deliveryKind`. Every Subtask may finish with or without workspace changes, so Planner no longer predicts `edit` versus `report` and Completion validation no longer compares that prediction with workspace delta.
+
+Completion Protocol hard-upgrades to v4. A successful Executor response contains a required non-empty Markdown result description followed by the v4 marker and either `{}` or strict JSON with optional `resultFilePaths`. A controlled failure still uses the `failure` object. Runtime verifies declared paths as existing workspace-relative files, uses the result description as acceptance evidence and text handoff content, and uses declared result files for artifact handoffs. It continues to record workspace delta and validate Git publication separately. If files changed, the Executor commits them and synchronizes local `main`; if no files changed, a clean worktree is sufficient. Completion v3 and persisted delivery-kind data are rejected rather than migrated or dual-read.
+
 ## Consequences
 
 - Existing non-terminal v3 graphs cannot be executed under the new handoff contract and must be parked for natural-language replanning.

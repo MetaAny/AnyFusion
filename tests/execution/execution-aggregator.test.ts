@@ -14,7 +14,6 @@ function createUnit(overrides: Partial<ExecutionSubtask>): ExecutionSubtask {
     executorHint: 'codex-cli',
     dependsOn: [],
     inputs: { taskId: 'task_agg', resources: [], recalledTaskIds: [] },
-    deliveryKind: 'report',
     acceptance: [],
     riskLevel: 'low',
     ...overrides,
@@ -46,8 +45,8 @@ describe('ExecutionAggregator', () => {
   it('summarizes research and implementation outputs with artifacts when verification passes', () => {
     const result = new ExecutionAggregator().aggregate({
       subtasks: [
-        createUnit({ id: 'subtask_research', deliveryKind: 'report' }),
-        createUnit({ id: 'subtask_implementation', deliveryKind: 'edit' }),
+        createUnit({ id: 'subtask_research' }),
+        createUnit({ id: 'subtask_implementation' }),
       ],
       results: [
         createResult({
@@ -75,8 +74,8 @@ describe('ExecutionAggregator', () => {
   it('flags conflicting subtask outputs', () => {
     const result = new ExecutionAggregator().aggregate({
       subtasks: [
-        createUnit({ id: 'subtask_a', deliveryKind: 'report' }),
-        createUnit({ id: 'subtask_b', deliveryKind: 'report' }),
+        createUnit({ id: 'subtask_a' }),
+        createUnit({ id: 'subtask_b' }),
       ],
       results: [
         createResult({ subtaskId: 'subtask_a', output: '来源: A. conclusion conflict with B.' }),
@@ -93,7 +92,7 @@ describe('ExecutionAggregator', () => {
   it('does not infer edit contract failures from output wording or model artifact claims', () => {
     const result = new ExecutionAggregator().aggregate({
       subtasks: [
-        createUnit({ id: 'subtask_edit', deliveryKind: 'edit' }),
+        createUnit({ id: 'subtask_edit' }),
       ],
       results: [
         createResult({ subtaskId: 'subtask_edit', output: 'Changed src/core/foo.ts.', artifacts: [] }),
@@ -108,7 +107,7 @@ describe('ExecutionAggregator', () => {
   it('flags missing subtask results as errors', () => {
     const result = new ExecutionAggregator().aggregate({
       subtasks: [
-        createUnit({ id: 'subtask_missing', deliveryKind: 'report' }),
+        createUnit({ id: 'subtask_missing' }),
       ],
       results: [],
       aggregation: createAggregationPlan(),

@@ -109,11 +109,10 @@ describe('planner-first executor command acceptance', () => {
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'agent_classes'").get())
       .toBeUndefined();
 
-    const subtasks = db.prepare('SELECT status, delivery_kind FROM subtasks ORDER BY created_at ASC').all() as Array<{
+    const subtasks = db.prepare('SELECT status FROM subtasks ORDER BY created_at ASC').all() as Array<{
       status: string;
-      delivery_kind: string;
     }>;
-    expect(subtasks).toEqual([expect.objectContaining({ status: 'done', delivery_kind: 'edit' })]);
+    expect(subtasks).toEqual([expect.objectContaining({ status: 'done' })]);
 
     const workUnitEvents = db.prepare('SELECT event_type FROM work_unit_events ORDER BY created_at ASC').all() as Array<{ event_type: string }>;
     expect(workUnitEvents.map(row => row.event_type)).toEqual(expect.arrayContaining(['claimed', 'running', 'released']));

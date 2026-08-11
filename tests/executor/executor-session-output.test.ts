@@ -31,7 +31,7 @@ describe('extractExecutorSessionId', () => {
 
 describe('extractExecutorFinalOutput', () => {
   it('extracts only the final Pi assistant message from streaming JSONL', () => {
-    const marker = '<!-- metaclaw:completion:v3 -->';
+    const marker = '<!-- metaclaw:completion:v4 -->';
     const finalReport = [
       '# Node.js report',
       '',
@@ -68,7 +68,7 @@ describe('extractExecutorFinalOutput', () => {
     const extracted = extractExecutorFinalOutput(binding('pi'), output);
 
     expect(extracted).toBe(finalReport);
-    expect(extracted.match(/metaclaw:completion:v3/gu)).toHaveLength(1);
+    expect(extracted.match(/metaclaw:completion:v4/gu)).toHaveLength(1);
   });
 
   it('uses the last valid Pi assistant message and ignores malformed JSONL', () => {

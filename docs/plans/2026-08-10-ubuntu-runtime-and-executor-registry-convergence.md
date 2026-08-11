@@ -231,6 +231,20 @@ Project repository without preserving the old container filesystem.
   the final local Runtime image ID is
   `sha256:452ee29dc7f9c1732555e3fd81cd59ff197d74b069929230d3db7b5e189a7a26`.
   Stage 6 on the real Ubuntu server remains to be completed.
+- **Completion contract follow-up completed 2026-08-11:** Completion Protocol
+  v4 removes the Planner-authored `edit | report` distinction and workspace
+  change restrictions. Every Executor now returns a required result description
+  plus optional existing workspace-relative result-file paths. Schema v35 drops
+  the obsolete Subtask delivery-kind column, and the local Docker data volume is
+  scoped to v35. Host lint, the 68-test focused Ubuntu run and the complete
+  Ubuntu suite passed; the full result was 191 files passed, 3 skipped, with
+  771 tests passed and 13 skipped.
+- **Container registration follow-up completed 2026-08-11:** Runtime container
+  bootstrap now uses the shared registration service to idempotently register,
+  verify, enable and reload missing canonical `codex` and `pi` Executors. An
+  existing definition is skipped, so ordinary restart and rebuild do not repeat
+  model verification. The Windows launcher waits for bootstrap and SSH readiness
+  before reporting success. Native server startup does not alter its Registry.
 
 ### Stage 0 — Integration safety and branch inventory
 

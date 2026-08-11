@@ -36,7 +36,7 @@ function graph(_taskId: string): WorkGraphProposal {
       subtasks: [{
         id: 'execute', title: 'Execute', goal: 'Do work', dependencies: [], contextRefs: [],
         requiredCapabilities: ['workspace-engineering'], preferredAgentClassList: ['codex-cli'],
-        deliveryKind: 'edit', acceptance: [{ key: 'tests', description: 'run the unit tests', requiredEvidence: ['test result'] }], riskLevel: 'low',
+        acceptance: [{ key: 'tests', description: 'run the unit tests', requiredEvidence: ['test result'] }], riskLevel: 'low',
       }],
   };
 }
@@ -77,7 +77,7 @@ describe('WorkGraphRuntimeService', () => {
     if (result.outcome !== 'applied') return;
     expect(result.subtasks[0]).toMatchObject({
       id: `${taskRecord.id}_r1_execute`, graphRevision: 1, generationId: 'generation_1', requiredCapabilities: ['workspace-engineering'],
-      preferredAgentClassList: ['codex-cli'], deliveryKind: 'edit',
+      preferredAgentClassList: ['codex-cli'],
       acceptance: [{ key: 'tests', description: 'run the unit tests', requiredEvidence: ['test result'] }],
     });
     expect(repo.listByTask(taskRecord.id)[0]).toMatchObject({

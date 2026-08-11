@@ -20,7 +20,6 @@ const TASK_CONTROL_VALUES = [
 ] as const;
 const RISK_LEVEL_VALUES = ['low', 'medium', 'high'] as const;
 const TASK_PRIORITY_VALUES = ['normal', 'high', 'urgent'] as const;
-const DELIVERY_KIND_VALUES = ['edit', 'report'] as const;
 const WORK_GRAPH_ITEM_TYPE_VALUES = ['text', 'artifact'] as const;
 const WORK_GRAPH_KEY = /^[a-z][a-z0-9_-]{0,63}$/;
 const REGISTRY_ID = /^[a-z][a-z0-9-]{0,63}$/;
@@ -89,7 +88,6 @@ const SubtaskSchema = z.object({
   contextRefs: z.array(ContextRefSchema).max(12),
   requiredCapabilities: z.array(z.string().regex(REGISTRY_ID)).min(1),
   preferredAgentClassList: z.array(z.string().regex(REGISTRY_ID)).min(1),
-  deliveryKind: z.enum(DELIVERY_KIND_VALUES),
   acceptance: z.array(AcceptanceSchema).min(1).max(12),
   riskLevel: z.enum(RISK_LEVEL_VALUES),
 }).strict();

@@ -61,7 +61,7 @@ result.
   termination of its recorded PID and reports a normalized lost-attempt fact.
 - PID cleanup is intentionally best-effort for the Demo. There is no process
   fingerprint database or general process supervisor.
-- Schema 34 is fresh-only. Stop Runtime and copy `/data/anyfusion` to one
+- Schema 35 is fresh-only. Stop Runtime and copy `/data/anyfusion` to one
   timestamped backup before first startup; older pre-release databases are
   rejected instead of upgraded or read through a compatibility path.
 - Workspaces persist under

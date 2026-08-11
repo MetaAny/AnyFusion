@@ -56,7 +56,6 @@ describe('SubtaskRepo', () => {
       contextRefs: [],
       requiredCapabilities: ['workspace-engineering'],
       preferredAgentClassList: ['codex-cli'],
-      deliveryKind: 'report',
       acceptance: [{ key: 'done', description: 'done', requiredEvidence: [] }],
       riskLevel: 'medium',
       result: '',

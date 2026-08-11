@@ -22,7 +22,7 @@ describe('Kernel capacity control loop', () => {
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-kernel-capacity');
     const attemptSandbox = new FakeAttemptSandbox(() => ({ body: 'capacity recovered' }));
     vi.stubEnv('OPENAI_API_KEY', '');
-    const plan = workGraphPlan({ goal: 'run after capacity recovers', deliveryKind: 'report' });
+    const plan = workGraphPlan({ goal: 'run after capacity recovers' });
     const config: Config = {
       version: 1,
       executor: { command: 'codex', timeout: 60_000 },

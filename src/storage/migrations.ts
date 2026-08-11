@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3';
 
-const CURRENT_SCHEMA_VERSION = 34;
+const CURRENT_SCHEMA_VERSION = 35;
 
 const CURRENT_SCHEMA_SQL = `
 CREATE TABLE projects (
@@ -307,7 +307,6 @@ CREATE TABLE subtasks (
           context_refs_json TEXT NOT NULL DEFAULT '[]',
           required_capabilities_json TEXT NOT NULL,
           preferred_agent_class_list_json TEXT NOT NULL,
-          delivery_kind TEXT NOT NULL DEFAULT 'report' CHECK(delivery_kind IN ('edit', 'report')),
           acceptance_json TEXT NOT NULL DEFAULT '[]',
           risk_level TEXT NOT NULL DEFAULT 'medium',
           result TEXT NOT NULL DEFAULT '',

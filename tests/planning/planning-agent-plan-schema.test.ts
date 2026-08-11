@@ -36,7 +36,6 @@ function outputPlan() {
         contextRefs: [{ kind: 'current_user_input' }],
         requiredCapabilities: ['workspace-engineering'],
         preferredAgentClassList: ['codex-cli'],
-        deliveryKind: 'edit',
         acceptance: [{ key: 'tests_pass', description: 'tests pass', requiredEvidence: ['test result'] }],
         riskLevel: 'low',
       }],
@@ -114,6 +113,18 @@ describe('PlanningAgent plan schemas', () => {
     });
 
     expect(parsed.success).toBe(false);
+  });
+
+  it('rejects the removed delivery type field', () => {
+    const valid = outputPlan();
+    const subtask = valid.workGraph.subtasks[0];
+    expect(PlanningAgentPlanSchema.safeParse({
+      ...valid,
+      workGraph: {
+        ...valid.workGraph,
+        subtasks: [{ ...subtask, deliveryKind: 'report' }],
+      },
+    }).success).toBe(false);
   });
 
   it('requires null workGraph for non-work-graph actions', () => {

@@ -12,7 +12,7 @@ import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { ControlKernel } from '../../src/kernel/control-kernel.js';
 import type { Config } from '../../src/core/types.js';
 import type { PlanningAgentPlan, PlanningContext } from '../../src/planning/planning-types.js';
-import { COMPLETION_MARKER_V3 } from '../../src/execution/completion-protocol.js';
+import { COMPLETION_MARKER_V4 } from '../../src/execution/completion-protocol.js';
 import { PlanningContextBuilder } from '../../src/planning/planning-context-builder.js';
 import {
   createPlannerProposalSubmissionId,
@@ -71,7 +71,6 @@ function plan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgentPlan {
         contextRefs: [{ kind: 'current_user_input' }],
         requiredCapabilities: ['workspace-engineering'],
         preferredAgentClassList: ['codex-cli'],
-        deliveryKind: 'edit',
         acceptance: [{ key: 'tests', description: 'List changed files and test evidence.', requiredEvidence: ['test result'] }],
         riskLevel: 'low',
       }],
@@ -138,12 +137,11 @@ function seedPriorGenerationEvidence(db: Database.Database, taskId: string): voi
     contextRefs: [],
     requiredCapabilities: ['workspace-engineering'],
     preferredAgentClassList: ['codex-cli'],
-    deliveryKind: 'report',
     acceptance: [],
     riskLevel: 'low',
     result: 'must not leak into the current generation',
     artifacts: [],
-    verification: { warnings: [], completionSchemaVersion: 3 },
+    verification: { warnings: [], completionSchemaVersion: 4 },
     error: null,
     createdAt: now,
     updatedAt: now,
@@ -603,7 +601,6 @@ describe('natural-language planning/kernel path', () => {
             contextRefs: [{ kind: 'current_user_input' }],
             requiredCapabilities: ['workspace-engineering'],
             preferredAgentClassList: ['codex-cli'],
-            deliveryKind: 'report',
             acceptance: [{
               key: 'a_done',
               description: 'A is complete.',
@@ -619,7 +616,6 @@ describe('natural-language planning/kernel path', () => {
             contextRefs: [{ kind: 'current_user_input' }],
             requiredCapabilities: ['workspace-engineering'],
             preferredAgentClassList: ['codex-cli'],
-            deliveryKind: 'report',
             acceptance: [{
               key: 'b_done',
               description: 'B is complete.',
@@ -734,7 +730,7 @@ describe('natural-language planning/kernel path', () => {
       if (attemptIndex === 0) {
         seedPriorGenerationEvidence(db, input.taskId);
         return {
-          rawOutput: `failed\n\n${COMPLETION_MARKER_V3}\n${JSON.stringify({
+          rawOutput: `failed\n\n${COMPLETION_MARKER_V4}\n${JSON.stringify({
             failure: { kind: 'task_failed', code: 'implementation_failed', summary: 'approach exhausted' },
           })}`,
         };

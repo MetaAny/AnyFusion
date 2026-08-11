@@ -10,7 +10,7 @@ describe('current SQLite baseline', () => {
     expect(() => runMigrations(db)).not.toThrow();
 
     expect(db.prepare('SELECT version FROM schema_version').all())
-      .toEqual([{ version: 34 }]);
+      .toEqual([{ version: 35 }]);
     for (const table of [
       'projects',
       'tasks',
@@ -98,7 +98,7 @@ describe('current SQLite baseline', () => {
     `);
 
     expect(() => runMigrations(db)).toThrow(
-      'unsupported pre-release SQLite schema (30) at (unknown path); back up and create a fresh database for schema 34',
+      'unsupported pre-release SQLite schema (30) at (unknown path); back up and create a fresh database for schema 35',
     );
     expect(db.prepare('SELECT version FROM schema_version').all())
       .toEqual([{ version: 30 }]);

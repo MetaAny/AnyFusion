@@ -7,8 +7,8 @@ AnyFusion is a local AI Task OS for agentic work. It turns natural-language requ
 It is built for teams who need agents to do more than answer the current turn. AnyFusion gives long-running AI work a task state machine, memory boundary, unified ControlKernel decision plane, work-unit dispatch runtime, verification loop, local Gateway, Feishu delivery path, and real end-to-end smoke gate.
 
 > Current implementation baseline (2026-08-10): PlanningAgentPlan v7, Work
-> Graph v6, Kernel event/snapshot/decision contract v5, Completion Protocol v3,
-> fresh-only SQLite schema v34 with no pre-release upgrade path, one explicit
+> Graph v6, Kernel event/snapshot/decision contract v5, Completion Protocol v4,
+> fresh-only SQLite schema v35 with no pre-release upgrade path, one explicit
 > Project repository, user-approved whole-branch publication, and one
 > digest-bound Executor Registry Snapshot sourced from
 > `$ANYFUSION_CONFIG_HOME/executors.yaml`.
@@ -22,7 +22,7 @@ It is built for teams who need agents to do more than answer the current turn. A
 - Exposes historical tasks through a local SQLite FTS index that the PlanningAgent queries explicitly.
 - Plans complex work as explicit subtasks with acceptance criteria and aggregation rules.
 - Plans work as a task-owned capability-handoff graph, validates a complete ordered Executor list against the current registry snapshot, and lets idle executor work units claim ready subtasks.
-- Validates every Subtask through Completion Protocol v3 against one authoritative workspace delta, persists clean results and immutable direct-edge handoffs, and blocks contract failures without implicit retry.
+- Validates every Subtask through Completion Protocol v4, records the authoritative workspace delta independently, persists clean results and immutable direct-edge handoffs, and blocks contract failures without implicit retry.
 - Binds each live MetaClaw session to one persisted AnyFusion-Pi Planner session; MetaClaw-owned preferences and runtime facts may cross only bounded read-only Planner query contracts and are not replayed as conversation history.
 - Captures generated files as task artifacts.
 - Sends Feishu chat replies, file artifacts, and Markdown preview links through the backend delivery layer.
@@ -58,12 +58,12 @@ flowchart LR
   Supervisor --> Attempt[SubtaskAttemptRunner<br/>one attempt, one WorkUnit]
   Attempt --> Context[SubtaskExecutionContext<br/>direct handoffs and selected evidence]
   Context --> Executors[ExecutionRuntime<br/>one worktree Executor process]
-  Executors --> Verify[Completion Protocol v3<br/>evidence, no-change reason,<br/>authoritative workspace delta]
+  Executors --> Verify[Completion Protocol v4<br/>result description and<br/>optional result files]
   Verify --> Publication[User-approved Git publication<br/>whole candidate branch]
   Publication --> Delivery[Delivery and UI<br/>TUI progress, Feishu, files, preview links]
   Delivery --> User
 
-  Session <--> Store[(Local SQLite schema 34<br/>projects, tasks, approvals,<br/>work units, events, memory)]
+  Session <--> Store[(Local SQLite schema 35<br/>projects, tasks, approvals,<br/>work units, events, memory)]
   Loop --> Decisions[(kernel_decisions)]
   Graph <--> Store
   Attempt <--> Store
@@ -136,7 +136,7 @@ flowchart LR
   Ready --> Batch[dispatch_batch<br/>durable attempt items]
   Batch --> Attempt[Attempt supervisor<br/>claim and run independently]
   Attempt --> Run[ExecutionRuntime<br/>transport and execute]
-  Run --> Verify[Completion Protocol v3<br/>delta, receipt and candidate commit]
+  Run --> Verify[Completion Protocol v4<br/>receipt and candidate commit]
   Verify --> Approval[repository_promotion<br/>user review]
   Approval -->|approved| Integrate[Merge complete candidate<br/>into Project main]
   Approval -->|denied| Block[Block and preserve<br/>branch/worktree]
@@ -342,7 +342,11 @@ Copy-Item docker\executor-pi.env.example docker\executor-pi.env
 
 Use `-Rebuild` after source changes. Runtime state and Executor configuration
 persist under `/data/anyfusion`, and the default Project persists at
-`/workspace/default`. Native Windows Node.js is not a supported Runtime path.
+`/workspace/default`. Container bootstrap uses the shared registration service
+to add, verify, enable and reload missing canonical `codex` and `pi` Executors;
+existing definitions are skipped. `-Start` and `-Rebuild` wait for this bootstrap
+and SSH readiness before reporting success. Native Windows Node.js is not a
+supported Runtime path.
 
 ## Install Executors
 
@@ -803,7 +807,7 @@ Whole-Task and explicit Subtask cancellation use the same durable control chain.
 Natural-language dispatch is split into Planner understanding, kernel authorization, and runtime execution. Raw natural-language input enters `PlanningAgent`; only slash commands and deterministic IDs, paths, URLs, and attachments bypass semantic planning. Natural-language memory capture is not a fast path. The dedicated AnyFusion-Pi runner submits a strict v7 `PlanningAgentPlan` through the native proposal tool and queries bounded read-only MCP tools when evidence is needed. Work Graph uses the v6 contract; authorization resolution remains limited to an exact pending request and does not add resource claims.
 
 - `direct_reply`, `clarification`, `task_control`, or `no_action`: no executor work unit should be claimed unless the kernel rewrites the plan into executable work.
-- `plan_work_graph`: the planner must propose a non-empty capability-minimal work graph whose nodes are future `Subtask` records. Each proposal carries dependencies, acceptance criteria, `deliveryKind: edit | report`, non-empty controlled `requiredCapabilities`, and the complete ordered set of eligible Executor IDs from the current Planner registry projection in `preferredAgentClassList`.
+- `plan_work_graph`: the planner must propose a non-empty capability-minimal work graph whose nodes are future `Subtask` records. Each proposal carries dependencies, acceptance criteria, non-empty controlled `requiredCapabilities`, and the complete ordered set of eligible Executor IDs from the current Planner registry projection in `preferredAgentClassList`.
 
 `ControlKernel` exposes only `decide(event, snapshot)`. Kernel contract v5 validates Planning proposals, single-active-Task admission, graph structure, registry digest, Executor membership, capability coverage and health, then decides batch dispatch, capacity handling, execution landing, Task/Subtask cancellation, partial-result acceptance, generation replan, deferred availability, Executor recovery, timer rechecks, contract correction, permission grant/deny/escalation, partition waiting and sandbox recovery without reading repositories, clocks, adapters or raw logs. Every event/snapshot/decision uses a versioned discriminated union, and decision and attempt identities are deterministic from the event and batch item.
 
@@ -817,11 +821,11 @@ AnyFusion can represent complex requests as a work graph instead of a single und
 
 In the active session path, proposed nodes become persisted Work Graph v6
 `Subtask` records only after a durable `authorize_task_plan` application. The
-unreleased product uses fresh-only SQLite schema v34; every v33 or older
+unreleased product uses fresh-only SQLite schema v35; every v34 or older
 pre-release schema is rejected with its exact path, with no migration,
-automatic deletion or dual-read path. Schema 34 retains the Project,
-publication, Executor Registry and purge baseline while replacing Docker-only
-attempt fields with the worktree process runtime handle and child PID. It preserves the
+automatic deletion or dual-read path. Schema 35 retains the Project,
+publication, Executor Registry, process-runtime and purge baseline while removing
+the obsolete Subtask delivery-kind column. It preserves the
 durable inbox/application/outbox, graph revisions,
 resource/workspace/permission/sandbox records, dispatch/publication/immutable
 merge audit, cancellation cleanup, lease revocation, generation replan,
@@ -836,7 +840,7 @@ baseline.
 
 `SubtaskExecutionContext` is the only production Executor input. Task title/goal are background, the current Subtask goal is the sole operational instruction, siblings expose only titles as out of scope, and Planner-selected evidence has deterministic per-reference and total preview budgets. Runtime keeps Task/Subtask/attempt/WorkUnit identities and acceptance/handoff keys outside the model-facing prompt and report. Ordinary assistant/Executor history never enters the context. Codex and Pi may access eligible Task evidence through the same attempt-bound read-only authorization; unsupported Adapters receive only selected previews.
 
-Every Executor response must end with Completion Protocol v3. The model-facing strict JSON report contains only `evidence` and nullable `noChangeReason`, or a controlled `failure`; identity fields and model-authored artifacts are rejected. After Executor success and before completion validation, Runtime computes and persists one authoritative commit-derived workspace delta. `report` requires an empty delta and null reason; changed `edit` requires a null reason; zero-delta `edit` requires a non-empty reason. Runtime derives artifacts from created/modified files, excludes deletions from the artifact list, reuses the source attempt delta for response-only correction, and fails closed on truncated or indeterminate delta. The Executor must commit all changes, merge current local `main`, resolve conflicts and leave the assigned branch clean. Runtime then validates the assigned branch and `main` ancestry, materializes the internal acceptance/handoff envelope, strips the machine report, checks budgets, and persists the exact candidate in `awaiting_approval` with a `repository_promotion` request. Approval merges the complete branch into Project `main`; denial blocks and preserves the worktree. If `main` moved after review began, Runtime preserves the worktree and reruns the Executor to synchronize before creating a new approval. Successful promotion atomically publishes normalized handoffs, clean body, artifacts, workspace state and `done`, then deletes the Subtask worktree and branch. No remote Git operation or file-selective publication occurs.
+Every Executor response must end with Completion Protocol v4. The required non-empty Markdown before the marker is the result description. The model-facing strict JSON is `{}` or contains only optional `resultFilePaths`; a controlled `failure` is also accepted, while identity fields and other model-authored fields are rejected. Runtime verifies declared result paths as existing workspace-relative files, uses the description for acceptance evidence and text handoffs, and uses declared files for artifact handoffs. Workspace changes are allowed but not required. Runtime still computes and persists one authoritative commit-derived workspace delta independently of Completion validation. If files changed, the Executor commits them, merges current local `main`, resolves conflicts and leaves the assigned branch clean; otherwise a clean assigned worktree is sufficient. Runtime then validates the assigned branch and `main` ancestry, materializes the internal acceptance/handoff envelope, strips the machine report, checks budgets, and persists the exact candidate in `awaiting_approval` with a `repository_promotion` request. Approval merges the complete branch into Project `main`; denial blocks and preserves the worktree. If `main` moved after review began, Runtime preserves the worktree and reruns the Executor to synchronize before creating a new approval. Successful promotion atomically publishes normalized handoffs, clean body, artifacts, workspace state and `done`, then deletes the Subtask worktree and branch. No remote Git operation or file-selective publication occurs.
 
 The retired `ExecutionStrategyPlanner`, `ExecutionPolicy`, `MultiExecutorOrchestrator`, and `AgenticLoopController` implementations have been removed. They were no longer connected to the production path after work-graph and work-unit dispatch became authoritative. `ExecutionAggregator` remains available to the verification pipeline for structured multi-result evidence checks.
 

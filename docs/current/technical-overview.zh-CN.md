@@ -3,8 +3,8 @@
 [English Technical Overview](technical-overview.md) | [中文首页](../../README.zh-CN.md)
 
 > 当前实现基线（2026-08-10）：PlanningAgentPlan v7、Work Graph
-> v6、Kernel event/snapshot/decision contract v5、Completion Protocol v3，
-> fresh-only SQLite schema v34、一个显式 Project 仓库、用户审批后的整分支
+> v6、Kernel event/snapshot/decision contract v5、Completion Protocol v4，
+> fresh-only SQLite schema v35、一个显式 Project 仓库、用户审批后的整分支
 > 发布，以及来自
 > `$ANYFUSION_CONFIG_HOME/executors.yaml` 的 digest-bound Executor Registry
 > Snapshot。`KernelWorkflow` 串行完成
@@ -65,7 +65,7 @@ flowchart LR
   Batch --> Attempt[AttemptSupervisor<br/>最多四个 attempt]
   Attempt --> Context[SubtaskExecutionContext<br/>直接 handoff 与选定 evidence]
   Context --> Executors[ExecutionRuntime<br/>verified registry driver]
-  Executors --> Verify[Completion Protocol v3<br/>delta、receipt 与 candidate commit]
+  Executors --> Verify[Completion Protocol v4<br/>结果说明、可选结果文件与 candidate commit]
   Verify --> Publish[用户审批 Git publication<br/>完整 candidate 分支]
   Publish --> Delivery[交付和 UI<br/>TUI 进度、飞书、文件、预览链接]
   Conversation --> Delivery
@@ -74,7 +74,7 @@ flowchart LR
   Stop --> Delivery
   Delivery --> User
 
-  Session <--> Store[(本地 SQLite schema 34<br/>Project、任务、审批、<br/>work units、events、memory)]
+  Session <--> Store[(本地 SQLite schema 35<br/>Project、任务、审批、<br/>work units、events、memory)]
   Workflow -. audit .-> Decisions[(kernel_decisions)]
   TaskOS <--> Store
   Graph <--> Store
@@ -144,7 +144,7 @@ flowchart LR
   Ready --> Batch[Kernel dispatch_batch<br/>持久 attempt items]
   Batch --> Attempt[Attempt supervisor<br/>独立 claim 与运行]
   Attempt --> Run[ExecutionRuntime<br/>传输并执行]
-  Run --> Verify[Completion Protocol v3<br/>delta、receipt 与 candidate]
+  Run --> Verify[Completion Protocol v4<br/>receipt 与 candidate]
   Verify --> Approval[repository_promotion<br/>用户审批]
   Approval -->|通过| Publish[完整 candidate 分支<br/>合并到 Project main]
   Approval -->|拒绝| Block[阻塞并保留<br/>branch/worktree]
@@ -346,8 +346,10 @@ Copy-Item docker\executor-pi.env.example docker\executor-pi.env
 ```
 
 源码变化后使用 `-Rebuild`。Runtime 状态和 Executor 配置持久化在
-`/data/anyfusion`，默认 Project 持久化在 `/workspace/default`。Windows 原生
-Node.js 不是受支持的 Runtime 路径。
+`/data/anyfusion`，默认 Project 持久化在 `/workspace/default`。容器启动时会通过
+统一注册服务自动补齐缺失的 canonical `codex` 和 `pi` Executor，并完成验证、启用
+和 Registry reload；已存在的定义直接跳过。`-Start` 和 `-Rebuild` 会等待 bootstrap
+和 SSH 真正就绪后再报告成功。Windows 原生 Node.js 不是受支持的 Runtime 路径。
 
 ## 安装执行器
 
@@ -846,7 +848,7 @@ AnyFusion 当前只调度一个活跃顶层 Task。Work Graph 纯函数从依赖
 - `direct_reply`、`clarification`、`task_control` 或 `no_action`：除非 kernel 把 plan 重写为可执行工作，否则不应 claim executor work unit。
 - `plan_work_graph`：planner 提出一个 work graph proposal，节点是未来的
   `Subtask` 记录。每个 proposal 都带有依赖、验收标准、
-  `deliveryKind: edit | report`、受控的 `requiredCapabilities` 和来自当前
+  受控的 `requiredCapabilities` 和来自当前
   Planner Registry projection 的完整有序 Executor ID 集合。
 
 `ControlKernel` v5 验证 schema、priority、task status、单活跃任务冲突、
@@ -864,14 +866,14 @@ grant/deny/escalate、partition wait 和 sandbox recovery。
 
 AnyFusion 可以把复杂需求表示成 work graph，而不是把整段需求一次性塞给一个 executor。图没有 single/multi execution mode；Planner 只在受控能力交接或必要交付边界建立多个 Subtasks。每条 `dependencies` 边同时是拓扑与 keyed `text`/`artifact` handoff contract。
 
-`SubtaskExecutionContext` 是唯一生产 Executor 输入。Task 标题/目标仅作背景，当前 Subtask 目标是唯一操作指令，越界 sibling 只暴露标题。Runtime 不把 Task/Subtask/attempt/WorkUnit 身份及 acceptance/handoff key 交给模型复制。Completion Protocol v3 的模型侧严格 JSON 只允许 `evidence` 与可空 `noChangeReason`，或受控 `failure`；模型提供的身份和 artifacts 会被拒绝。Runtime 在校验前计算一次权威 workspace delta：`report` 必须零变化，`edit` 的有变化/零变化分别要求空原因/非空原因；新增和修改文件由 Runtime 生成 artifacts，删除只保留在 delta/evidence。delta 截断或不确定时 fail-closed，随后 Runtime 根据绑定 Subtask 与 outgoing contract 生成权威内部 envelope 并执行预算和直接边汇总校验。
+`SubtaskExecutionContext` 是唯一生产 Executor 输入。Task 标题/目标仅作背景，当前 Subtask 目标是唯一操作指令，越界 sibling 只暴露标题。Runtime 不把 Task/Subtask/attempt/WorkUnit 身份及 acceptance/handoff key 交给模型复制。Completion Protocol v4 要求 marker 前有非空 Markdown 结果说明；成功时严格 JSON 为 `{}` 或只包含可选 `resultFilePaths`，失败时使用受控 `failure`。Runtime 校验声明的结果文件确实存在且位于工作区内，用结果说明生成 acceptance evidence 和文本 handoff，用结果文件生成 artifact handoff。Subtask 可以修改工作区，也可以不修改；workspace delta 仍由 Runtime 独立记录并用于 Git 发布校验。若修改了文件，Executor 必须提交并同步本地 `main`；未修改文件时只需保持工作树干净。随后 Runtime 根据绑定 Subtask 与 outgoing contract 生成权威内部 envelope，并执行预算和直接边汇总校验。
 
 在 active session path 中，proposal 只有在 `ControlKernel` 授权并创建 durable
 application 后才会成为持久化 Work Graph v6 `Subtask` revision。未发布产品
-使用 fresh-only SQLite schema v34；所有 v33 或更早预发布 schema 都会带
-精确路径拒绝，不提供迁移、自动删除或双读。Schema 34 保留 Project、
-publication、Executor Registry 与 purge 基线，并用 worktree process runtime
-handle 和 child PID 替换 Docker-only attempt 字段；同时保留
+使用 fresh-only SQLite schema v35；所有 v34 或更早预发布 schema 都会带
+精确路径拒绝，不提供迁移、自动删除或双读。Schema 35 保留 Project、
+publication、Executor Registry、process runtime 与 purge 基线，并删除过时的
+Subtask delivery-kind 列；同时保留
 Planner proposal、durable workflow、graph revision、
 resource/workspace/permission/sandbox、dispatch/publication/immutable merge
 audit、cancellation cleanup、lease revocation、generation replan、deferred
@@ -879,8 +881,8 @@ availability、bounded recovery 和 partial completion 事实。普通运行期�
 Kernel 与 Task 事件保留完整历史；Skill 过程事件只保留为 attempt 生命周期
 内的 verifier evidence，只有终态事件落库并原子更新 effect summary。下游
 只有在直接依赖获得审批并合并到 Project `main` 后才进入 frontier，并从更新
-后的 `main` 创建自己的 worktree。Executor 必须提交全部改动、合并当前本地
-`main`、自行解决冲突并保持分支干净；Runtime 校验 assigned branch 与
+后的 `main` 创建自己的 worktree。Executor 只有在修改文件时才必须提交全部改动、
+合并当前本地 `main`、自行解决冲突；无论是否改动都必须保持分支干净。Runtime 校验 assigned branch 与
 `main` ancestry 后创建 `awaiting_approval` 的 `repository_promotion` 请求。
 审批通过后完整分支合并到 `main` 并删除 worktree/branch；拒绝则阻塞并保留。
 若审批期间 `main` 已变化，Runtime 保留 worktree，让 Executor 重新同步后再

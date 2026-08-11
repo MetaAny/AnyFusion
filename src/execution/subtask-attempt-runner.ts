@@ -17,10 +17,10 @@ import type { SubtaskRepo } from '../storage/subtask-repo.js';
 import type { ExecutionMode } from './types.js';
 import type { ExecutionRuntime } from './execution-runtime.js';
 import {
-  COMPLETION_MARKER_V3,
+  COMPLETION_MARKER_V4,
   validateCompletionProtocol,
   type CompletionContractViolation,
-  type CompletionHandoffV3,
+  type CompletionHandoffV4,
 } from './completion-protocol.js';
 import { SubtaskExecutionContextBuilder } from './subtask-execution-context.js';
 import type { WorkUnitClaimService } from './work-unit-claim-service.js';
@@ -414,7 +414,6 @@ export class SubtaskAttemptRunner {
             mergeRepair.conflictingPaths,
             gitWorkspace.filesPath,
           ),
-          deliveryKind: 'edit',
         } : undefined,
         completionContractOverride: mergeRepair ? {
           marker: '---METACLAW-MERGE-REPAIR---',
@@ -491,7 +490,7 @@ export class SubtaskAttemptRunner {
       const execution = await this.deps.executionRuntime.run({
         taskId: input.taskId,
         executionId: input.executionId,
-        spec: { subtask, workUnit: claim.workUnit, agentClass, acceptance: subtask.acceptance, deliveryKind: subtask.deliveryKind },
+        spec: { subtask, workUnit: claim.workUnit, agentClass, acceptance: subtask.acceptance },
         executorInput: {
           context: built.context,
           sandbox: {
@@ -670,7 +669,6 @@ export class SubtaskAttemptRunner {
         subtask,
         outgoingHandoffs,
         workspaceRoot: built.context.workspaceContext.workingDirectory,
-        workspaceDelta,
         incomingUsageByTarget: new Map(outgoingHandoffs.map(contract => [
           contract.toSubtaskId,
           summarizeHandoffUsage(this.handoffRepo.listIncoming(task.id, contract.toSubtaskId)),
@@ -701,7 +699,7 @@ export class SubtaskAttemptRunner {
         this.persistNonSuccess({
           attemptId, executionId: input.executionId, taskId: task.id, subtaskId: subtask.id,
           workUnitId: claim.workUnit.id, agentClassName: agentClass.name, startedAt,
-          terminalState: 'executor_failed', rawResponse, completionSchemaVersion: 3,
+          terminalState: 'executor_failed', rawResponse, completionSchemaVersion: 4,
           errorCode: failure.code, errorDetail: failure.summary,
           failure: { ...failure, scope: 'task' },
         });
@@ -755,7 +753,7 @@ export class SubtaskAttemptRunner {
         artifacts: completion.normalizedArtifacts,
         warnings: completion.warnings,
         handoffs: completedEnvelope.handoffs,
-        completionSchemaVersion: 3,
+        completionSchemaVersion: 4,
       };
       if (!dispatchItem) {
         throw new Error(`authorized dispatch item not found: ${attemptId}`);
@@ -773,7 +771,7 @@ export class SubtaskAttemptRunner {
           startedAt,
           terminalState: 'completed',
           rawResponse,
-          completionSchemaVersion: 3,
+          completionSchemaVersion: 4,
           warnings: completion.warnings,
         }, completedAt),
         expectedSubtaskStatus: 'running',
@@ -1000,7 +998,6 @@ export class SubtaskAttemptRunner {
         subtask,
         outgoingHandoffs,
         workspaceRoot: gitWorkspace.filesPath,
-        workspaceDelta: sourceRuntime.workspaceDelta,
         incomingUsageByTarget: new Map(outgoingHandoffs.map(contract => [
           contract.toSubtaskId,
           summarizeHandoffUsage(this.handoffRepo.listIncoming(task.id, contract.toSubtaskId)),
@@ -1031,7 +1028,7 @@ export class SubtaskAttemptRunner {
         this.persistNonSuccess({
           attemptId: input.attemptId, executionId: input.executionId, taskId: task.id, subtaskId: subtask.id,
           workUnitId: claim.workUnit.id, agentClassName: input.agentClassName, startedAt,
-          terminalState: 'executor_failed', rawResponse: result.output, completionSchemaVersion: 3,
+          terminalState: 'executor_failed', rawResponse: result.output, completionSchemaVersion: 4,
           errorCode: failure.code, errorDetail: failure.summary,
         });
         claim.markFailed(failure.summary);
@@ -1068,7 +1065,7 @@ export class SubtaskAttemptRunner {
           receipt: buildReceipt({
           attemptId: input.attemptId, executionId: input.executionId, taskId: task.id, subtaskId: subtask.id,
           workUnitId: claim.workUnit.id, agentClassName: input.agentClassName, startedAt,
-          terminalState: 'completed', rawResponse: result.output, completionSchemaVersion: 3, warnings: completion.warnings,
+          terminalState: 'completed', rawResponse: result.output, completionSchemaVersion: 4, warnings: completion.warnings,
         }, completedAt),
         expectedSubtaskStatus: 'running',
         nextSubtaskStatus: 'awaiting_integration',
@@ -1089,7 +1086,7 @@ export class SubtaskAttemptRunner {
             artifacts: completion.normalizedArtifacts,
             warnings: completion.warnings,
             handoffs: completedEnvelope.handoffs,
-            completionSchemaVersion: 3,
+            completionSchemaVersion: 4,
           },
           topologyLayer: deriveTopologyLayer(subtask.id, allSubtasks),
           firstDispatchOrder: dispatchItem.batchOrder,
@@ -1389,7 +1386,7 @@ export class SubtaskAttemptRunner {
   }
 }
 
-function summarizeHandoffUsage(handoffs: Array<{ items: CompletionHandoffV3['items'] }>): {
+function summarizeHandoffUsage(handoffs: Array<{ items: CompletionHandoffV4['items'] }>): {
   textCharacters: number;
   artifactPaths: number;
 } {
@@ -1536,10 +1533,10 @@ function buildCorrectionPrompt(
     'Correct only the final response format. Do not execute the task, use tools, inspect files, or change the workspace.',
     'Return non-empty Markdown followed by exactly one completion trailer using this exact order:',
     '<non-empty Markdown body>',
-    COMPLETION_MARKER_V3,
+    COMPLETION_MARKER_V4,
     '<one strict JSON object>',
     'The marker must appear before the JSON object. Do not wrap the JSON in a Markdown code fence. The JSON object must be the final bytes of the response.',
-    'Successful report schema: {"evidence":["<concise evidence>"],"noChangeReason":null}',
+    'Successful report schema: {"resultFilePaths":["<optional workspace-relative result file path>"]}',
     'Failure report schema: {"failure":{"kind":"task_failed","code":"<stable_code>","summary":"<concise explanation>"}}',
     'Do not return schema/status identity, Task/Subtask/attempt/WorkUnit IDs, acceptance keys, or handoff identities. Runtime owns and injects them.',
     `Validation guidance:\n${guidance.map(item => `- ${item}`).join('\n')}`,
@@ -1550,15 +1547,9 @@ function buildCorrectionPrompt(
 function correctionGuidance(code: CompletionContractViolation['code']): string {
   switch (code) {
     case 'completion_artifact_invalid':
-      return 'Do not declare artifact paths; Runtime derives changed files from the authoritative workspace delta.';
-    case 'completion_no_change_reason_mismatch':
-      return 'Use null when files changed or for report delivery; for a zero-change edit provide a concise non-empty reason.';
-    case 'completion_report_workspace_changed':
-      return 'The report changed the workspace and cannot be corrected by response formatting; return a structured failure.';
-    case 'completion_workspace_delta_uncertain':
-      return 'The workspace delta is not authoritative and cannot be repaired in the response; return a structured failure.';
+      return 'List only existing workspace-relative result files, or omit resultFilePaths when there are none.';
     case 'completion_budget_exceeded':
-      return 'Keep evidence concise: one to four entries, at most 1000 characters each.';
+      return 'Keep the result description within 4000 characters and declare at most 20 result files.';
     default:
       return 'Return exactly one strict identity-free report matching one of the schemas above.';
   }
