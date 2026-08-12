@@ -343,7 +343,10 @@ export async function pauseTask(args: ResolvedCommandArgs, context: CommandConte
       nextStep: '恢复后继续',
       pauseReason: '用户手动暂停',
     });
-    if (wasRunning) context.activeExecutions?.abortTask(taskId);
+    if (wasRunning) {
+      context.activeExecutions.abortTask(taskId);
+      await context.activeExecutions.waitForTaskIdle?.(taskId);
+    }
     return { type: 'text', content: `任务 #${taskId} 已暂停` };
   } catch (error) {
     return { type: 'text', content: `操作失败: ${(error as Error).message}` };
@@ -412,7 +415,10 @@ export async function blockTask(args: ResolvedCommandArgs, context: CommandConte
       description: reason,
       status: 'waiting',
     });
-    if (wasRunning) context.activeExecutions?.abortTask(taskId);
+    if (wasRunning) {
+      context.activeExecutions.abortTask(taskId);
+      await context.activeExecutions.waitForTaskIdle?.(taskId);
+    }
     return { type: 'text', content: `任务 #${taskId} 已标记为阻塞: ${reason}` };
   } catch (error) {
     return { type: 'text', content: `操作失败: ${(error as Error).message}` };

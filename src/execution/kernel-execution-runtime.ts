@@ -1211,6 +1211,11 @@ export class KernelExecutionRuntime {
       ],
       taskId,
     });
+    if (request.executionMode === 'resume-parked') {
+      for (const item of this.deps.dispatchItemRepo.listByTask(taskId)) {
+        this.deps.attemptRunner.reconcileInterruptedPause(item.attemptId);
+      }
+    }
     this.attemptSupervisor.recover(taskId, supervisorContext);
     await this.recoverExpiredAttempts(workflow, attemptFacts);
     if (input.recoveryOnly) await workflow.recover();

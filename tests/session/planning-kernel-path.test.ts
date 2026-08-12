@@ -330,6 +330,67 @@ describe('natural-language planning/kernel path', () => {
     }
   });
 
+  it('settles a paused running attempt and resumes the Subtask through a fresh dispatch', async () => {
+    let notifyFirstAttemptStarted!: () => void;
+    const firstAttemptStarted = new Promise<void>(resolve => {
+      notifyFirstAttemptStarted = resolve;
+    });
+    let finishFirstAttempt!: (exitCode: number) => void;
+    const firstAttempt = new Promise<number>(resolve => {
+      finishFirstAttempt = resolve;
+    });
+    const rawPlan = plan({ id: 'plan_pause_resume_running_attempt' });
+    const harness = createSession(
+      'sess_pause_resume_running_attempt',
+      rawPlan,
+      (_input, attemptIndex) => {
+        if (attemptIndex === 0) {
+          notifyFirstAttemptStarted();
+          return { rawOutput: 'interrupted by user pause', wait: firstAttempt };
+        }
+        return { body: 'resumed attempt completed' };
+      },
+    );
+    const turnId = 'turn_pause_resume_running_attempt';
+    const proposal = await harness.session.submitPlannerProposal({
+      sessionId: harness.sessionId,
+      turnId,
+      userInput: '创建一个可以暂停后恢复的任务',
+      submissionId: createPlannerProposalSubmissionId(harness.sessionId, turnId, rawPlan),
+      plan: rawPlan,
+      runtimeMode: 'interactive',
+    });
+    expect(proposal).toMatchObject({
+      status: 'accepted', outcome: 'task_authorized', taskId: expect.stringMatching(/^task_/),
+    });
+    if (proposal.status !== 'accepted' || !proposal.taskId) {
+      throw new Error('pause/resume test Task was not authorized');
+    }
+    const taskId = proposal.taskId;
+    await firstAttemptStarted;
+    await vi.waitFor(() => expect(harness.attemptSandbox.start).toHaveBeenCalledTimes(1));
+
+    const pause = harness.session.submitPlannerTuiCommand(`/task pause ${taskId}`);
+    await vi.waitFor(() => expect(harness.attemptSandbox.stop).toHaveBeenCalledTimes(1));
+    finishFirstAttempt(137);
+    await pause;
+
+    expect(harness.taskRepo.findById(taskId)?.status).toBe('parked');
+    expect(new SubtaskRepo(harness.db).listByTask(taskId)).toMatchObject([{
+      status: 'ready',
+    }]);
+    expect(harness.db.prepare(`
+      SELECT status FROM kernel_dispatch_items
+      WHERE task_id = ? ORDER BY created_at
+    `).all(taskId)).toEqual([{ status: 'terminal' }]);
+
+    await harness.session.submitPlannerTuiCommand(`/task resume ${taskId}`);
+    await harness.session.waitForAsyncWork();
+
+    expect(harness.attemptSandbox.create).toHaveBeenCalledTimes(2);
+    expect(harness.taskRepo.findById(taskId)?.status).toBe('done');
+  });
+
   it('replays the same accepted submission without duplicating Kernel or interaction facts', async () => {
     const harness = createSession('sess_native_idempotent', plan());
     const direct = plan({

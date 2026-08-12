@@ -25,6 +25,7 @@ export interface AttemptTerminalLanding {
 
 export interface AttemptTerminalLandingResult {
   cancellationWon: boolean;
+  pauseWon: boolean;
 }
 
 /**
@@ -80,9 +81,29 @@ export class AttemptTerminalService {
         || fence.subtask_status === 'cancelled'
         || dispatch.status === 'cancelling'
         || dispatch.status === 'cancelled';
+      const pauseWon = !cancellationWon && fence.task_status === 'parked';
+      const receipt = pauseWon ? pausedReceipt(input.receipt) : input.receipt;
 
-      this.receipts.insert(input.receipt);
-      if (!cancellationWon) {
+      this.receipts.insert(receipt);
+      if (pauseWon) {
+        const changed = this.db.prepare(`
+          UPDATE subtasks
+          SET status = 'ready', error = NULL, updated_at = ?
+          WHERE id = ? AND task_id = ? AND status = ?
+            AND EXISTS (
+              SELECT 1 FROM tasks
+              WHERE tasks.id = subtasks.task_id AND tasks.status = 'parked'
+            )
+        `).run(
+          input.now,
+          input.receipt.subtaskId,
+          input.receipt.taskId,
+          input.expectedSubtaskStatus,
+        ).changes;
+        if (changed !== 1) {
+          throw new Error(`paused attempt fence changed: ${input.receipt.attemptId}`);
+        }
+      } else if (!cancellationWon) {
         const changed = this.db.prepare(`
           UPDATE subtasks
           SET status = ?, error = ?, updated_at = ?
@@ -131,23 +152,70 @@ export class AttemptTerminalService {
 
       this.dispatchItems.markTerminal(
         input.receipt.attemptId,
-        input.receipt.errorDetail,
+        receipt.errorDetail,
         input.now,
       );
       const terminalDispatch = this.dispatchItems.find(input.receipt.attemptId);
       if (!terminalDispatch || !['terminal', 'cancelled'].includes(terminalDispatch.status)) {
         throw new Error(`dispatch item did not become terminal: ${input.receipt.attemptId}`);
       }
-      const event = cancellationWon
-        ? cancellationOutcome(input.event, dispatch, input.now)
-        : input.event;
+      const event = pauseWon
+        ? pauseOutcome(input.event, dispatch, input.now)
+        : cancellationWon
+          ? cancellationOutcome(input.event, dispatch, input.now)
+          : input.event;
       this.workflow.enqueue(event, event.occurredAt);
       if (!this.workflow.findEvent(event.id)) {
         throw new Error(`attempt outcome inbox was not persisted: ${event.id}`);
       }
-      return { cancellationWon };
+      return { cancellationWon, pauseWon };
     })();
   }
+}
+
+function pausedReceipt(receipt: ExecutorAttemptReceiptInsert): ExecutorAttemptReceiptInsert {
+  const summary = 'Task pause fence won before attempt terminal landing';
+  return {
+    ...receipt,
+    terminalState: 'cancelled_or_stale',
+    errorCode: 'task_paused',
+    errorDetail: summary,
+    failure: {
+      kind: 'cancelled',
+      scope: 'attempt',
+      code: 'task_paused',
+      summary,
+    },
+  };
+}
+
+function pauseOutcome(
+  event: KernelEvent,
+  dispatch: NonNullable<ReturnType<KernelDispatchItemRepo['find']>>,
+  now: string,
+): KernelEvent {
+  return {
+    schemaVersion: 5,
+    type: 'execution_outcome',
+    id: event.id,
+    correlationId: dispatch.decisionId,
+    causationId: dispatch.decisionId,
+    occurredAt: now,
+    sessionId: event.sessionId,
+    taskId: dispatch.taskId,
+    subtaskId: dispatch.subtaskId,
+    attemptId: dispatch.attemptId,
+    terminalKind: 'failed',
+    agentClassName: dispatch.agentClassName,
+    attemptKind: dispatch.attemptKind,
+    sourceAttemptId: dispatch.sourceAttemptId,
+    failure: {
+      kind: 'cancelled',
+      scope: 'attempt',
+      code: 'task_paused',
+      summary: 'Task pause fence won before attempt terminal landing',
+    },
+  };
 }
 
 function cancellationOutcome(

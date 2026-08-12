@@ -12,6 +12,7 @@ function createHarness() {
   const taskRepo = new TaskRepo(db);
   const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-command-control');
   const abortTask = vi.fn().mockReturnValue(1);
+  const waitForTaskIdle = vi.fn().mockResolvedValue(undefined);
   const cancelTask = vi.fn(async (taskId: string, reason?: string) => {
     taskEngine.cancel(taskId, reason);
     return { taskId, affectedSubtaskIds: [], cleanupAttemptIds: [] };
@@ -25,11 +26,11 @@ function createHarness() {
   const context = {
     db,
     taskEngine,
-    activeExecutions: { abortTask },
+    activeExecutions: { abortTask, waitForTaskIdle },
     taskControl: { cancelTask, cancelSubtasks, acceptPartialResult },
   } as any;
   return {
-    db, taskRepo, taskEngine, abortTask, cancelTask, cancelSubtasks,
+    db, taskRepo, taskEngine, abortTask, waitForTaskIdle, cancelTask, cancelSubtasks,
     acceptPartialResult, context, catalog: createDefaultCommandCatalog(),
   };
 }
@@ -54,6 +55,7 @@ describe('canonical task control commands', () => {
     expect(result.type).toBe('text');
     expect(harness.taskRepo.findById(task.id)?.status).toBe(expectedStatus);
     expect(harness.abortTask).toHaveBeenCalledWith(task.id);
+    expect(harness.waitForTaskIdle).toHaveBeenCalledWith(task.id);
   });
 
   it('routes Task cancellation through the durable Task control port', async () => {

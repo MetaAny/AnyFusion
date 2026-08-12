@@ -25,6 +25,8 @@ import { SqliteWorkspaceRepository } from '../../src/storage/workspace-repo.js';
 import { buildDefaultResourceClaims } from '../../src/resource/index.js';
 import type { AttemptSandboxPort } from '../../src/execution/attempt-sandbox.js';
 import { KernelDispatchItemRepo } from '../../src/storage/kernel-dispatch-item-repo.js';
+import { SqliteAttemptSandboxRepository } from '../../src/storage/attempt-sandbox-repo.js';
+import { ExecutorAttemptReceiptRepo } from '../../src/storage/executor-attempt-receipt-repo.js';
 
 function node(id: string, dependencies: Subtask['dependencies'] = []): Subtask {
   return {
@@ -177,6 +179,8 @@ function setup(rawResponse: string) {
   return {
     db,
     runner,
+    attemptRunner,
+    authorize,
     taskRuntimeService,
     subtaskRepo,
     workUnitRepo,
@@ -235,6 +239,75 @@ function prepareGitCandidate(workspacePath: string): void {
 }
 
 describe('SubtaskAttemptRunner', () => {
+  it('reconciles a legacy interrupted pause before a fresh resume dispatch', () => {
+    const harness = setup('unused');
+    const attemptId = 'attempt_legacy_paused';
+    harness.authorize({ attemptId });
+    harness.subtaskRepo.updateStatus(harness.a.id, 'running');
+    harness.db.prepare(`UPDATE tasks SET status = 'parked' WHERE id = ?`).run('task_phase2');
+    harness.workUnitRepo.updateState('executor-codex', 'running', {
+      claimedTaskId: 'task_phase2',
+      claimedSubtaskId: harness.a.id,
+      claimedAttemptId: attemptId,
+      leaseExpiresAt: '2026-07-28T00:01:00.000Z',
+    });
+    const now = '2026-07-28T00:00:00.000Z';
+    harness.db.prepare(`
+      INSERT INTO workspace_records (
+        id, task_id, generation_id, subtask_id, workspace_kind, root_uri,
+        baseline_json, status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'git', ?, '{}', 'active', ?, ?)
+    `).run(
+      'workspace_legacy_paused', 'task_phase2', harness.a.generationId, harness.a.id,
+      'file:///tmp/workspace_legacy_paused', now, now,
+    );
+    new SqliteAttemptSandboxRepository(harness.db).create({
+      attemptId,
+      taskId: 'task_phase2',
+      generationId: harness.a.generationId,
+      subtaskId: harness.a.id,
+      workUnitId: 'executor-codex',
+      workspaceId: 'workspace_legacy_paused',
+      runtimeHandle: 'runtime_legacy_paused',
+      processId: null,
+      status: 'removed',
+      leaseToken: 'sandbox_legacy_paused',
+      labels: {},
+      exitCode: 137,
+      resultCollectedAt: now,
+      cleanupStatus: 'removed',
+      cleanupError: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const leaseResult = new ResourceLeaseService(
+      new SqliteResourceLeaseRepository(harness.db),
+    ).claim({
+      taskId: 'task_phase2',
+      generationId: harness.a.generationId,
+      subtaskId: harness.a.id,
+      attemptId,
+      workUnitId: 'executor-codex',
+      claims: harness.defaultResourceGrant,
+      leaseToken: 'resource_legacy_paused',
+    });
+    expect(leaseResult.type).toBe('claimed');
+    expect(harness.attemptRunner.reconcileInterruptedPause(attemptId)).toBe(true);
+    expect(harness.subtaskRepo.findById(harness.a.id)?.status).toBe('ready');
+    expect(harness.dispatchItems.find(attemptId)?.status).toBe('terminal');
+    expect(new ExecutorAttemptReceiptRepo(harness.db).findByAttemptId(attemptId)).toMatchObject({
+      terminalState: 'cancelled_or_stale',
+      errorCode: 'task_paused',
+    });
+    expect(harness.workUnitRepo.findById('executor-codex')).toMatchObject({
+      claimedAttemptId: null,
+    });
+    expect(harness.db.prepare(`
+      SELECT COUNT(*) AS count FROM resource_leases
+      WHERE attempt_id = ? AND released_at IS NULL
+    `).get(attemptId)).toEqual({ count: 0 });
+  });
+
   it('atomically records a candidate receipt without publishing handoffs before integration', async () => {
     const setupResult = setup(validResponse());
     const outcome = await setupResult.runner.run({

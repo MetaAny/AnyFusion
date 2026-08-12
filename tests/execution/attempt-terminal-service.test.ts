@@ -113,6 +113,56 @@ function outcomeEvent(now: string): KernelEvent {
 }
 
 describe('AttemptTerminalService', () => {
+  it('settles a running attempt as interrupted and makes its Subtask retryable when pause wins', () => {
+    const setupResult = setup();
+    setupResult.tasks.updateStatus('task-terminal', 'parked');
+
+    const landing = setupResult.service.land({
+      receipt: {
+        attemptId: 'attempt-terminal',
+        executionId: 'execution-terminal',
+        taskId: 'task-terminal',
+        subtaskId: 'subtask-terminal',
+        workUnitId: 'work-unit-terminal',
+        agentClassName: 'codex-cli',
+        startedAt: setupResult.now,
+        completedAt: setupResult.now,
+        terminalState: 'completed',
+        rawResponse: 'executor output collected while pause was settling',
+        completionSchemaVersion: 4,
+        parsing: {},
+        verification: { warnings: [], violations: [] },
+        errorCode: null,
+        errorDetail: null,
+        failure: null,
+      },
+      expectedSubtaskStatus: 'running',
+      nextSubtaskStatus: 'awaiting_integration',
+      subtaskError: null,
+      event: {
+        ...outcomeEvent(setupResult.now),
+        terminalKind: 'completed',
+        failure: undefined,
+      },
+      now: setupResult.now,
+    });
+
+    expect(landing).toEqual({ cancellationWon: false, pauseWon: true });
+    expect(setupResult.tasks.findById('task-terminal')?.status).toBe('parked');
+    expect(setupResult.subtasks.findById('subtask-terminal')?.status).toBe('ready');
+    expect(setupResult.dispatch.find('attempt-terminal')?.status).toBe('terminal');
+    expect(setupResult.receipts.findByAttemptId('attempt-terminal')).toMatchObject({
+      terminalState: 'cancelled_or_stale',
+      errorCode: 'task_paused',
+      failure: { kind: 'cancelled', code: 'task_paused' },
+    });
+    expect(setupResult.workflow.findEvent('event_attempt-terminal_execution_outcome')).toMatchObject({
+      type: 'execution_outcome',
+      terminalKind: 'failed',
+      failure: { kind: 'cancelled', code: 'task_paused' },
+    });
+  });
+
   it('rolls back receipt, Subtask, dispatch and outcome inbox together when landing fails', () => {
     const setupResult = setup();
     setupResult.db.exec(`

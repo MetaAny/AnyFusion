@@ -797,6 +797,13 @@ export class ControlKernel {
     if (snapshot.task?.status === 'cancelled' || subtask.status === 'cancelled') {
       return decision(event, { type: 'no_op' }, 'cancellation fence makes the late attempt outcome stale');
     }
+    if (
+      failure.code === 'task_paused'
+      && snapshot.task?.status === 'parked'
+      && subtask.status === 'ready'
+    ) {
+      return decision(event, { type: 'no_op' }, 'pause fence settled the interrupted attempt for explicit resume');
+    }
     if (!snapshot.automaticRecoveryAllowed || snapshot.recoverySafety === 'external_non_idempotent') {
       return decision(event, { type: 'block_work', taskId, subtaskId: subtask.id }, 'automatic recovery cannot prove external effect safety');
     }

@@ -59,6 +59,7 @@ import {
   type WorkspacePublicationCompletion,
 } from '../storage/workspace-publication-repo.js';
 import { AttemptTerminalService } from './attempt-terminal-service.js';
+import { SqliteAttemptSandboxRepository } from '../storage/attempt-sandbox-repo.js';
 
 export type ProgressCallback = (event: ExecutorProgressEvent, executor: ExecutorAdapter) => void;
 
@@ -75,7 +76,10 @@ export interface SubtaskAttemptRunnerDeps {
   sessionId: string;
   taskRuntimeService: TaskRuntimeService;
   subtaskRepo: SubtaskRepo;
-  workUnitClaimService: Pick<WorkUnitClaimService, 'claim' | 'isClaimCurrent'>;
+  workUnitClaimService: Pick<
+    WorkUnitClaimService,
+    'claim' | 'isClaimCurrent' | 'releaseReconciledClaim'
+  >;
   executionRuntime: ExecutionRuntime;
   agentClassService: AgentClassService;
   workspaceStore: WorkspaceStore;
@@ -112,6 +116,74 @@ export class SubtaskAttemptRunner {
 
   supportsContinuation(agentClassName: string): boolean {
     return this.deps.executionRuntime.supportsContinuation(agentClassName);
+  }
+
+  reconcileInterruptedPause(attemptId: string): boolean {
+    const dispatch = this.dispatchItemRepo.find(attemptId);
+    if (!dispatch || !['launching', 'running', 'uncertain'].includes(dispatch.status)) return false;
+    const task = this.deps.taskRuntimeService.findTask(dispatch.taskId);
+    const subtask = this.deps.subtaskRepo.findById(dispatch.subtaskId);
+    const sandbox = new SqliteAttemptSandboxRepository(this.deps.db).find(attemptId);
+    if (
+      task?.status !== 'parked'
+      || subtask?.status !== 'running'
+      || this.receiptRepo.findByAttemptId(attemptId)
+      || !sandbox
+      || !['exited', 'removed', 'lost'].includes(sandbox.status)
+    ) return false;
+
+    const now = new Date().toISOString();
+    const failure = {
+      kind: 'cancelled' as const,
+      scope: 'attempt' as const,
+      code: 'task_paused',
+      summary: 'Recovered an interrupted pause before explicit Task resume',
+    };
+    this.terminalService.land({
+      receipt: buildReceipt({
+        attemptId,
+        executionId: `pause_recovery_${attemptId}`,
+        taskId: dispatch.taskId,
+        subtaskId: dispatch.subtaskId,
+        workUnitId: sandbox.workUnitId,
+        agentClassName: dispatch.agentClassName,
+        startedAt: sandbox.createdAt,
+        terminalState: 'cancelled_or_stale',
+        rawResponse: '',
+        errorCode: failure.code,
+        errorDetail: failure.summary,
+        failure,
+      }, now),
+      expectedSubtaskStatus: 'running',
+      nextSubtaskStatus: 'ready',
+      subtaskError: null,
+      event: {
+        schemaVersion: 5,
+        type: 'execution_outcome',
+        id: `event_${attemptId}_execution_outcome`,
+        correlationId: dispatch.decisionId,
+        causationId: dispatch.decisionId,
+        occurredAt: now,
+        sessionId: this.deps.sessionId,
+        taskId: dispatch.taskId,
+        subtaskId: dispatch.subtaskId,
+        attemptId,
+        terminalKind: 'failed',
+        agentClassName: dispatch.agentClassName,
+        attemptKind: dispatch.attemptKind,
+        sourceAttemptId: dispatch.sourceAttemptId,
+        failure,
+      },
+      now,
+    });
+    this.deps.resourceLeaseService.releaseReconciledAttempt(attemptId, now);
+    this.deps.workUnitClaimService.releaseReconciledClaim({
+      workUnitId: sandbox.workUnitId,
+      taskId: dispatch.taskId,
+      subtaskId: dispatch.subtaskId,
+      attemptId,
+    });
+    return true;
   }
 
   landHeartbeatLost(input: {
@@ -623,12 +695,14 @@ export class SubtaskAttemptRunner {
           },
           now: completedAt,
         });
-        if (landing.cancellationWon) {
+        if (landing.cancellationWon || landing.pauseWon) {
           finalCheckpointReason = 'cancelled';
           return {
             outcome: 'cancelled_or_stale',
             attemptId,
-            reason: 'Cancellation fence won before merge-repair terminal landing',
+            reason: landing.pauseWon
+              ? 'Task pause fence won before merge-repair terminal landing'
+              : 'Cancellation fence won before merge-repair terminal landing',
           };
         }
         const workspaceRecord = this.deps.workspaceRepository.findByIdentity(
@@ -815,16 +889,20 @@ export class SubtaskAttemptRunner {
         );
         throw error;
       }
-      if (landing.cancellationWon) {
+      if (landing.cancellationWon || landing.pauseWon) {
         this.withdrawRepositoryPromotion(
           permissionRequestId,
-          'candidate publication was cancelled before terminal landing',
+          landing.pauseWon
+            ? 'candidate publication was interrupted by Task pause before terminal landing'
+            : 'candidate publication was cancelled before terminal landing',
         );
         finalCheckpointReason = 'cancelled';
         return {
           outcome: 'cancelled_or_stale',
           attemptId,
-          reason: 'Cancellation fence won before attempt terminal landing',
+          reason: landing.pauseWon
+            ? 'Task pause fence won before attempt terminal landing'
+            : 'Cancellation fence won before attempt terminal landing',
         };
       }
       if (this.deps.autoApproveRepositoryPromotions) {

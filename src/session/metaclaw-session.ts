@@ -313,6 +313,7 @@ export class MetaclawSession {
   private lastBlockedRecheckAt: number | null = null;
   private blockedRecheckInFlight = false;
   private backgroundWork = new Set<Promise<void>>();
+  private readonly backgroundWorkByTask = new Map<string, Set<Promise<void>>>();
   private currentTaskId: string | null = null;
   private focusContext: FocusContext | null = null;
   private readonly memoryContextService: MemoryContextService;
@@ -1785,15 +1786,19 @@ export class MetaclawSession {
   }
 
   private startBackgroundExecution(taskId: string, launch: () => Promise<void>): void {
+    const priorTaskWork = Array.from(this.backgroundWorkByTask.get(taskId) ?? []);
     const scheduled = new Promise<void>(resolveWork => {
       setTimeout(() => {
-        void launch().catch(error => {
-          this.appendOutput(`Executor background failure for ${taskId}: ${(error as Error).message}`);
-          this.refreshRuntimeState();
-        }).finally(resolveWork);
+        void Promise.allSettled(priorTaskWork)
+          .then(() => launch())
+          .catch(error => {
+            this.appendOutput(`Executor background failure for ${taskId}: ${(error as Error).message}`);
+            this.refreshRuntimeState();
+          })
+          .finally(resolveWork);
       }, 0);
     });
-    this.trackBackgroundWork(scheduled);
+    this.trackBackgroundWork(scheduled, taskId);
   }
 
   private appendOutput(...lines: string[]): void {
@@ -2216,7 +2221,11 @@ export class MetaclawSession {
       taskEngine: this.deps.taskEngine,
       memoryEngine: this.deps.memoryEngine,
       orchestration: this.deps.orchestration,
-      activeExecutions: this.executionRuntime,
+      activeExecutions: {
+        abortAttempt: (taskId, attemptId) => this.executionRuntime.abortAttempt(taskId, attemptId),
+        abortTask: taskId => this.executionRuntime.abortTask(taskId),
+        waitForTaskIdle: taskId => this.waitForTaskBackgroundWork(taskId),
+      },
       taskControl: this.kernelExecutionRuntime,
       readServices: this.commandReadServices,
       refreshExecutors: agentClassNames => this.executorRecoveryRefreshService.refresh({
@@ -2663,10 +2672,25 @@ export class MetaclawSession {
     return [...counts].map(([name, count]) => count === 1 ? name : `${name} ×${count}`).join(', ');
   }
 
-  private trackBackgroundWork(work: Promise<void>): void {
+  private async waitForTaskBackgroundWork(taskId: string): Promise<void> {
+    while ((this.backgroundWorkByTask.get(taskId)?.size ?? 0) > 0) {
+      await Promise.allSettled(Array.from(this.backgroundWorkByTask.get(taskId) ?? []));
+    }
+  }
+
+  private trackBackgroundWork(work: Promise<void>, taskId?: string): void {
     this.backgroundWork.add(work);
+    if (taskId) {
+      const taskWork = this.backgroundWorkByTask.get(taskId) ?? new Set();
+      taskWork.add(work);
+      this.backgroundWorkByTask.set(taskId, taskWork);
+    }
     void work.finally(() => {
       this.backgroundWork.delete(work);
+      if (!taskId) return;
+      const taskWork = this.backgroundWorkByTask.get(taskId);
+      taskWork?.delete(work);
+      if (taskWork?.size === 0) this.backgroundWorkByTask.delete(taskId);
     });
   }
 
