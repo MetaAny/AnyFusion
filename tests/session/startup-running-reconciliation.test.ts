@@ -17,6 +17,14 @@ import { KernelDispatchItemRepo } from '../../src/storage/kernel-dispatch-item-r
 import { ResourceLeaseService } from '../../src/execution/resource-lease-service.js';
 import { SqliteResourceLeaseRepository } from '../../src/storage/resource-lease-repo.js';
 import { buildDefaultResourceClaims } from '../../src/resource/index.js';
+import { buildPermissionRules } from '../../src/resource/index.js';
+import { PermissionWorkflowService } from '../../src/execution/permission-workflow-service.js';
+import { RegisteredCapabilityResourceResolver } from '../../src/execution/capability-resource-resolver.js';
+import { SqlitePermissionRepository } from '../../src/storage/permission-repo.js';
+import { KernelWorkflowRepo } from '../../src/storage/kernel-workflow-repo.js';
+import { WorkspacePublicationRepo } from '../../src/storage/workspace-publication-repo.js';
+import { ControlKernel } from '../../src/kernel/control-kernel.js';
+import { stubPlanningAgent, taskControlPlan } from '../support/planning-agent-plans.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -46,6 +54,133 @@ function createConfig(): Config {
 }
 
 describe('session startup running-task reconciliation', () => {
+  it('re-presents an unresolved publication approval in the current Session without re-running its Executor', async () => {
+    const db = createTestDb();
+    const taskRepo = new TaskRepo(db);
+    const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-publication-review');
+    const task = taskEngine.create({
+      title: 'World Cup odds',
+      goal: 'Publish the completed World Cup odds candidate',
+    });
+    seedPersistedWorkGraph(db, task.id, task.goal);
+    taskEngine.transition(task.id, 'ready');
+    const subtasks = new SubtaskRepo(db);
+    const subtask = subtasks.listActiveByTask(task.id)[0]!;
+    subtasks.updateStatus(subtask.id, 'awaiting_integration');
+    const permissions = new SqlitePermissionRepository(db);
+    const now = new Date().toISOString();
+    const sourceRoot = '/workspace/default';
+    const oldWorkflow = new PermissionWorkflowService({
+      context: {
+        sessionId: 'sess_old_review',
+        taskId: task.id,
+        generationId: subtask.generationId,
+        subtaskId: subtask.id,
+        attemptId: 'attempt-publication-review',
+        agentClassName: 'codex-cli',
+        permissionProfileId: 'workspace-engineering',
+        runtimeHandle: '',
+        workspaceId: `workspace:${task.id}:${subtask.generationId}:${subtask.id}`,
+        checkpointId: null,
+      },
+      repository: permissions,
+      resolver: new RegisteredCapabilityResourceResolver(new Map([
+        [sourceRoot, { kind: 'repository' as const, repositoryId: 'project-default' }],
+      ])),
+      sandbox: new FakeAttemptSandbox(),
+      workflowStore: new KernelWorkflowRepo(db),
+      kernel: new ControlKernel(),
+      rules: buildPermissionRules({
+        permissionProfileId: 'workspace-engineering',
+        additionalReadPartitions: [],
+      }),
+      hooks: {
+        checkpoint: async () => null,
+        onEscalation: async () => undefined,
+        onRecoveryAuthorized: async () => undefined,
+      },
+      clock: { now: () => now },
+    });
+    const requested = await oldWorkflow.request({
+      capability: 'repository_promotion',
+      resource: sourceRoot,
+      operation: 'promote_commit:candidate-world-cup',
+      reason: 'Merge the completed candidate into Project main.',
+      suggestedScope: 'once',
+    }, { suspendAttempt: false });
+    expect(requested.status).toBe('escalated');
+    const publications = new WorkspacePublicationRepo(db);
+    publications.insertCandidate({
+      id: 'publication-world-cup',
+      taskId: task.id,
+      generationId: subtask.generationId,
+      subtaskId: subtask.id,
+      sourceAttemptId: 'attempt-publication-review',
+      agentClassName: 'codex-cli',
+      mainBaseCommit: 'base-world-cup',
+      candidateCommit: 'candidate-world-cup',
+      permissionRequestId: requested.requestId,
+      changedPaths: ['next_world_cup_odds.md'],
+      completion: {
+        body: 'World Cup odds complete',
+        artifacts: ['next_world_cup_odds.md'],
+        warnings: [],
+        handoffs: [],
+        completionSchemaVersion: 4,
+      },
+      topologyLayer: 0,
+      firstDispatchOrder: 0,
+      createdAt: now,
+    });
+    const attemptSandbox = new FakeAttemptSandbox();
+    const common = {
+      taskEngine,
+      memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
+      orchestration: new OrchestrationEngine(taskEngine),
+      attemptSandbox,
+      db,
+      config: createConfig(),
+      contextRecaller: new ContextRecaller(db),
+    };
+    const staleSession = new MetaclawSession({ ...common, sessionId: 'sess_old_review' });
+    const currentSession = new MetaclawSession({
+      ...common,
+      sessionId: 'sess_current_review',
+      planningAgent: stubPlanningAgent(taskControlPlan({ control: 'resume_task', taskId: task.id })),
+    });
+
+    expect(currentSession.getPlannerTuiPermissionRequests()).toEqual([]);
+    currentSession.initialize();
+    await currentSession.waitForAsyncWork();
+
+    expect(attemptSandbox.create).not.toHaveBeenCalled();
+    expect(currentSession.getSnapshot().output.join('\n')).toContain('等待审批');
+    expect(currentSession.getSnapshot().output.join('\n')).not.toContain('操作提案');
+    expect(currentSession.getPlannerTuiSnapshot().taskPool).toMatchObject([{
+      id: task.id,
+      status: 'waiting_approval',
+      blockingReason: `等待批准仓库发布请求 ${requested.requestId}`,
+    }]);
+    expect(currentSession.getPlannerTuiPermissionRequests()).toMatchObject([{
+      permissionRequestId: requested.requestId,
+      taskId: task.id,
+      operation: 'promote_commit:candidate-world-cup',
+    }]);
+    await currentSession.submit('继续世界杯任务', { awaitAsyncWork: true });
+    expect(currentSession.getSnapshot().output.join('\n')).toContain('当前只等待仓库发布审批');
+    expect(attemptSandbox.create).not.toHaveBeenCalled();
+    await expect(staleSession.resolvePlannerTuiPermission(requested.requestId, 'approve'))
+      .resolves.toMatchObject({ status: 'conflict' });
+    await expect(currentSession.resolvePlannerTuiPermission(requested.requestId, 'deny'))
+      .resolves.toMatchObject({ status: 'resolved', resolution: 'deny' });
+    expect(publications.find('publication-world-cup')).toMatchObject({
+      status: 'denied',
+      candidateCommit: 'candidate-world-cup',
+      sourceAttemptId: 'attempt-publication-review',
+    });
+    expect(attemptSandbox.create).not.toHaveBeenCalled();
+  });
+
   it('records and safely blocks orphaned running work without automatic execution', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);

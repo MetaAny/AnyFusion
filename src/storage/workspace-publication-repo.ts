@@ -152,6 +152,24 @@ export class WorkspacePublicationRepo {
     return row ? rowToPublication(row) : null;
   }
 
+  listAwaitingApproval(): WorkspacePublicationRecord[] {
+    return (this.db.prepare(`
+      SELECT * FROM workspace_publications
+      WHERE status = 'awaiting_approval'
+      ORDER BY created_at ASC, id ASC
+    `).all() as PublicationRow[]).map(rowToPublication);
+  }
+
+  findAwaitingApprovalByTask(taskId: string): WorkspacePublicationRecord | null {
+    const row = this.db.prepare(`
+      SELECT * FROM workspace_publications
+      WHERE task_id = ? AND status = 'awaiting_approval'
+      ORDER BY created_at ASC, id ASC
+      LIMIT 1
+    `).get(taskId) as PublicationRow | undefined;
+    return row ? rowToPublication(row) : null;
+  }
+
   find(id: string): WorkspacePublicationRecord | null {
     const row = this.db.prepare(`
       SELECT * FROM workspace_publications WHERE id = ?

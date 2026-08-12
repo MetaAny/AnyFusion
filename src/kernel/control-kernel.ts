@@ -140,6 +140,11 @@ export type KernelEvent =
       request: NormalizedCapabilityRequest;
     })
   | (KernelEventEnvelope & {
+      type: 'permission_review_represented';
+      requestId: string;
+      requestFingerprint: string;
+    })
+  | (KernelEventEnvelope & {
       type: 'permission_resolution_received';
       requestId: string;
       resolution: 'approve' | 'deny';
@@ -502,6 +507,7 @@ export class ControlKernel {
       case 'recovery_resolution_requested':
         return this.decideRecovery(event, snapshot as Extract<KernelSnapshot, { type: 'recovery' }>);
       case 'permission_requested':
+      case 'permission_review_represented':
       case 'permission_resolution_received':
         return this.decidePermission(event, snapshot as Extract<KernelSnapshot, { type: 'permission' }>);
       case 'partition_conflict_observed':
@@ -1029,7 +1035,9 @@ export class ControlKernel {
   }
 
   private decidePermission(
-    event: Extract<KernelEvent, { type: 'permission_requested' | 'permission_resolution_received' }>,
+    event: Extract<KernelEvent, {
+      type: 'permission_requested' | 'permission_review_represented' | 'permission_resolution_received';
+    }>,
     snapshot: Extract<KernelSnapshot, { type: 'permission' }>,
   ): KernelDecision {
     const request = snapshot.request;
@@ -1038,6 +1046,10 @@ export class ControlKernel {
     }
     if (event.type === 'permission_resolution_received' && event.requestId !== request.id) {
       return decision(event, { type: 'deny_capability', requestId: event.requestId, notifyPlanner: false, authorization: null }, 'permission resolution request ID mismatch');
+    }
+    if (event.type === 'permission_review_represented'
+      && (event.requestId !== request.id || event.requestFingerprint !== request.fingerprint)) {
+      return decision(event, { type: 'deny_capability', requestId: event.requestId, notifyPlanner: false, authorization: null }, 'permission review identity mismatch');
     }
     if (snapshot.requestStatus !== 'pending') {
       const existing = snapshot.currentGrants.find(grant => grant.requestId === request.id);
@@ -1051,6 +1063,11 @@ export class ControlKernel {
         }, 'duplicate request returns the existing grant');
       }
       return decision(event, { type: 'deny_capability', requestId: request.id, notifyPlanner: false, authorization: null }, `permission request is ${snapshot.requestStatus ?? 'missing'}`);
+    }
+    if (event.type === 'permission_review_represented') {
+      return decision(event, {
+        type: 'escalate_capability', requestId: request.id, notifyPlanner: true,
+      }, 'unresolved permission review re-presented after Session replacement');
     }
     if (event.type === 'permission_resolution_received' && event.resolution === 'deny') {
       return decision(event, {
@@ -1205,7 +1222,11 @@ function snapshotMatches(event: KernelEvent, snapshot: KernelSnapshot): boolean 
   if (event.type === 'executor_recovered') return snapshot.type === 'availability_recovery';
   if (event.type === 'timer_tick') return snapshot.type === 'timer';
   if (event.type === 'recovery_resolution_requested') return snapshot.type === 'recovery';
-  if (event.type === 'permission_requested' || event.type === 'permission_resolution_received') return snapshot.type === 'permission';
+  if (
+    event.type === 'permission_requested'
+    || event.type === 'permission_review_represented'
+    || event.type === 'permission_resolution_received'
+  ) return snapshot.type === 'permission';
   if (event.type === 'partition_conflict_observed') return snapshot.type === 'partition';
   if (event.type === 'sandbox_lost') return snapshot.type === 'sandbox_recovery';
   if (

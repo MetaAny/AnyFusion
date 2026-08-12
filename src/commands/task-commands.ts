@@ -78,6 +78,27 @@ export function formatTaskClearResult(scope: TaskClearScope, cancelled: Task[], 
   return lines.join('\n');
 }
 
+interface TaskRuntimeWait {
+  kind: 'publication-approval';
+  permissionRequestId: string;
+  operation: string;
+}
+
+function findTaskRuntimeWait(context: Pick<CommandContext, 'db'>, taskId: string): TaskRuntimeWait | null {
+  const row = context.db.prepare(`
+    SELECT publication.permission_request_id, request.operation
+    FROM workspace_publications AS publication
+    INNER JOIN permission_requests AS request
+      ON request.id = publication.permission_request_id
+    WHERE publication.task_id = ? AND publication.status = 'awaiting_approval'
+    ORDER BY publication.created_at ASC, publication.id ASC
+    LIMIT 1
+  `).get(taskId) as { permission_request_id: string; operation: string } | undefined;
+  return row
+    ? { kind: 'publication-approval', permissionRequestId: row.permission_request_id, operation: row.operation }
+    : null;
+}
+
 function formatTaskLine(task: {
   id: string;
   status: string;
@@ -85,10 +106,16 @@ function formatTaskLine(task: {
   lastSchedulingReason: string;
   lastInterruptionReason: string;
   dependencies: Array<{ status: string; description: string }>;
-}) {
-  const lines = [`  #${task.id} [${task.status.toUpperCase()}] ${task.title}`];
+}, runtimeWait: TaskRuntimeWait | null = null) {
+  const displayStatus = runtimeWait?.kind === 'publication-approval'
+    ? 'waiting_approval'
+    : task.status;
+  const lines = [`  #${task.id} [${displayStatus.toUpperCase()}] ${task.title}`];
 
-  if (task.status === 'running' || task.status === 'ready') {
+  if (runtimeWait?.kind === 'publication-approval') {
+    lines.push(`    → 原因：等待用户批准仓库发布（${runtimeWait.operation}）`);
+    lines.push(`    → 操作：在权限面板批准请求 ${runtimeWait.permissionRequestId}`);
+  } else if (task.status === 'running' || task.status === 'ready') {
     lines.push(`    → 原因：${task.lastSchedulingReason || '等待调度'}`);
   } else if (task.status === 'parked') {
     lines.push(`    → 原因：${task.lastInterruptionReason || '等待恢复'}`);
@@ -104,7 +131,10 @@ function buildStatusExplanation(task: {
   lastSchedulingReason: string;
   lastInterruptionReason: string;
   dependencies: Array<{ status: string; description: string }>;
-}): string {
+}, runtimeWait: TaskRuntimeWait | null = null): string {
+  if (runtimeWait?.kind === 'publication-approval') {
+    return `Executor 已完成候选结果，等待用户批准仓库发布（${runtimeWait.operation}）；批准请求 ${runtimeWait.permissionRequestId} 后才会继续集成`;
+  }
   if (task.status === 'blocked') {
     return task.dependencies.find(dep => dep.status === 'waiting')?.description || '等待解除阻塞';
   }
@@ -128,7 +158,10 @@ function buildLatestNextStep(task: {
   status: string;
   snapshots: Array<{ nextStep: string }>;
   dependencies: Array<{ status: string; description: string }>;
-}): string {
+}, runtimeWait: TaskRuntimeWait | null = null): string {
+  if (runtimeWait?.kind === 'publication-approval') {
+    return `批准发布请求 ${runtimeWait.permissionRequestId}`;
+  }
   const latestSnapshot = task.snapshots[task.snapshots.length - 1];
   if (latestSnapshot?.nextStep) {
     return latestSnapshot.nextStep;
@@ -151,7 +184,10 @@ function buildRecoveryAction(task: {
   status: string;
   resources?: string[];
   materialSummary?: { status: 'missing' | 'partial' | 'ready'; sufficiency: string };
-}): string {
+}, runtimeWait: TaskRuntimeWait | null = null): string {
+  if (runtimeWait?.kind === 'publication-approval') {
+    return `请在权限面板批准发布请求 ${runtimeWait.permissionRequestId}；批准后系统会自动继续集成`;
+  }
   if (task.status === 'blocked') {
     const hasLinks = (task.resources ?? []).some(resource => isWebLink(resource));
     if (task.materialSummary?.status === 'ready') {
@@ -193,7 +229,7 @@ export async function listTasks(args: ResolvedCommandArgs, context: CommandConte
   }
 
   if (filter) {
-    const lines = tasks.map(formatTaskLine);
+    const lines = tasks.map(task => formatTaskLine(task, findTaskRuntimeWait(context, task.id)));
     return { type: 'text', content: `任务列表：\n${lines.join('\n')}` };
   }
 
@@ -208,7 +244,7 @@ export async function listTasks(args: ResolvedCommandArgs, context: CommandConte
   const lines = ['任务清单：', ''];
   for (const group of groups) {
     lines.push(group.title);
-    group.tasks.forEach(task => lines.push(formatTaskLine(task)));
+    group.tasks.forEach(task => lines.push(formatTaskLine(task, findTaskRuntimeWait(context, task.id))));
     lines.push('');
   }
 
@@ -242,10 +278,11 @@ export async function showTask(args: ResolvedCommandArgs, context: CommandContex
     .list()
     .filter(preference => task.injectedPreferences.includes(preference.id));
   const latestSnapshot = task.snapshots[task.snapshots.length - 1] ?? null;
+  const runtimeWait = findTaskRuntimeWait(context, task.id);
   const blocker = task.dependencies.find(dep => dep.status === 'waiting')?.description || '无';
   const latestResult = task.summary || latestInteraction?.system_output || '无';
-  const latestNextStep = buildLatestNextStep(task);
-  const statusExplanation = buildStatusExplanation(task);
+  const latestNextStep = buildLatestNextStep(task, runtimeWait);
+  const statusExplanation = buildStatusExplanation(task, runtimeWait);
   const lastProgress = latestSnapshot?.done.join('；') || task.summary || '无';
   const materialGroups = splitTaskResources(task.resources);
   const materialSnippets = await extractMaterialTextSnippets(task.resources);
@@ -253,14 +290,14 @@ export async function showTask(args: ResolvedCommandArgs, context: CommandContex
   const recoveryAction = buildRecoveryAction({
     ...task,
     materialSummary,
-  });
+  }, runtimeWait);
 
   const lines = [
     `任务视图 #${task.id}`,
     `标题: ${task.title}`,
     `目标: ${task.goal}`,
     '',
-    `当前状态: ${task.status}`,
+    `当前状态: ${runtimeWait ? 'waiting_approval（底层 Task 仍为 ready）' : task.status}`,
     `状态说明: ${statusExplanation}`,
     `上次做到: ${lastProgress}`,
     `最新结果摘要: ${latestResult}`,
@@ -317,6 +354,16 @@ export async function resumeTask(args: ResolvedCommandArgs, context: CommandCont
   const taskId = stringArg(args, 'taskId');
   if (!context.taskEngine.getTaskRepo().findById(taskId)) {
     return { type: 'text', content: `任务不存在: ${taskId}` };
+  }
+  const runtimeWait = findTaskRuntimeWait(context, taskId);
+  if (runtimeWait?.kind === 'publication-approval') {
+    return {
+      type: 'text',
+      content: [
+        `任务 #${taskId} 的 Executor 已完成候选结果，无需再次调度。`,
+        `当前只等待仓库发布审批：请在权限面板批准请求 ${runtimeWait.permissionRequestId}。`,
+      ].join('\n'),
+    };
   }
 
   return {

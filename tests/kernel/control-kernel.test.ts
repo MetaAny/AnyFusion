@@ -613,6 +613,45 @@ describe('ControlKernel', () => {
     });
   });
 
+  it('re-presents an unresolved permission review without granting from prior authorization facts', () => {
+    const request = permissionRequest({
+      capability: 'repository_promotion',
+      operation: 'promote_commit:candidate',
+    });
+    const event = runtimeEvent({
+      type: 'permission_review_represented',
+      attemptId: request.attemptId,
+      requestId: request.id,
+      requestFingerprint: request.fingerprint,
+    });
+    const decision = new ControlKernel().decide(event, {
+      schemaVersion: 5,
+      type: 'permission',
+      request,
+      requestStatus: 'pending',
+      rules: [{
+        id: 'would-allow',
+        effect: 'allow',
+        capability: request.capability,
+        operation: request.operation,
+        partition: request.partition,
+        reason: 'must not authorize a review presentation',
+      }],
+      currentGrants: [],
+      userAuthorizationFingerprints: [request.fingerprint],
+      previouslyDeniedFingerprints: [],
+      attemptActive: false,
+      workspaceId: 'workspace-1',
+      checkpointId: null,
+    });
+
+    expect(decision.action).toEqual({
+      type: 'escalate_capability',
+      requestId: request.id,
+      notifyPlanner: true,
+    });
+  });
+
   it('turns partition conflicts into waits and sandbox loss into workspace recovery', () => {
     const kernel = new ControlKernel();
     expect(kernel.decide(runtimeEvent({
