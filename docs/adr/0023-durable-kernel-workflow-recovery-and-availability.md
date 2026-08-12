@@ -51,6 +51,8 @@ Successful recovery emits a durable `executor_recovered` fact. Kernel revalidate
 
 Recovery refresh is event-driven at session startup, each planning cycle, Task recovery/resume, Executor configuration changes and `/executor refresh [name|all]`. It never runs as a periodic background health loop.
 
+Manual Task continuation has one public and Planner control identity: `/task resume <id> [resources...]` and `resume_task` both accept `parked` or `blocked`. The control proposal and command directive do not carry an execution mode. Kernel rejects other durable Task statuses, except a `ready` Task with an explicit awaiting-publication projection; that exception can only re-surface the exact approval action and must not dispatch. For executable recovery, the Application Shell derives `resume-parked` versus `resume-blocked` and the corresponding recovery evidence from the authorized Task's current persisted status. The execution Runtime retains its status-specific transition handlers; they are implementation details behind this single control contract.
+
 ## LangGraph Boundary
 
 LangGraph may replace only the durable workflow cursor/replay implementation after the MetaClaw contracts and fault tests freeze. The evaluation uses Functional API tasks and an independent SQLite checkpointer. Checkpoints are disposable implementation state: loss or corruption must be recoverable from the main database. LangGraph never owns Kernel policy, retry semantics, Work Graph topology, ledger authority, domain types or model/agent abstraction.

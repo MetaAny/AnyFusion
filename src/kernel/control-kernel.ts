@@ -68,7 +68,7 @@ export interface KernelPlanProposal {
   task: {
     binding: 'new' | 'reference' | 'none';
     taskId: string | null;
-    control: 'clear_tasks' | 'status_query' | 'resume_task' | 'recover_blocked' | 'none';
+    control: 'clear_tasks' | 'status_query' | 'resume_task' | 'none';
     scope: string | null;
     title: string | null;
     goal: string | null;
@@ -194,6 +194,7 @@ export type KernelEvent =
 export interface KernelTaskFact {
   id: string;
   status: KernelTaskStatus;
+  awaitingPublicationApproval?: boolean;
 }
 
 export interface KernelSubtaskFact {
@@ -572,8 +573,19 @@ export class ControlKernel {
       return decision(event, { type: 'reject_request' }, `task not found: ${proposal.task.taskId}`);
     }
     if (proposal.action === 'task_control') {
-      if ((proposal.task.control === 'resume_task' || proposal.task.control === 'recover_blocked') && !proposal.task.taskId) {
+      if (proposal.task.control === 'resume_task' && !proposal.task.taskId) {
         return decision(event, { type: 'request_clarification', question: proposal.clarificationQuestion ?? 'Which task should be resumed?' }, 'resume requires an explicit task');
+      }
+      if (proposal.task.control === 'resume_task') {
+        const target = snapshot.tasks.find(task => task.id === proposal.task.taskId);
+        const resumable = target && (
+          target.status === 'parked'
+          || target.status === 'blocked'
+          || (target.status === 'ready' && target.awaitingPublicationApproval === true)
+        );
+        if (target && !resumable) {
+          return decision(event, { type: 'reject_request' }, `task ${target.id} cannot resume from status ${target.status}`);
+        }
       }
       if (snapshot.runningTaskId && proposal.task.taskId !== snapshot.runningTaskId && !['status_query', 'clear_tasks'].includes(proposal.task.control)) {
         return decision(event, { type: 'reject_request' }, `single-active Task constraint: ${snapshot.runningTaskId}`);

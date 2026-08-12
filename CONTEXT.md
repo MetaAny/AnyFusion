@@ -51,6 +51,7 @@ _Avoid_: work unit, executor instance, raw prompt
 
 **Task State**:
 The top-level Task lifecycle: created, ready, running, parked, blocked, done, archived, and cancelled. It never contains `awaiting_decision`.
+Manual continuation has one control identity: Planner emits `resume_task` and the slash surface exposes `/task resume <id> [resources...]` for both `parked` and `blocked`. The Application Shell derives `resume-parked` versus `resume-blocked`, including blocked-recovery evidence, only from the current durable Task status; callers never select the execution mode. Kernel rejects resume controls for every other Task status, except a `ready` Task carrying a durable awaiting-publication projection; that exception may only surface its approval action and the Application Shell must not dispatch it.
 _Avoid_: executor state, work unit state
 
 **Agent Class**:

@@ -1691,7 +1691,11 @@ export class MetaclawSession {
     return {
       schemaVersion: 5,
       type: 'plan_admission',
-      tasks: this.taskRuntimeService.listTasks().map(task => ({ id: task.id, status: task.status })),
+      tasks: this.taskRuntimeService.listTasks().map(task => ({
+        id: task.id,
+        status: task.status,
+        awaitingPublicationApproval: this.publicationRepo.findAwaitingApprovalByTask(task.id) !== null,
+      })),
       runningTaskId: this.kernelExecutionRuntime.getSingleActiveTaskId(),
       executorCatalog,
       executorStatuses: this.kernelExecutorStatusRepo.list(),
@@ -1761,6 +1765,16 @@ export class MetaclawSession {
         `Task #${taskId} 的 Executor 已完成候选结果，当前只等待仓库发布审批。`,
         `请在权限面板批准请求 ${publication.permissionRequestId}；继续/重试不会重复启动 Executor。`,
       );
+      this.refreshRuntimeState();
+      return;
+    }
+    const task = this.taskRuntimeService.findTask(taskId);
+    if (
+      (request.executionMode === 'resume-parked' || request.executionMode === 'resume-blocked')
+      && task?.status !== 'parked'
+      && task?.status !== 'blocked'
+    ) {
+      this.appendOutput(`Task #${taskId} 当前为 ${task?.status ?? 'missing'}，不能执行恢复操作。`);
       this.refreshRuntimeState();
       return;
     }
@@ -1864,20 +1878,21 @@ export class MetaclawSession {
       const directive = result.directive;
       const resumedTask = this.taskRuntimeService.findTask(directive.taskId);
       if (resumedTask) {
+        const isBlocked = resumedTask.status === 'blocked';
         this.setCurrentTaskId(resumedTask.id);
         await this.prepareTaskExecution(resumedTask.id, {
           userPrompt: resumedTask.goal,
           contextTaskId: resumedTask.id,
-          executionMode: directive.mode,
-          schedulingReason: directive.mode === 'resume-blocked' ? '解除阻塞' : '恢复已暂停任务',
+          executionMode: isBlocked ? 'resume-blocked' : 'resume-parked',
+          schedulingReason: isBlocked ? '恢复阻塞任务' : '恢复已暂停任务',
           newlyProvidedResources: directive.newlyProvidedResources,
-          recoveryTrigger: directive.mode === 'resume-blocked'
+          recoveryTrigger: isBlocked
             ? this.buildRecoveryTrigger(resumedTask, {
                 kind: 'explicit-task-command',
                 blockedReason: directive.blockedReason,
                 triggerReason: directive.newlyProvidedResources?.length
-                  ? '显式解除阻塞并补充材料'
-                  : '显式解除阻塞',
+                  ? '显式恢复阻塞任务并补充材料'
+                  : '显式恢复阻塞任务',
                 sourceInput: userInput,
                 newlyProvidedResources: directive.newlyProvidedResources,
               })

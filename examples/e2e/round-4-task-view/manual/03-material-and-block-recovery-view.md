@@ -7,7 +7,7 @@
 ## Steps
 
 1. 创建一个任务并让它进入 `BLOCKED`
-2. 通过 `/task attach <id> <material>` 或 `/task unblock <id> <material>` 补材料
+2. 通过 `/task attach <id> <material>` 或 `/task resume <id> <material>` 补材料
 3. 再次运行 `/task show <id>`
 
 ## Expected

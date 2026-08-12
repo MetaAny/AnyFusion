@@ -783,9 +783,8 @@ AnyFusion 会：
 /task show <id>
 /task pause <id>
 /task resume <id>
+/task resume <id> /tmp/evidence-v4.pdf
 /task block <id> waiting for customer data
-/task unblock <id>
-/task unblock <id> /tmp/evidence-v4.pdf
 /task cancel <id>
 /task purge <taskId> --confirm <taskId>
 /task <taskId> subtask cancel <subtaskId...>

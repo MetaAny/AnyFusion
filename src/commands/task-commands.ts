@@ -191,12 +191,12 @@ function buildRecoveryAction(task: {
   if (task.status === 'blocked') {
     const hasLinks = (task.resources ?? []).some(resource => isWebLink(resource));
     if (task.materialSummary?.status === 'ready') {
-      return `现有材料已具备可读内容，可直接执行 /task unblock ${task.id}；如仍不够，再补充材料：/task unblock ${task.id} [材料路径]`;
+      return `现有材料已具备可读内容，可直接执行 /task resume ${task.id}；如仍不够，再补充材料：/task resume ${task.id} [材料路径]`;
     }
     if (hasLinks) {
-      return `若现有链接信息已足够，直接执行 /task unblock ${task.id}；如需补材料：/task unblock ${task.id} [材料路径]`;
+      return `若现有链接信息已足够，直接执行 /task resume ${task.id}；如需补材料：/task resume ${task.id} [材料路径]`;
     }
-    return `/task unblock ${task.id} [材料路径]`;
+    return `/task resume ${task.id} [材料路径]`;
   }
 
   if (task.status === 'parked') {
@@ -352,7 +352,8 @@ export async function pauseTask(args: ResolvedCommandArgs, context: CommandConte
 
 export async function resumeTask(args: ResolvedCommandArgs, context: CommandContext): Promise<CommandResult> {
   const taskId = stringArg(args, 'taskId');
-  if (!context.taskEngine.getTaskRepo().findById(taskId)) {
+  const task = context.taskEngine.getTaskRepo().findById(taskId);
+  if (!task) {
     return { type: 'text', content: `任务不存在: ${taskId}` };
   }
   const runtimeWait = findTaskRuntimeWait(context, taskId);
@@ -365,11 +366,28 @@ export async function resumeTask(args: ResolvedCommandArgs, context: CommandCont
       ].join('\n'),
     };
   }
+  if (task.status !== 'parked' && task.status !== 'blocked') {
+    return { type: 'text', content: `任务 #${taskId} 当前为 ${task.status}，不能执行恢复操作` };
+  }
+
+  const newlyProvidedResources = Array.from(new Set(stringListArg(args, 'resources').filter(Boolean)));
+  const blockedReason = task.dependencies
+    .filter(dependency => dependency.status === 'waiting')
+    .map(dependency => dependency.description)
+    .filter(Boolean)
+    .join('；');
 
   return {
     type: 'directive',
-    content: `任务 #${taskId} 已提交恢复请求`,
-    directive: { kind: 'resume-task', taskId, mode: 'resume-parked' },
+    content: newlyProvidedResources.length > 0
+      ? `任务 #${taskId} 已提交恢复请求，并附带资源 ${newlyProvidedResources.join(', ')}`
+      : `任务 #${taskId} 已提交恢复请求`,
+    directive: {
+      kind: 'resume-task',
+      taskId,
+      newlyProvidedResources,
+      blockedReason,
+    },
   };
 }
 
@@ -394,35 +412,6 @@ export async function blockTask(args: ResolvedCommandArgs, context: CommandConte
   } catch (error) {
     return { type: 'text', content: `操作失败: ${(error as Error).message}` };
   }
-}
-
-export async function unblockTask(args: ResolvedCommandArgs, context: CommandContext): Promise<CommandResult> {
-  const taskId = stringArg(args, 'taskId');
-  const task = context.taskEngine.getTaskRepo().findById(taskId);
-  if (!task) {
-    return { type: 'text', content: `任务不存在: ${taskId}` };
-  }
-
-  const newlyProvidedResources = Array.from(new Set(stringListArg(args, 'resources').filter(Boolean)));
-  const blockedReason = task.dependencies
-    .filter(dependency => dependency.status === 'waiting')
-    .map(dependency => dependency.description)
-    .filter(Boolean)
-    .join('；');
-
-  return {
-    type: 'directive',
-    content: newlyProvidedResources.length > 0
-      ? `任务 #${taskId} 已提交恢复请求，并附带资源 ${newlyProvidedResources.join(', ')}`
-      : `任务 #${taskId} 已提交恢复请求`,
-    directive: {
-      kind: 'resume-task',
-      taskId,
-      mode: 'resume-blocked',
-      newlyProvidedResources,
-      blockedReason,
-    },
-  };
 }
 
 export async function cancelTask(args: ResolvedCommandArgs, context: CommandContext): Promise<CommandResult> {

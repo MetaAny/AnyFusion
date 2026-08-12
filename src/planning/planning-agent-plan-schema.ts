@@ -15,7 +15,6 @@ const TASK_CONTROL_VALUES = [
   'clear_tasks',
   'status_query',
   'resume_task',
-  'recover_blocked',
   'none',
 ] as const;
 const RISK_LEVEL_VALUES = ['low', 'medium', 'high'] as const;

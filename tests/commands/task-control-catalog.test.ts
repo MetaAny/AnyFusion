@@ -123,4 +123,55 @@ describe('canonical task control commands', () => {
     expect(result.content).toContain('未知命令');
   });
 
+  it.each(['parked', 'blocked'] as const)(
+    'uses one status-derived resume command for %s tasks',
+    async status => {
+      const harness = createHarness();
+      const task = createRunningTask(harness.taskEngine, `resume-${status}`);
+      if (status === 'parked') {
+        harness.taskEngine.park(task.id);
+      } else {
+        harness.taskEngine.block(task.id, {
+          taskId: task.id,
+          type: 'manual',
+          description: '等待材料',
+          status: 'waiting',
+        });
+      }
+
+      const result = await harness.catalog.execute(`/task resume ${task.id}`, harness.context);
+
+      expect(result.type).toBe('directive');
+      if (result.type !== 'directive') return;
+      expect(result.directive).toMatchObject({ kind: 'resume-task', taskId: task.id });
+      expect(result.directive).not.toHaveProperty('mode');
+    },
+  );
+
+  it('does not dispatch an ordinary ready task through the resume projection', async () => {
+    const harness = createHarness();
+    const task = harness.taskEngine.create({ title: 'ready task', goal: 'wait for dispatch' });
+    harness.taskEngine.transition(task.id, 'ready');
+
+    const result = await harness.catalog.execute(`/task resume ${task.id}`, harness.context);
+
+    expect(result.type).toBe('text');
+    expect(result.content).toContain('不能执行恢复操作');
+  });
+
+  it('removes the split unblock command from the command surface', async () => {
+    const harness = createHarness();
+    const task = createRunningTask(harness.taskEngine, 'legacy-unblock');
+    harness.taskEngine.block(task.id, {
+      taskId: task.id,
+      type: 'manual',
+      description: '等待材料',
+      status: 'waiting',
+    });
+
+    const result = await harness.catalog.execute(`/task unblock ${task.id}`, harness.context);
+
+    expect(result.content).toContain('未知命令');
+  });
+
 });

@@ -97,7 +97,7 @@ describe('App permission recovery natural-language control', () => {
         sessionId: 'sess_permission_nl_recovery',
         contextRecaller,
         planningAgent: stubPlanningAgent(
-          taskControlPlan({ control: 'recover_blocked', taskId: blockedTask.id, scope: null }),
+          taskControlPlan({ control: 'resume_task', taskId: blockedTask.id, scope: null }),
         ),
       }),
     );

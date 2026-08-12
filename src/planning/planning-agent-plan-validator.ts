@@ -80,10 +80,7 @@ function validateTaskControlScope(plan: PlanningAgentPlan, errors: string[]): vo
   if (plan.task.control === 'clear_tasks' && !['all', 'parked', 'blocked'].includes(plan.task.scope ?? '')) {
     errors.push('clear_tasks requires scope all, parked, or blocked');
   }
-  if (
-    (plan.task.control === 'resume_task' || plan.task.control === 'recover_blocked')
-    && plan.task.scope !== null
-  ) {
+  if (plan.task.control === 'resume_task' && plan.task.scope !== null) {
     errors.push(`${plan.task.control} requires scope null`);
   }
 }
@@ -91,7 +88,7 @@ function validateTaskControlScope(plan: PlanningAgentPlan, errors: string[]): vo
 function validateTaskPriority(plan: PlanningAgentPlan, errors: string[]): void {
   const schedulable = plan.action === 'plan_work_graph'
     || (plan.action === 'task_control'
-      && (plan.task.control === 'resume_task' || plan.task.control === 'recover_blocked'));
+      && plan.task.control === 'resume_task');
   const priority = plan.task.priority;
   if (!schedulable) {
     if (priority !== null) errors.push('task.priority must be null for non-schedulable actions');

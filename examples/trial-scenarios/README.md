@@ -67,7 +67,7 @@ metaclaw --script examples/trial-scenarios/scripts/00-command-smoke.txt
 
 ## 素材文件
 
-`assets/` 下放了可直接引用的真实业务风格材料，方便在手动场景中做 `/task attach <id> <资源路径>` 或 `/task unblock <id> <资源路径>`：
+`assets/` 下放了可直接引用的真实业务风格材料，方便在手动场景中做 `/task attach <id> <资源路径>` 或 `/task resume <id> <资源路径>`：
 
 - `assets/byd-catl-brief.md`
 - `assets/foshan-plastics-brief.md`

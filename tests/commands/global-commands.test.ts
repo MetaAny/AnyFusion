@@ -101,6 +101,6 @@ describe('global commands', () => {
     expect(updatedTask.resources).toEqual(['evidence-a.pdf', 'evidence-b.pdf']);
     expect(result.content).toContain(`任务 #${task.id}`);
     expect(result.content).toContain('仍为 BLOCKED');
-    expect(result.content).toContain(`/task unblock ${task.id}`);
+    expect(result.content).toContain(`/task resume ${task.id}`);
   });
 });

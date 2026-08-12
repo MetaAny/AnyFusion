@@ -75,7 +75,6 @@ export type CommandDirective =
   | {
       kind: 'resume-task';
       taskId: string;
-      mode: 'resume-parked' | 'resume-blocked';
       newlyProvidedResources?: string[];
       blockedReason?: string;
     }

@@ -57,7 +57,7 @@ describe('scripted session', () => {
     ]);
   });
 
-  it('does not execute a legacy blocked task through /task unblock without a natural-language v4 replan', async () => {
+  it('does not execute a legacy blocked task through /task resume without a natural-language v4 replan', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
@@ -90,7 +90,7 @@ describe('scripted session', () => {
     const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '已恢复处理' }));
     const result = await runScriptedSession({
       inputs: [
-        `/task unblock ${blockedTask.id} /tmp/evidence-v3.pdf`,
+        `/task resume ${blockedTask.id} /tmp/evidence-v3.pdf`,
         '/task list done',
       ],
       taskEngine,

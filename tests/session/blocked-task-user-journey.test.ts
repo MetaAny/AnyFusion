@@ -43,7 +43,7 @@ function createConfig(): Config {
 }
 
 describe('blocked task user journey', () => {
-  it('lets the user inspect a fail-closed attempt and explicitly retry it through /task unblock', async () => {
+  it('lets the user inspect a fail-closed attempt and explicitly retry it through /task resume', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-blocked-user-journey');
@@ -89,10 +89,10 @@ describe('blocked task user journey', () => {
     output = session.getSnapshot().output.join('\n');
     expect(output).toContain('当前有 1 个阻塞任务');
     expect(output).toContain(`#${blockedTask.id} [BLOCKED] ${blockedTask.title}`);
-    expect(output).toContain(`建议动作：/task unblock ${blockedTask.id}，或直接补充材料/说明后让我继续`);
+    expect(output).toContain(`建议动作：/task resume ${blockedTask.id}，或直接补充材料/说明后让我继续`);
 
     const commandResult = await Promise.race([
-      session.submitPlannerTuiCommand(`/task unblock ${blockedTask.id}`),
+      session.submitPlannerTuiCommand(`/task resume ${blockedTask.id}`),
       new Promise<never>((_, reject) => {
         setTimeout(() => reject(new Error('Planner TUI command waited for background execution')), 500);
       }),
