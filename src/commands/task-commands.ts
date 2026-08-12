@@ -81,19 +81,19 @@ export function formatTaskClearResult(scope: TaskClearScope, cancelled: Task[], 
 interface TaskRuntimeWait {
   kind: 'publication-approval';
   permissionRequestId: string;
-  operation: string;
+  operation: string | null;
 }
 
 function findTaskRuntimeWait(context: Pick<CommandContext, 'db'>, taskId: string): TaskRuntimeWait | null {
   const row = context.db.prepare(`
     SELECT publication.permission_request_id, request.operation
     FROM workspace_publications AS publication
-    INNER JOIN permission_requests AS request
+    LEFT JOIN permission_requests AS request
       ON request.id = publication.permission_request_id
     WHERE publication.task_id = ? AND publication.status = 'awaiting_approval'
     ORDER BY publication.created_at ASC, publication.id ASC
     LIMIT 1
-  `).get(taskId) as { permission_request_id: string; operation: string } | undefined;
+  `).get(taskId) as { permission_request_id: string; operation: string | null } | undefined;
   return row
     ? { kind: 'publication-approval', permissionRequestId: row.permission_request_id, operation: row.operation }
     : null;
@@ -359,11 +359,16 @@ export async function resumeTask(args: ResolvedCommandArgs, context: CommandCont
   const runtimeWait = findTaskRuntimeWait(context, taskId);
   if (runtimeWait?.kind === 'publication-approval') {
     return {
-      type: 'text',
+      type: 'directive',
       content: [
         `任务 #${taskId} 的 Executor 已完成候选结果，无需再次调度。`,
-        `当前只等待仓库发布审批：请在权限面板批准请求 ${runtimeWait.permissionRequestId}。`,
+        `正在恢复仓库发布审批 ${runtimeWait.permissionRequestId}。`,
       ].join('\n'),
+      directive: {
+        kind: 'resume-publication-review',
+        taskId,
+        permissionRequestId: runtimeWait.permissionRequestId,
+      },
     };
   }
   if (task.status !== 'ready' && task.status !== 'parked' && task.status !== 'blocked') {

@@ -48,7 +48,11 @@ import {
   PermissionWorkflowService,
 } from '../execution/permission-workflow-service.js';
 import { RegisteredCapabilityResourceResolver } from '../execution/capability-resource-resolver.js';
-import { buildPermissionRules, type PermissionRequestRecord } from '../resource/index.js';
+import {
+  buildPermissionRules,
+  capabilityRequestFingerprint,
+  type PermissionRequestRecord,
+} from '../resource/index.js';
 import { AttemptSandboxReconciler } from '../execution/attempt-sandbox-reconciler.js';
 import { InputController } from './input-controller.js';
 import { SessionPresentationService, type GuidanceState } from './session-presentation-service.js';
@@ -242,6 +246,7 @@ export interface PlannerTuiExecutorResult {
 export interface PlannerTuiPermissionRequest {
   schemaVersion: 1;
   permissionRequestId: string;
+  reviewId: string;
   taskId: string;
   taskTitle: string;
   generationId: string;
@@ -774,7 +779,8 @@ export class MetaclawSession {
     const supersededDecisionIds = new Set(escalations
       .map(record => record.causationId)
       .filter((id): id is string => Boolean(id)));
-    return escalations.find(record => !supersededDecisionIds.has(record.id)) ?? null;
+    return [...escalations].reverse()
+      .find(record => !supersededDecisionIds.has(record.id)) ?? null;
   }
 
   getPlannerTuiPermissionRequests(): PlannerTuiPermissionRequest[] {
@@ -790,11 +796,12 @@ export class MetaclawSession {
       .filter(item => !this.kernelDecisionRepo.listByCorrelation(item.record.request.id)
         .some(decision => decision.event.type === 'permission_resolution_received'
           && this.kernelWorkflowRepo.isDecisionApplied(decision.id)))
-      .filter(item => isPermissionRequestActive(item.record.createdAt, now))
+      .filter(item => isPermissionRequestActive(item.escalation.createdAt, now))
       .map(({ record, escalation }) => {
         return {
           schemaVersion: 1,
           permissionRequestId: record.request.id,
+          reviewId: escalation.id,
           taskId: record.request.taskId,
           taskTitle: this.taskRuntimeService.findTask(record.request.taskId)?.title ?? record.request.taskId,
           generationId: record.request.generationId,
@@ -809,8 +816,8 @@ export class MetaclawSession {
           reason: record.request.reason,
           suggestedScope: record.request.suggestedScope,
           escalationReason: escalation.reason,
-          createdAt: record.createdAt,
-          expiresAt: permissionRequestExpiresAt(record.createdAt)!,
+          createdAt: escalation.createdAt,
+          expiresAt: permissionRequestExpiresAt(escalation.createdAt)!,
         };
       });
   }
@@ -839,7 +846,7 @@ export class MetaclawSession {
     if (!record || record.status !== 'escalated') {
       return { status: 'conflict', resolution: null, message: 'Permission request is no longer escalated.' };
     }
-    if (!isPermissionRequestActive(record.createdAt, new Date().toISOString())) {
+    if (!isPermissionRequestActive(escalation.createdAt, new Date().toISOString())) {
       return { status: 'conflict', resolution: null, message: 'Permission request has expired.' };
     }
     await this.resolvePermission({ requestId: permissionRequestId, resolution, source: 'button' });
@@ -1902,6 +1909,13 @@ export class MetaclawSession {
       }
     }
 
+    if (result.type === 'directive' && result.directive.kind === 'resume-publication-review') {
+      await this.reissuePublicationPermissionReview(
+        result.directive.taskId,
+        result.directive.permissionRequestId,
+      );
+    }
+
     if (result.type === 'directive' && result.directive.kind === 'show-task-recovery') {
       this.appendOutput(this.formatTaskRecovery(result.directive.taskId));
     }
@@ -1970,6 +1984,7 @@ export class MetaclawSession {
       resource,
       { kind: 'path' as const, mountId: `inputs-${record.request.taskId}`, normalizedRelativePath: `resource-${index}` },
     ]));
+    const activeReview = this.findActiveAppliedPermissionEscalation(record.request.id);
     return new PermissionWorkflowService({
       context: {
         sessionId: this.deps.sessionId,
@@ -2018,7 +2033,98 @@ export class MetaclawSession {
           });
         },
       },
+      reviewIssuedAt: activeReview?.createdAt ?? record.createdAt,
     });
+  }
+
+  private async reissuePublicationPermissionReview(
+    taskId: string,
+    permissionRequestId: string,
+  ): Promise<void> {
+    const publication = this.publicationRepo.findAwaitingApprovalByTask(taskId);
+    if (!publication || publication.permissionRequestId !== permissionRequestId) {
+      this.appendOutput(`Task #${taskId} 当前没有可恢复的仓库发布审批。`);
+      this.refreshRuntimeState();
+      return;
+    }
+    const decisions = this.kernelDecisionRepo.listByCorrelation(permissionRequestId);
+    if (decisions.some(decision => decision.event.type === 'permission_resolution_received'
+      && this.kernelWorkflowRepo.isDecisionApplied(decision.id))) {
+      this.appendOutput(`仓库发布审批 ${permissionRequestId} 已处理，不能再次签发。`);
+      this.refreshRuntimeState();
+      return;
+    }
+    let record = this.permissionRepository.findRequest(permissionRequestId);
+    const activeReview = this.findActiveAppliedPermissionEscalation(permissionRequestId);
+    if (!record || record.status === 'pending' || record.status === 'expired') {
+      const original = decisions.find(decision => decision.event.type === 'permission_requested');
+      const request = original?.event.type === 'permission_requested' ? original.event.request : null;
+      if (!request || !activeReview || !this.publicationPermissionRequestMatches(publication, request)) {
+        this.appendOutput(
+          `仓库发布审批 ${permissionRequestId} 无法安全恢复。`,
+          `候选提交 ${publication.candidateCommit} 已保留，但原始权限身份缺失或与 publication 不一致。`,
+        );
+        this.refreshRuntimeState();
+        return;
+      }
+      record = this.permissionRepository.restoreEscalatedRequest({
+        request,
+        createdAt: original!.event.occurredAt,
+        decisionId: activeReview.id,
+        reason: activeReview.reason,
+      });
+    }
+    if (!['pending', 'escalated'].includes(record.status)
+      || !this.publicationPermissionRequestMatches(publication, record.request)) {
+      this.appendOutput(
+        `仓库发布审批 ${permissionRequestId} 已失效，不能自动重签。`,
+        `候选提交 ${publication.candidateCommit} 保持不变；请查看 /task recovery ${taskId}。`,
+      );
+      this.refreshRuntimeState();
+      return;
+    }
+    const task = this.taskRuntimeService.findTask(taskId);
+    const currentReview = this.findActiveAppliedPermissionEscalation(permissionRequestId);
+    const now = new Date().toISOString();
+    if (currentReview?.sessionId === this.deps.sessionId
+      && isPermissionRequestActive(currentReview.createdAt, now)) {
+      this.appendOutput(
+        `Task #${taskId} 的仓库发布审批仍然有效。`,
+        `请在权限面板处理请求 ${permissionRequestId}；不会重复启动 Executor。`,
+      );
+      this.refreshRuntimeState();
+      return;
+    }
+    if (!currentReview || record.status !== 'escalated') {
+      this.appendOutput(`仓库发布审批 ${permissionRequestId} 当前不可重签，请查看 /task recovery ${taskId}。`);
+      this.refreshRuntimeState();
+      return;
+    }
+    await this.createPermissionWorkflow(record, publication, task).representEscalated(
+      permissionRequestId,
+      { allowExpired: true, causationId: currentReview.id },
+    );
+    this.appendOutput(
+      `已为 Task #${taskId} 重新签发仓库发布审批。`,
+      `请求身份与候选提交 ${publication.candidateCommit} 保持不变；批准后继续原发布链路。`,
+    );
+    this.refreshRuntimeState();
+  }
+
+  private publicationPermissionRequestMatches(
+    publication: WorkspacePublicationRecord,
+    request: PermissionRequestRecord['request'],
+  ): boolean {
+    return request.id === publication.permissionRequestId
+      && request.fingerprint === capabilityRequestFingerprint(request)
+      && request.taskId === publication.taskId
+      && request.generationId === publication.generationId
+      && request.subtaskId === publication.subtaskId
+      && request.attemptId === publication.sourceAttemptId
+      && request.agentClassName === publication.agentClassName
+      && request.capability === 'repository_promotion'
+      && request.operation === `promote_commit:${publication.candidateCommit}`
+      && request.suggestedScope === 'once';
   }
 
   private formatTaskRecovery(taskId: string): string {
@@ -2496,7 +2602,8 @@ export class MetaclawSession {
         && this.kernelWorkflowRepo.isDecisionApplied(decision.id))) {
         continue;
       }
-      if (!isPermissionRequestActive(record.createdAt, now)) {
+      const activeReview = this.findActiveAppliedPermissionEscalation(record.request.id);
+      if (!activeReview || !isPermissionRequestActive(activeReview.createdAt, now)) {
         this.appendOutput(
           `仓库发布审批 ${record.request.id} 已过期，候选提交 ${publication.candidateCommit} 仍被保留。`,
           `请查看 /task show ${publication.taskId}；系统不会重复运行 Executor 或丢弃候选结果。`,

@@ -303,8 +303,15 @@ describe('showTask detail view', () => {
     expect(detail.content).not.toContain('恢复操作: 无');
     expect(list.content).toContain('[WAITING_APPROVAL]');
     expect(list.content).toContain('在权限面板批准请求 permission-publication');
-    expect(resume.type).toBe('text');
+    expect(resume.type).toBe('directive');
     expect(resume.content).toContain('Executor 已完成候选结果，无需再次调度');
-    expect(resume.content).toContain('批准请求 permission-publication');
+    expect(resume.content).toContain('正在恢复仓库发布审批 permission-publication');
+    expect(resume).toMatchObject({
+      directive: {
+        kind: 'resume-publication-review',
+        taskId: task.id,
+        permissionRequestId: 'permission-publication',
+      },
+    });
   });
 });

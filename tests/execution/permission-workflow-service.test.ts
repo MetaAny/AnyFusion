@@ -158,6 +158,44 @@ describe('PermissionWorkflowService', () => {
       reason: 'grant is expired, exhausted, revoked, or belongs to another attempt',
     });
   });
+
+  it('uses the latest review issuance time when resolving an old immutable request', async () => {
+    const request = normalizedRequest();
+    const events: KernelEvent[] = [];
+    const service = new PermissionWorkflowService({
+      context: context(),
+      repository: {
+        findRequest: vi.fn().mockReturnValue(record(request, 'escalated', '2026-08-01T00:00:00.000Z')),
+      },
+      workflowStore: captureOnlyWorkflowStore(events),
+      reviewIssuedAt: '2026-08-03T00:00:00.000Z',
+      clock: { now: () => '2026-08-03T01:00:00.000Z' },
+    } as never);
+
+    await service.resolve({ requestId: request.id, resolution: 'approve', source: 'button' });
+
+    expect(events).toMatchObject([{
+      type: 'permission_resolution_received',
+      requestId: request.id,
+      resolution: 'approve',
+    }]);
+  });
+
+  it('rejects resolution when the latest review issuance has expired', async () => {
+    const request = normalizedRequest();
+    const service = new PermissionWorkflowService({
+      context: context(),
+      repository: {
+        findRequest: vi.fn().mockReturnValue(record(request, 'escalated', '2026-08-01T00:00:00.000Z')),
+      },
+      workflowStore: captureOnlyWorkflowStore([]),
+      reviewIssuedAt: '2026-08-01T00:00:00.000Z',
+      clock: { now: () => '2026-08-03T01:00:00.000Z' },
+    } as never);
+
+    await expect(service.resolve({ requestId: request.id, resolution: 'approve', source: 'button' }))
+      .rejects.toThrow('permission request has expired and must be reissued precisely');
+  });
 });
 
 function context() {
@@ -177,6 +215,40 @@ function record(
     request, status, decisionId: status === 'pending' ? null : 'decision_deny',
     decisionReason: status === 'denied' ? 'test denial' : null,
     createdAt, resolvedAt: status === 'pending' ? null : createdAt,
+  };
+}
+
+function normalizedRequest(): NormalizedCapabilityRequest {
+  return {
+    id: 'permission_request_1',
+    fingerprint: 'fingerprint_1',
+    taskId: 'task_1',
+    generationId: 'generation_1',
+    subtaskId: 'subtask_1',
+    attemptId: 'attempt_1',
+    agentClassName: 'codex-cli',
+    permissionProfileId: 'workspace-engineering',
+    capability: 'repository_promotion',
+    resource: '/workspace/default',
+    partition: { kind: 'repository', repositoryId: 'project_1' },
+    operation: 'promote_commit:candidate_1',
+    reason: 'publish exact candidate',
+    suggestedScope: 'once',
+    distinctRequestOrdinal: 1,
+  };
+}
+
+function captureOnlyWorkflowStore(events: KernelEvent[]): KernelWorkflowStore {
+  return {
+    enqueue(event) { events.push(event); return true; },
+    claimNext() { return null; },
+    issue() { throw new Error('not reached'); },
+    listRecoverableApplications() { return []; },
+    markApplying() { throw new Error('not reached'); },
+    markApplied() {}, markApplicationFailed() {}, reconcileProcessing() { return 0; },
+    countByApplicationStatus() {
+      return { pending: 0, applying: 0, applied: 0, uncertain: 0, failed: 0 };
+    },
   };
 }
 

@@ -341,9 +341,10 @@ export class PlannerTuiBridge {
     const sent = this.sentPermissionRequests.get(socket) ?? new Map<string, PlannerTuiPermissionRequest>();
     this.sentPermissionRequests.set(socket, sent);
     const current = session.getPlannerTuiPermissionRequests();
-    const openIds = new Set(current.map(request => request.permissionRequestId));
+    const currentById = new Map(current.map(request => [request.permissionRequestId, request]));
     for (const [permissionRequestId, previous] of sent) {
-      if (openIds.has(permissionRequestId)) continue;
+      const currentRequest = currentById.get(permissionRequestId);
+      if (currentRequest?.reviewId === previous.reviewId) continue;
       const reason = this.permissionClosureHints.get(permissionRequestId)
         ?? (Date.parse(previous.expiresAt) <= Date.now() ? 'expired' : 'stale');
       this.write(socket, {

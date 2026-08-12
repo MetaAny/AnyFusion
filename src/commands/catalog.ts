@@ -73,6 +73,11 @@ export interface CommandContext {
 
 export type CommandDirective =
   | {
+      kind: 'resume-publication-review';
+      taskId: string;
+      permissionRequestId: string;
+    }
+  | {
       kind: 'resume-task';
       taskId: string;
       newlyProvidedResources?: string[];

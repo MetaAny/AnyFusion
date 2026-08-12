@@ -65,6 +65,7 @@ export class PermissionWorkflowService {
     rules: PermissionRule[];
     hooks: PermissionWorkflowHooks;
     clock?: { now(): string };
+    reviewIssuedAt?: string;
   }) {}
 
   async request(input: CapabilityRequestInput, options: { suspendAttempt?: boolean } = {}): Promise<{
@@ -125,20 +126,24 @@ export class PermissionWorkflowService {
     };
   }
 
-  async representEscalated(requestId: string): Promise<void> {
+  async representEscalated(
+    requestId: string,
+    options: { allowExpired?: boolean; causationId?: string | null } = {},
+  ): Promise<void> {
     const record = this.deps.repository.findRequest(requestId);
     if (!record || record.request.taskId !== this.deps.context.taskId || record.status !== 'escalated') {
       throw new Error('permission request is missing, stale, or belongs to another Task');
     }
-    if (!isPermissionRequestActive(record.createdAt, this.now())) {
+    if (!options.allowExpired && !isPermissionRequestActive(this.reviewIssuedAt(record), this.now())) {
       throw new Error('permission request has expired and must be reissued precisely');
     }
+    const causationId = options.causationId ?? record.decisionId;
     await this.workflow().submit({
       schemaVersion: 5,
       type: 'permission_review_represented',
-      id: `permission_review_${requestId}_${this.deps.context.sessionId}`,
+      id: `permission_review_${requestId}_${this.deps.context.sessionId}_${causationId ?? 'initial'}`,
       correlationId: requestId,
-      causationId: record.decisionId,
+      causationId,
       occurredAt: this.now(),
       sessionId: this.deps.context.sessionId,
       taskId: record.request.taskId,
@@ -189,7 +194,7 @@ export class PermissionWorkflowService {
     if (!record || record.request.taskId !== this.deps.context.taskId || !['pending', 'escalated'].includes(record.status)) {
       throw new Error('permission request is missing, stale, or belongs to another Task');
     }
-    if (!isPermissionRequestActive(record.createdAt, this.now())) {
+    if (!isPermissionRequestActive(this.reviewIssuedAt(record), this.now())) {
       throw new Error('permission request has expired and must be reissued precisely');
     }
     await this.workflow().submit({
@@ -325,5 +330,9 @@ export class PermissionWorkflowService {
 
   private now(): string {
     return this.deps.clock?.now() ?? new Date().toISOString();
+  }
+
+  private reviewIssuedAt(record: PermissionRequestRecord): string {
+    return this.deps.reviewIssuedAt ?? record.createdAt;
   }
 }
