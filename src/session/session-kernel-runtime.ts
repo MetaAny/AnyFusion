@@ -161,7 +161,9 @@ export class SessionKernelRuntime {
     this.deps.callbacks.setCurrentTaskId(task.id);
     this.deps.callbacks.setFocusContext({ kind: 'task', taskId: task.id });
     const isBlocked = task.status === 'blocked';
-    const executionMode = isBlocked ? 'resume-blocked' : 'resume-parked';
+    const executionMode = task.status === 'ready'
+      ? 'fresh'
+      : isBlocked ? 'resume-blocked' : 'resume-parked';
     this.deps.callbacks.prepareTaskExecution(task.id, buildExecutionRequest({
       userInput,
       taskId: task.id,

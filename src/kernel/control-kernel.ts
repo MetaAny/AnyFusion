@@ -194,7 +194,6 @@ export type KernelEvent =
 export interface KernelTaskFact {
   id: string;
   status: KernelTaskStatus;
-  awaitingPublicationApproval?: boolean;
 }
 
 export interface KernelSubtaskFact {
@@ -579,9 +578,9 @@ export class ControlKernel {
       if (proposal.task.control === 'resume_task') {
         const target = snapshot.tasks.find(task => task.id === proposal.task.taskId);
         const resumable = target && (
-          target.status === 'parked'
+          target.status === 'ready'
+          || target.status === 'parked'
           || target.status === 'blocked'
-          || (target.status === 'ready' && target.awaitingPublicationApproval === true)
         );
         if (target && !resumable) {
           return decision(event, { type: 'reject_request' }, `task ${target.id} cannot resume from status ${target.status}`);

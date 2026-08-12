@@ -1691,11 +1691,7 @@ export class MetaclawSession {
     return {
       schemaVersion: 5,
       type: 'plan_admission',
-      tasks: this.taskRuntimeService.listTasks().map(task => ({
-        id: task.id,
-        status: task.status,
-        awaitingPublicationApproval: this.publicationRepo.findAwaitingApprovalByTask(task.id) !== null,
-      })),
+      tasks: this.taskRuntimeService.listTasks().map(task => ({ id: task.id, status: task.status })),
       runningTaskId: this.kernelExecutionRuntime.getSingleActiveTaskId(),
       executorCatalog,
       executorStatuses: this.kernelExecutorStatusRepo.list(),
@@ -1879,12 +1875,17 @@ export class MetaclawSession {
       const resumedTask = this.taskRuntimeService.findTask(directive.taskId);
       if (resumedTask) {
         const isBlocked = resumedTask.status === 'blocked';
+        const executionMode = resumedTask.status === 'ready'
+          ? 'fresh'
+          : isBlocked ? 'resume-blocked' : 'resume-parked';
         this.setCurrentTaskId(resumedTask.id);
         await this.prepareTaskExecution(resumedTask.id, {
           userPrompt: resumedTask.goal,
           contextTaskId: resumedTask.id,
-          executionMode: isBlocked ? 'resume-blocked' : 'resume-parked',
-          schedulingReason: isBlocked ? '恢复阻塞任务' : '恢复已暂停任务',
+          executionMode,
+          schedulingReason: resumedTask.status === 'ready'
+            ? '继续待执行任务'
+            : isBlocked ? '恢复阻塞任务' : '恢复已暂停任务',
           newlyProvidedResources: directive.newlyProvidedResources,
           recoveryTrigger: isBlocked
             ? this.buildRecoveryTrigger(resumedTask, {

@@ -148,15 +148,17 @@ describe('canonical task control commands', () => {
     },
   );
 
-  it('does not dispatch an ordinary ready task through the resume projection', async () => {
+  it('submits an ordinary ready task through the unified resume projection', async () => {
     const harness = createHarness();
     const task = harness.taskEngine.create({ title: 'ready task', goal: 'wait for dispatch' });
     harness.taskEngine.transition(task.id, 'ready');
 
     const result = await harness.catalog.execute(`/task resume ${task.id}`, harness.context);
 
-    expect(result.type).toBe('text');
-    expect(result.content).toContain('不能执行恢复操作');
+    expect(result.type).toBe('directive');
+    if (result.type !== 'directive') return;
+    expect(result.directive).toMatchObject({ kind: 'resume-task', taskId: task.id });
+    expect(result.directive).not.toHaveProperty('mode');
   });
 
   it('removes the split unblock command from the command surface', async () => {

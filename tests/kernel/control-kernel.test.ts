@@ -111,7 +111,7 @@ describe('ControlKernel', () => {
     });
   });
 
-  it.each(['created', 'ready', 'running', 'done', 'cancelled'] as const)(
+  it.each(['created', 'running', 'done', 'cancelled'] as const)(
     'rejects resume_task for a %s task',
     status => {
       const proposal = taskControlPlan({ control: 'resume_task', taskId: 'task_1' });
@@ -127,23 +127,12 @@ describe('ControlKernel', () => {
     },
   );
 
-  it.each(['parked', 'blocked'] as const)('authorizes resume_task for a %s task', status => {
+  it.each(['ready', 'parked', 'blocked'] as const)('authorizes resume_task for a %s task', status => {
     const proposal = taskControlPlan({ control: 'resume_task', taskId: 'task_1' });
 
     expect(new ControlKernel().decide({ ...event, proposal }, {
       ...snapshot,
       tasks: [{ id: 'task_1', status }],
-    })).toMatchObject({
-      action: { type: 'authorize_task_control', task: { control: 'resume_task', taskId: 'task_1' } },
-    });
-  });
-
-  it('authorizes resume_task only as a no-dispatch continuation projection for ready work awaiting publication', () => {
-    const proposal = taskControlPlan({ control: 'resume_task', taskId: 'task_1' });
-
-    expect(new ControlKernel().decide({ ...event, proposal }, {
-      ...snapshot,
-      tasks: [{ id: 'task_1', status: 'ready', awaitingPublicationApproval: true }],
     })).toMatchObject({
       action: { type: 'authorize_task_control', task: { control: 'resume_task', taskId: 'task_1' } },
     });

@@ -366,7 +366,7 @@ export async function resumeTask(args: ResolvedCommandArgs, context: CommandCont
       ].join('\n'),
     };
   }
-  if (task.status !== 'parked' && task.status !== 'blocked') {
+  if (task.status !== 'ready' && task.status !== 'parked' && task.status !== 'blocked') {
     return { type: 'text', content: `任务 #${taskId} 当前为 ${task.status}，不能执行恢复操作` };
   }
 
