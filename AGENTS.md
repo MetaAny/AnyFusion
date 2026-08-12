@@ -89,6 +89,12 @@ Tests mirror source domains under [`tests/`](tests/). Scenarios and fixtures are
 - Architecture changes must update the applicable ADR, `CONTEXT.md`, current
   technical overview, and this guide only when onboarding/navigation changes.
 
+## Evidence-First Bug Diagnosis
+
+- For any AnyFusion bug or unexpected runtime state, follow `$diagnosing-anyfusion-bugs` before editing code or testing hypotheses.
+- Inspect processes, logs, and durable database facts first; preserve state and use read-only checks.
+- Hypothesize or reproduce only when existing evidence cannot localize the failure.
+
 ## Build And Validation
 
 - `npm install`, `npm run dev`, `npm run build`, `npm run start`
@@ -120,7 +126,7 @@ Host defaults are `~/.config/anyfusion` plus
 `/workspace/default`. Keep packaging wrappers thin and do not reintroduce a
 second startup/configuration path.
 
-On this Linux server, `anyfusion` is the canonical startup path. Runtime and
+On Linux servers, `anyfusion` is the canonical startup path. Runtime and
 AnyFusion-Pi are separate host Node.js processes, canonical Executors reuse the
 installed `codex` and `pi` commands, and attempts use isolated homes plus
 managed Git worktrees. Docker is retained for CI, cross-platform deployment,
