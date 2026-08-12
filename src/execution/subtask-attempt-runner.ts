@@ -14,7 +14,7 @@ import {
 } from '../storage/executor-attempt-receipt-repo.js';
 import { SubtaskHandoffRepo } from '../storage/subtask-handoff-repo.js';
 import type { SubtaskRepo } from '../storage/subtask-repo.js';
-import type { ExecutionMode } from './types.js';
+import type { ExecutionMode, Subtask } from '../core/types.js';
 import type { ExecutionRuntime } from './execution-runtime.js';
 import {
   validateCompletionProtocol,
@@ -26,7 +26,6 @@ import type { WorkUnitClaimService } from './work-unit-claim-service.js';
 import { generateInteractionId } from '../utils/id.js';
 import { ExecutionEvidenceToolServer } from './execution-evidence-tool-server.js';
 import type { KernelFailure } from '../core/kernel-failure.js';
-import type { Subtask } from '../core/types.js';
 import { ExecutorAttemptRuntimeRepo, type ExecutorAttemptRuntimeRecord } from '../storage/executor-attempt-runtime-repo.js';
 import type {
   KernelAttemptKind,

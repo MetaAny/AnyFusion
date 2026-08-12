@@ -1,6 +1,6 @@
 // Shared structural session helpers for execution requests, inline resources,
 // and editor submission.
-import type { TaskRecoveryTrigger } from '../core/types.js';
+import type { ExecutionMode, TaskRecoveryTrigger } from '../core/types.js';
 import type { WorkGraphProposal } from '../work-graph/types.js';
 import type { WorkGraphAuthorization } from '../execution/work-graph-runtime-service.js';
 export { planTaskExecution, type TaskExecutionPlan as ExecutionPlan } from '../task/task-execution-planner.js';
@@ -13,7 +13,7 @@ export {
 export type QueuedExecutionRequest = {
   userPrompt: string;
   contextTaskId: string;
-  executionMode: 'fresh' | 'resume-parked' | 'resume-blocked' | 'follow-up';
+  executionMode: ExecutionMode;
   authorizedWorkGraph?: WorkGraphProposal | null;
   workGraphAuthorization?: WorkGraphAuthorization | null;
   kernelDecisionId?: string | null;
