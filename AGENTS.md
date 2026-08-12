@@ -89,12 +89,6 @@ Tests mirror source domains under [`tests/`](tests/). Scenarios and fixtures are
 - Architecture changes must update the applicable ADR, `CONTEXT.md`, current
   technical overview, and this guide only when onboarding/navigation changes.
 
-## Evidence-First Bug Diagnosis
-
-- For any AnyFusion bug or unexpected runtime state, follow `$diagnosing-anyfusion-bugs` before editing code or testing hypotheses.
-- Inspect processes, logs, and durable database facts first; preserve state and use read-only checks.
-- Hypothesize or reproduce only when existing evidence cannot localize the failure.
-
 ## Build And Validation
 
 - `npm install`, `npm run dev`, `npm run build`, `npm run start`
