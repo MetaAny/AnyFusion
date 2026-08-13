@@ -138,8 +138,13 @@ export function evaluateFeishuGatewayPolicy(
     if (policy.groupPolicy === 'disabled') {
       return { allowed: false, reason: 'group_disabled' };
     }
-    if (policy.requireMention && policy.botOpenId && !event.mentionOpenIds.includes(policy.botOpenId)) {
-      return { allowed: false, reason: 'mention_required' };
+    if (policy.requireMention) {
+      if (!policy.botOpenId) {
+        return { allowed: false, reason: 'bot_identity_missing' };
+      }
+      if (!event.mentionOpenIds.includes(policy.botOpenId)) {
+        return { allowed: false, reason: 'mention_required' };
+      }
     }
     return { allowed: true, reason: 'group_allowed' };
   }

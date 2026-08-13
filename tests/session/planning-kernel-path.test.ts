@@ -754,7 +754,6 @@ describe('natural-language planning/kernel path', () => {
     }))).toEqual([
       { subtask_id: 'subtask_a', status: 'terminal', batch_order: 0 },
       { subtask_id: 'subtask_b', status: 'terminal', batch_order: 1 },
-      { subtask_id: 'subtask_b', status: 'terminal', batch_order: 4 },
     ]);
     expect((harness.db.prepare(`
       SELECT subtask_id, status, first_dispatch_order
@@ -765,8 +764,7 @@ describe('natural-language planning/kernel path', () => {
       subtask_id: item.subtask_id.endsWith('_subtask_a') ? 'subtask_a' : 'subtask_b',
     }))).toEqual([
       { subtask_id: 'subtask_a', status: 'integrated', first_dispatch_order: 0 },
-      { subtask_id: 'subtask_b', status: 'parked', first_dispatch_order: 1 },
-      { subtask_id: 'subtask_b', status: 'integrated', first_dispatch_order: 4 },
+      { subtask_id: 'subtask_b', status: 'integrated', first_dispatch_order: 1 },
     ]);
   });
 

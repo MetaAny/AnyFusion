@@ -582,6 +582,16 @@ for CI and Windows-hosted development.
 
 Local validation covers TypeScript lint/build, focused Planner RPC and host-protocol tests, the Docker Vitest suite, Unix-socket bridge behavior, Session validation, and unchanged Kernel/Execution/Executor regressions. Linux container smoke additionally verifies the single Node 22.19+ executable, isolated application dependency trees and processes, absence of an embedded Planner Node, Planner RPC JSONL, entrypoint config separation, and the final unified image.
 
+For a persistent Windows-hosted Feishu service, `docker/gateway.ps1` creates a
+separate `anyfusion-gateway` container. The foreground command is
+`node /app/dist/index.js gateway run --project /workspace/default`; no inbound
+port is published, Docker uses `unless-stopped`, and ordinary rebuilds reuse the
+schema-scoped data volume plus Project volume. Feishu credentials are loaded
+from the read-only `/run/metaclaw/env/feishu.env` mount selected by
+`METACLAW_FEISHU_ENV_FILE`, rather than copied into runtime data or Docker
+environment values. `gateway health` reports healthy only when the process,
+Unix socket, and Feishu WebSocket are connected.
+
 ## Configuration
 
 Application and integration settings remain in:
@@ -689,12 +699,18 @@ Access control is handled by the Gateway:
 - Direct messages default to `dm_policy: pairing`. The first DM user is approved automatically; later users can be approved or revoked with `anyfusion gateway pairing`.
 - Group chats default to `group_policy: open` with `require_mention: true`.
 - `/sethome` sent in a Feishu chat records that chat as `gateway.platforms.feishu.home_channel`.
-- Feishu configuration is read only from `gateway.platforms.feishu`.
+- Feishu behavior is read from `gateway.platforms.feishu`; `FEISHU_APP_ID` and
+  optional `FEISHU_DOMAIN` may supply mounted application identity, while the
+  secret remains in the environment named by `app_secret_env`.
+- Each Feishu `chat_id` maps to a stable opaque Planner session ID. Private and
+  group conversations retain separate context across container restart or
+  same-schema rebuild, while the global single-active-Task rule remains in force.
 
 Useful Feishu Gateway commands:
 
 ```bash
 anyfusion gateway doctor
+anyfusion gateway health
 anyfusion gateway pairing list
 anyfusion gateway pairing approve <open_id>
 anyfusion gateway pairing revoke <open_id>

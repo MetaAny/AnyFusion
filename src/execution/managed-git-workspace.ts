@@ -243,6 +243,43 @@ export class ManagedGitWorkspaceService {
     };
   }
 
+  async synchronizeCandidate(workspace: ManagedGitWorkspace, candidateCommit: string): Promise<{
+    mainBaseCommit: string;
+    candidateCommit: string;
+    changedPaths: string[];
+  }> {
+    const projectBranch = await git(['-C', workspace.projectRoot, 'branch', '--show-current']);
+    if (projectBranch !== 'main') throw new Error(`Project repository must remain on main; found ${projectBranch}`);
+    const projectStatus = await git(['-C', workspace.projectRoot, 'status', '--porcelain']);
+    if (projectStatus) throw new Error('Project main worktree must be clean before synchronizing a candidate');
+    const mainBaseCommit = await git(['-C', workspace.projectRoot, 'rev-parse', 'main']);
+    const currentCandidate = await git(['-C', workspace.filesPath, 'rev-parse', 'HEAD']);
+    const containsApprovedCandidate = await git([
+      '-C', workspace.filesPath, 'merge-base', '--is-ancestor', candidateCommit, currentCandidate,
+    ])
+      .then(() => true)
+      .catch(() => false);
+    if (!containsApprovedCandidate) {
+      throw new Error('candidate workspace no longer contains the approved candidate commit');
+    }
+    const containsMain = await git(['-C', workspace.filesPath, 'merge-base', '--is-ancestor', mainBaseCommit, currentCandidate])
+      .then(() => true)
+      .catch(() => false);
+    if (!containsMain) {
+      try {
+        await git(['-C', workspace.filesPath, 'merge', '--no-ff', '--no-edit', mainBaseCommit]);
+      } catch (error) {
+        await git(['-C', workspace.filesPath, 'merge', '--abort']).catch(() => undefined);
+        throw new Error(`stale candidate synchronization conflict: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    const synchronizedCandidate = await git(['-C', workspace.filesPath, 'rev-parse', 'HEAD']);
+    const changedPaths = splitLines(await git([
+      '-C', workspace.filesPath, 'diff', '--name-only', `${mainBaseCommit}..${synchronizedCandidate}`,
+    ]));
+    return { mainBaseCommit, candidateCommit: synchronizedCandidate, changedPaths };
+  }
+
   async removePublishedWorkspace(workspace: ManagedGitWorkspace): Promise<void> {
     await this.withRepositoryOperation(workspace.repositoryPath, async () => {
       await git(['-C', workspace.projectRoot, 'worktree', 'remove', '--force', workspace.filesPath]);

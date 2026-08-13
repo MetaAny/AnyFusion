@@ -37,6 +37,7 @@ import { WorktreeAttemptSandboxAdapter } from '../execution/worktree-attempt-san
 import type { AttemptSandboxPort } from '../execution/attempt-sandbox.js';
 import { ResourceLeaseService } from '../execution/resource-lease-service.js';
 import { WorkspacePublicationWorker } from '../execution/workspace-publication-worker.js';
+import type { StaleWorkspacePublication } from '../execution/workspace-publication-worker.js';
 import { SqliteResourceLeaseRepository } from '../storage/resource-lease-repo.js';
 import { SqlitePermissionRepository } from '../storage/permission-repo.js';
 import { SqliteAttemptSandboxRepository } from '../storage/attempt-sandbox-repo.js';
@@ -261,6 +262,9 @@ export interface PlannerTuiPermissionRequest {
   reason: string;
   suggestedScope: 'once' | 'attempt';
   escalationReason: string;
+  candidateReport?: string;
+  candidateArtifacts?: string[];
+  changedPaths?: string[];
   createdAt: string;
   expiresAt: string;
 }
@@ -359,6 +363,10 @@ export class MetaclawSession {
   private readonly executorRecoveryRefreshService: ExecutorRecoveryRefreshService;
   private readonly plannerProposalRepo: PlannerProposalRepo;
   private readonly publicationRepo: WorkspacePublicationRepo;
+  private readonly publicationWorker: WorkspacePublicationWorker;
+  private readonly sourceRoot: string;
+  private readonly projectId: string;
+  private readonly autoApproveRepositoryPromotions: boolean;
   private unregisterPlannerHost: (() => void) | null = null;
 
   constructor(private deps: MetaclawSessionDeps) {
@@ -371,6 +379,9 @@ export class MetaclawSession {
         : (() => { throw new Error('MetaclawSession requires an explicit Project'); })());
     const projectId = deps.project?.id
       ?? (usingTestProjectFallback ? `project_test_${deps.sessionId}` : 'project_test_default');
+    this.sourceRoot = sourceRoot;
+    this.projectId = projectId;
+    this.autoApproveRepositoryPromotions = usingTestProjectFallback;
     const workspaceStoreRoot = process.env.NODE_ENV === 'test' && !deps.project
       ? resolve(`${sourceRoot}.anyfusion-runtime`, 'project-worktrees', projectId)
       : resolve(resolveMetaclawDir(), 'project-worktrees', projectId);
@@ -517,6 +528,15 @@ export class MetaclawSession {
       sourceRoot,
       autoApproveRepositoryPromotions: usingTestProjectFallback,
     });
+    this.publicationWorker = new WorkspacePublicationWorker({
+      db: deps.db,
+      sourceRoot,
+      workspaceStore: this.workspaceStore,
+      workspaceRepository: this.workspaceRepository,
+      subtaskRepo: this.subtaskRepo,
+      attemptReceiptRepo: this.attemptReceiptRepo,
+      taskRuntimeService: this.taskRuntimeService,
+    });
     this.kernelExecutionRuntime = new KernelExecutionRuntime({
       sessionId: deps.sessionId,
       orchestration: deps.orchestration,
@@ -536,15 +556,7 @@ export class MetaclawSession {
       kernelWorkflowStore: this.kernelWorkflowRepo,
       dispatchItemRepo,
       maxConcurrentAttempts: deps.config.orchestration.max_concurrent_attempts,
-      publicationWorker: new WorkspacePublicationWorker({
-        db: deps.db,
-        sourceRoot,
-        workspaceStore: this.workspaceStore,
-        workspaceRepository: this.workspaceRepository,
-        subtaskRepo: this.subtaskRepo,
-        attemptReceiptRepo: this.attemptReceiptRepo,
-        taskRuntimeService: this.taskRuntimeService,
-      }),
+      publicationWorker: this.publicationWorker,
       publicationRepo: this.publicationRepo,
       generationReplanRepo,
       cancellationCoordinator,
@@ -568,6 +580,7 @@ export class MetaclawSession {
         requestReplan: decision => this.requestKernelReplan(decision),
         requestMergeReplan: decision => this.requestKernelMergeReplan(decision),
         buildPlanAdmissionSnapshot: event => this.buildPlanAdmissionSnapshot(event),
+        reissueStalePublication: outcome => this.reissueStalePublication(outcome),
       },
     });
     this.taskExecutionApplicationService = new SessionTaskExecutionApplicationService({
@@ -750,7 +763,9 @@ export class MetaclawSession {
         attemptId: publication.sourceAttemptId,
         executorName: publication.agentClassName,
         report: publication.originalCompletion.body,
-        artifacts: [...publication.originalCompletion.artifacts],
+        artifacts: subtask?.artifacts.length
+          ? [...subtask.artifacts]
+          : [...publication.originalCompletion.artifacts],
         warnings: [...publication.originalCompletion.warnings],
         integrationCommit: publication.integrationCommit,
         completedAt: publication.updatedAt,
@@ -799,6 +814,9 @@ export class MetaclawSession {
           && this.kernelWorkflowRepo.isDecisionApplied(decision.id)))
       .filter(item => isPermissionRequestActive(item.escalation.createdAt, now))
       .map(({ record, escalation }) => {
+        const publication = record.request.capability === 'repository_promotion'
+          ? this.publicationRepo.findByPermissionRequestId(record.request.id)
+          : null;
         return {
           schemaVersion: 1,
           permissionRequestId: record.request.id,
@@ -817,6 +835,11 @@ export class MetaclawSession {
           reason: record.request.reason,
           suggestedScope: record.request.suggestedScope,
           escalationReason: escalation.reason,
+          ...(publication ? {
+            candidateReport: publication.originalCompletion.body,
+            candidateArtifacts: [...publication.originalCompletion.artifacts],
+            changedPaths: [...publication.changedPaths],
+          } : {}),
           createdAt: escalation.createdAt,
           expiresAt: permissionRequestExpiresAt(escalation.createdAt)!,
         };
@@ -1209,6 +1232,10 @@ export class MetaclawSession {
     while (this.backgroundWork.size > 0) {
       await Promise.allSettled(Array.from(this.backgroundWork));
     }
+  }
+
+  async waitForInitialization(): Promise<void> {
+    await this.initialization;
   }
 
   appendSystemMessage(...lines: string[]): void {
@@ -2116,6 +2143,100 @@ export class MetaclawSession {
     this.refreshRuntimeState();
   }
 
+  private async reissueStalePublication(outcome: StaleWorkspacePublication): Promise<void> {
+    if (!outcome.synchronized) {
+      this.appendOutput(
+        `Task #${outcome.taskId} 的仓库发布无法同步到最新主分支。`,
+        `候选结果已保留：${outcome.reason}`,
+      );
+      this.refreshRuntimeState();
+      return;
+    }
+    const publication = this.publicationRepo.find(outcome.publicationId);
+    const task = this.taskRuntimeService.findTask(outcome.taskId);
+    const subtask = this.subtaskRepo.findById(outcome.subtaskId);
+    if (!publication || !task || !subtask || publication.status !== 'parked') {
+      throw new Error(`stale publication cannot be reissued: ${outcome.publicationId}`);
+    }
+    const workspaceRecord = this.workspaceRepository.findByIdentity(
+      publication.taskId,
+      publication.generationId,
+      publication.subtaskId,
+    );
+    const workspaceId = workspaceRecord?.id
+      ?? `workspace:${publication.taskId}:${publication.generationId}:${publication.subtaskId}`;
+    const now = new Date().toISOString();
+    const originalRequest = this.permissionRepository.findRequest(publication.permissionRequestId)?.request;
+    const permissionProfileId = originalRequest?.permissionProfileId ?? 'workspace-engineering';
+    const workflow = new PermissionWorkflowService({
+      context: {
+        sessionId: this.deps.sessionId,
+        taskId: publication.taskId,
+        generationId: publication.generationId,
+        subtaskId: publication.subtaskId,
+        attemptId: publication.sourceAttemptId,
+        agentClassName: publication.agentClassName,
+        permissionProfileId,
+        runtimeHandle: '',
+        workspaceId,
+        checkpointId: null,
+      },
+      repository: this.permissionRepository,
+      resolver: new RegisteredCapabilityResourceResolver(new Map([
+        [this.sourceRoot, { kind: 'repository' as const, repositoryId: this.projectId }],
+      ])),
+      sandbox: this.attemptSandbox,
+      workflowStore: this.kernelWorkflowRepo,
+      kernel: this.controlKernel,
+      rules: buildPermissionRules({
+        permissionProfileId,
+        additionalReadPartitions: [],
+      }),
+      hooks: {
+        checkpoint: async () => null,
+        onEscalation: async () => undefined,
+        onRecoveryAuthorized: async () => undefined,
+      },
+      clock: { now: () => now },
+    });
+    const request = await workflow.request({
+      capability: 'repository_promotion',
+      resource: this.sourceRoot,
+      operation: `promote_commit:${outcome.synchronized.candidateCommit}`,
+      reason: [
+        `Re-review synchronized Subtask ${publication.subtaskId} for Project main.`,
+        `Approved main base: ${outcome.synchronized.mainBaseCommit}.`,
+        `Candidate: ${outcome.synchronized.candidateCommit}.`,
+        `Changed paths (${outcome.synchronized.changedPaths.length}): ${outcome.synchronized.changedPaths.join(', ') || '(none)'}.`,
+        'The previously approved main base advanced before publication, so this exact candidate requires fresh approval.',
+      ].join(' '),
+      suggestedScope: 'once',
+    }, { suspendAttempt: false });
+    if (request.status !== 'escalated' || !this.publicationRepo.reissueAfterStale({
+      id: publication.id,
+      permissionRequestId: request.requestId,
+      mainBaseCommit: outcome.synchronized.mainBaseCommit,
+      candidateCommit: outcome.synchronized.candidateCommit,
+      changedPaths: outcome.synchronized.changedPaths,
+      now,
+    })) {
+      throw new Error(`stale publication reissue did not become awaiting approval: ${publication.id}`);
+    }
+    this.subtaskRepo.updateStatus(publication.subtaskId, 'awaiting_integration', { error: null });
+    if (task.status === 'blocked') this.taskRuntimeService.transitionTask(task.id, 'ready');
+    if (this.autoApproveRepositoryPromotions) {
+      if (!this.publicationRepo.markApproved(publication.id, now)) {
+        throw new Error(`test stale publication approval failed: ${publication.id}`);
+      }
+      return;
+    }
+    this.appendOutput(
+      `Task #${task.id} 的候选结果已同步到最新主分支，需重新批准发布。`,
+      `原审批对应的主分支已变化；候选内容已保留，新的发布请求为 ${request.requestId}。`,
+    );
+    this.refreshRuntimeState();
+  }
+
   private publicationPermissionRequestMatches(
     publication: WorkspacePublicationRecord,
     request: PermissionRequestRecord['request'],
@@ -2456,7 +2577,7 @@ export class MetaclawSession {
           });
         }
       }
-      await this.kernelExecutionRuntime.recoverCancellations();
+    await this.kernelExecutionRuntime.recoverCancellations();
     } catch (error) {
       recoveryBlockedReason = error instanceof Error ? error.message : String(error);
     }
@@ -2484,6 +2605,10 @@ export class MetaclawSession {
     }
     this.effectOutboxRepo.reconcileSending(now);
     this.kernelWorkflowRepo.reconcileProcessing();
+    for (const taskId of this.effectOutboxRepo.listIncompleteCompletionTaskIds()) {
+      this.taskRuntimeService.completeTask(taskId);
+    }
+    await this.recoverStalePublications();
     await this.recoverPublicationPermissionReviews(now);
     for (const effect of this.effectOutboxRepo.listPending(now)) {
       if (effect.effectType !== 'task_completion_notification') continue;
@@ -2675,6 +2800,20 @@ export class MetaclawSession {
   private async waitForTaskBackgroundWork(taskId: string): Promise<void> {
     while ((this.backgroundWorkByTask.get(taskId)?.size ?? 0) > 0) {
       await Promise.allSettled(Array.from(this.backgroundWorkByTask.get(taskId) ?? []));
+    }
+  }
+
+  private async recoverStalePublications(): Promise<void> {
+    for (const publication of this.publicationRepo.listParkedStale()) {
+      try {
+        await this.reissueStalePublication(await this.publicationWorker.synchronizeParked(publication));
+      } catch (error) {
+        console.error(`Stale publication recovery failed for ${publication.id}:`, error);
+        this.appendOutput(
+          `仓库发布 ${publication.id} 的旧候选仍被保留，但启动恢复失败。`,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
     }
   }
 

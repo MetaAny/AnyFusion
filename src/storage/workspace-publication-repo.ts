@@ -325,6 +325,52 @@ export class WorkspacePublicationRepo {
     `).run(errorSummary, now, id);
   }
 
+  listParkedStale(): WorkspacePublicationRecord[] {
+    return (this.db.prepare(`
+      SELECT * FROM workspace_publications
+      WHERE status = 'parked'
+        AND error_summary LIKE 'Project main changed after publication approval was requested%'
+      ORDER BY updated_at ASC, id ASC
+    `).all() as PublicationRow[]).map(rowToPublication);
+  }
+
+  listRecoverySessionIds(sessionIdPrefix: string): string[] {
+    return (this.db.prepare(`
+      SELECT DISTINCT decision.session_id
+      FROM workspace_publications publication
+      INNER JOIN kernel_decisions decision
+        ON decision.correlation_id = publication.permission_request_id
+      WHERE publication.status IN ('awaiting_approval', 'pending', 'conflicted', 'parked')
+        AND decision.action = 'escalate_capability'
+        AND decision.session_id LIKE ?
+      ORDER BY decision.session_id ASC
+    `).all(`${sessionIdPrefix}%`) as Array<{ session_id: string }>).map(row => row.session_id);
+  }
+
+  reissueAfterStale(input: {
+    id: string;
+    permissionRequestId: string;
+    mainBaseCommit: string;
+    candidateCommit: string;
+    changedPaths: string[];
+    now: string;
+  }): boolean {
+    return this.db.prepare(`
+      UPDATE workspace_publications
+      SET status = 'awaiting_approval', permission_request_id = ?,
+          main_base_commit = ?, candidate_commit = ?, changed_paths_json = ?,
+          error_summary = NULL, updated_at = ?
+      WHERE id = ? AND status = 'parked'
+    `).run(
+      input.permissionRequestId,
+      input.mainBaseCommit,
+      input.candidateCommit,
+      JSON.stringify(input.changedPaths),
+      input.now,
+      input.id,
+    ).changes === 1;
+  }
+
   requestCancellation(input: {
     taskId: string;
     generationId?: string | null;

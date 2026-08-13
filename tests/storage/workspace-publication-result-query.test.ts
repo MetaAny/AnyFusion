@@ -40,6 +40,35 @@ describe('WorkspacePublicationRepo integrated result query', () => {
     expect(publications.listIntegratedByTaskIds([])).toEqual([]);
     db.close();
   });
+
+  it('lists only distinct Feishu sessions that own recoverable publications', () => {
+    const db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    runMigrations(db);
+    const tasks = new TaskEngine(new TaskRepo(db), '/tmp/publication-recovery-sessions');
+    const subtasks = new SubtaskRepo(db);
+    const publications = new WorkspacePublicationRepo(db);
+    createTaskAndSubtask(tasks, subtasks, 'task-recover', 'subtask-recover');
+    createTaskAndSubtask(tasks, subtasks, 'task-complete', 'subtask-complete');
+    createTaskAndSubtask(tasks, subtasks, 'task-local', 'subtask-local');
+
+    insertPublication(publications, 'publication-recover', 'task-recover', 'subtask-recover', 'recover.md');
+    insertPublication(publications, 'publication-complete', 'task-complete', 'subtask-complete', 'complete.md');
+    insertPublication(publications, 'publication-local', 'task-local', 'subtask-local', 'local.md');
+    publications.markApproved('publication-complete', '2026-08-04T00:00:01.000Z');
+    publications.markApplying('publication-complete', '2026-08-04T00:00:02.000Z');
+    publications.markIntegrated('publication-complete', 'commit-complete', '2026-08-04T00:00:03.000Z');
+
+    insertEscalationDecision(db, 'decision-recover-1', 'permission-publication-recover', 'sess_feishu_bbbbbbbbbbbbbbbbbbbbbbbb');
+    insertEscalationDecision(db, 'decision-recover-2', 'permission-publication-recover', 'sess_feishu_bbbbbbbbbbbbbbbbbbbbbbbb');
+    insertEscalationDecision(db, 'decision-complete', 'permission-publication-complete', 'sess_feishu_aaaaaaaaaaaaaaaaaaaaaaaa');
+    insertEscalationDecision(db, 'decision-local', 'permission-publication-local', 'sess_local');
+
+    expect(publications.listRecoverySessionIds('sess_feishu_')).toEqual([
+      'sess_feishu_bbbbbbbbbbbbbbbbbbbbbbbb',
+    ]);
+    db.close();
+  });
 });
 
 function createTaskAndSubtask(
@@ -105,4 +134,20 @@ function insertPublication(
     firstDispatchOrder: 0,
     createdAt: '2026-08-04T00:00:00.000Z',
   });
+}
+
+function insertEscalationDecision(
+  db: Database.Database,
+  id: string,
+  correlationId: string,
+  sessionId: string,
+): void {
+  db.prepare(`
+    INSERT INTO kernel_decisions (
+      id, schema_version, event_id, event_type, correlation_id, causation_id,
+      session_id, task_id, subtask_id, attempt_id, event_json, snapshot_json,
+      decision_json, action, reason, created_at
+    ) VALUES (?, 5, ?, 'permission_required', ?, NULL, ?, NULL, NULL, NULL,
+      '{}', '{}', '{}', 'escalate_capability', 'test', '2026-08-04T00:00:00.000Z')
+  `).run(id, `event-${id}`, correlationId, sessionId);
 }

@@ -219,6 +219,12 @@ describe('session startup running-task reconciliation', () => {
       session.initialize();
       await session.waitForAsyncWork();
       await session.submit(`/task resume ${task.id}`, { awaitAsyncWork: true });
+      expect(session.getPlannerTuiPermissionRequests()).toMatchObject([{
+        permissionRequestId: requested.requestId,
+        candidateReport: 'World Cup report completed',
+        candidateArtifacts: ['world-cup-report.md'],
+        changedPaths: ['world-cup-report.md'],
+      }]);
       await expect(session.resolvePlannerTuiPermission(requested.requestId, 'approve'))
         .resolves.toMatchObject({ status: 'resolved', resolution: 'approve' });
       await session.waitForAsyncWork();
@@ -238,7 +244,7 @@ describe('session startup running-task reconciliation', () => {
       expect(session.getPlannerTuiExecutorResults()).toMatchObject([{
         publicationId: 'publication-world-cup-reissue-integrated',
         report: 'World Cup report completed',
-        artifacts: ['world-cup-report.md'],
+        artifacts: [join(project, 'world-cup-report.md')],
         integrationCommit: expect.any(String),
       }]);
       expect(session.getSnapshot().output.join('\n')).toContain('World Cup report completed');

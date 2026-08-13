@@ -116,6 +116,7 @@ COPY docker/codex-config/executor /opt/metaclaw/codex-config/executor
 COPY docker/pi-config /opt/metaclaw/pi-config
 COPY docker/planner-pi-config /opt/metaclaw/planner-pi-config
 COPY docker/tui-config.yaml /opt/metaclaw/default-config.yaml
+COPY docker/gateway-config.yaml /opt/metaclaw/gateway-config.yaml
 COPY scripts/smoke-planner-mcp.mjs /app/scripts/smoke-planner-mcp.mjs
 COPY scripts/smoke-metaclaw-real-task.mjs /app/scripts/smoke-metaclaw-real-task.mjs
 COPY --from=builder /app/dist/planning-agent-plan-v7.schema.json /opt/metaclaw/schema/planning-agent-plan-v7.schema.json

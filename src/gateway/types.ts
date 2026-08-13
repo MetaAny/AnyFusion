@@ -26,7 +26,7 @@ export interface GatewayInboundEvent {
   chatName?: string;
   chatType: 'dm' | 'group' | 'thread' | 'unknown';
   text: string;
-  messageType: 'text' | 'file' | 'image' | 'audio' | 'command' | 'unknown';
+  messageType: 'text' | 'post' | 'file' | 'image' | 'audio' | 'command' | 'unknown';
   attachments: GatewayAttachment[];
   mentions: GatewayMention[];
   raw: unknown;

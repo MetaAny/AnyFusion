@@ -74,6 +74,7 @@ $knownHosts  = Join-Path $repoRoot '.tmp\ssh_known_hosts'
 $sshKeyDir   = Join-Path $repoRoot '.tmp\ssh_key'
 $sshKeyPath  = Join-Path $sshKeyDir 'id_ed25519'
 $sshConfigFile = Join-Path $sshKeyDir 'config'
+. (Join-Path $PSScriptRoot 'runtime-common.ps1')
 
 # Run a docker command, suppressing its stderr/exit-code without tripping the
 # script. Returns the docker exit code so callers can branch on it.
@@ -201,27 +202,24 @@ function Invoke-SetupSsh {
 }
 
 function Test-Prereqs {
-    $plannerPackage = Join-Path $anyFusionPiRoot 'package.json'
-    if (-not (Test-Path $plannerPackage)) {
-        Write-Error "Missing sibling AnyFusion-Pi repository at $anyFusionPiRoot."
+    try {
+        Test-RuntimePrereqs -RepoRoot $repoRoot -AnyFusionPiRoot $anyFusionPiRoot `
+          -RequiredEnvFiles @($plannerEnvFile, $codexExecutorEnvFile, $piExecutorEnvFile)
+    } catch {
+        Write-Error $_
         exit 1
-    }
-    $requiredEnvFiles = @($plannerEnvFile, $codexExecutorEnvFile, $piExecutorEnvFile)
-    foreach ($requiredEnvFile in $requiredEnvFiles) {
-        if (-not (Test-Path $requiredEnvFile)) {
-            Write-Error ("Missing " + $requiredEnvFile + ". Copy its .example file and fill the provider settings.")
-            exit 1
-        }
     }
 }
 
 # Build the unified runtime image when it is missing.
 function Build-RuntimeImage {
     param([switch]$Force)
-    if (-not $Force -and (Test-ImageExists $runtimeImage)) { return }
-    Write-Host ("Building unified runtime image " + $runtimeImage + " ...") -ForegroundColor Yellow
-    docker build --build-context "anyfusion-pi=$anyFusionPiRoot" -f (Join-Path $repoRoot 'docker\Dockerfile.runtime') -t $runtimeImage $repoRoot
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    try {
+        Build-AnyFusionRuntimeImage -RepoRoot $repoRoot -AnyFusionPiRoot $anyFusionPiRoot -Image $runtimeImage -Force:$Force
+    } catch {
+        Write-Error $_
+        exit 1
+    }
 }
 
 function Start-ShellContainer {

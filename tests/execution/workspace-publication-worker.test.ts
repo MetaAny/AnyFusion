@@ -57,17 +57,45 @@ describe('WorkspacePublicationWorker', () => {
     await git(setupResult.project, 'add', '-A');
     await git(setupResult.project, 'commit', '-m', 'feat: change main');
 
-    await expect(setupResult.worker.drain('task-1', 'generation-1')).resolves.toEqual([{
+    const outcomes = await setupResult.worker.drain('task-1', 'generation-1');
+    expect(outcomes).toEqual([expect.objectContaining({
       type: 'stale',
       publicationId: 'publication-1',
       taskId: 'task-1',
       subtaskId: 'subtask-1',
       reason: 'Project main changed after publication approval was requested',
-    }]);
+      synchronized: expect.objectContaining({
+        mainBaseCommit: await git(setupResult.project, 'rev-parse', 'main'),
+        changedPaths: ['result.txt'],
+      }),
+    })]);
     expect(setupResult.publications.find('publication-1')?.status).toBe('parked');
     expect(setupResult.subtasks.findById('subtask-1')?.status).toBe('ready');
     expect(await readFile(join(setupResult.workspace.filesPath, 'result.txt'), 'utf8')).toBe('candidate\n');
+    expect(await readFile(join(setupResult.workspace.filesPath, 'main.txt'), 'utf8')).toBe('main changed\n');
+    expect(outcomes[0]?.type === 'stale' && outcomes[0].synchronized?.candidateCommit)
+      .not.toBe(setupResult.publications.find('publication-1')?.candidateCommit);
     expect(await git(setupResult.workspace.filesPath, 'branch', '--show-current')).toBe(setupResult.workspace.branch);
+  });
+
+  it('reuses an already synchronized candidate after a restart recovery', async () => {
+    const setupResult = await setup();
+    setupResult.publications.markApproved('publication-1', now);
+    await writeFile(join(setupResult.project, 'main.txt'), 'main changed\n');
+    await git(setupResult.project, 'add', '-A');
+    await git(setupResult.project, 'commit', '-m', 'feat: change main');
+
+    await setupResult.worker.drain('task-1', 'generation-1');
+    const parked = setupResult.publications.find('publication-1');
+    expect(parked?.status).toBe('parked');
+
+    const recovered = await setupResult.worker.synchronizeParked(parked!);
+    expect(recovered.synchronized).toMatchObject({
+      mainBaseCommit: await git(setupResult.project, 'rev-parse', 'main'),
+      changedPaths: ['result.txt'],
+    });
+    expect(recovered.synchronized?.candidateCommit)
+      .not.toBe(parked?.candidateCommit);
   });
 });
 

@@ -617,6 +617,13 @@ Subtask worktree 中运行；这条服务器启动路径不使用 Docker。
 Dockerfile 和 `docker/shell.ps1` 提供同一套 Ubuntu Runtime，用于 CI 和
 Windows 宿主机开发。
 
+Windows 上的持久飞书服务使用 `docker/gateway.ps1` 创建独立的
+`anyfusion-gateway` 容器。容器以前台 `gateway run` 作为主进程，不开放入站
+端口，使用 `unless-stopped`，普通重建复用 schema 版本化数据卷和 Project
+卷。飞书凭据从 `METACLAW_FEISHU_ENV_FILE` 指向的只读文件挂载加载，不复制到
+运行数据或 Docker 环境值。`gateway health` 只有在进程、Unix socket 和飞书
+WebSocket 都已连接时才返回健康。
+
 ## 配置
 
 编辑：
@@ -722,12 +729,17 @@ AnyFusion 将“文档生成”和“飞书交付”分开处理：
 - 私聊默认使用 `dm_policy: pairing`。第一个私聊用户会自动通过，后续用户可用 `anyfusion gateway pairing` 审批或撤销。
 - 群聊默认使用 `group_policy: open` 和 `require_mention: true`。
 - 在飞书聊天里发送 `/sethome` 会把该聊天记录为 `gateway.platforms.feishu.home_channel`。
-- Feishu 配置只从 `gateway.platforms.feishu` 读取。
+- 飞书行为配置从 `gateway.platforms.feishu` 读取；挂载环境中的
+  `FEISHU_APP_ID` 和可选 `FEISHU_DOMAIN` 可提供应用身份，Secret 仍只从
+  `app_secret_env` 指定的环境变量读取。
+- 每个飞书 `chat_id` 映射到稳定且不泄露原始 ID 的 Planner session。私聊与
+  群聊上下文彼此隔离并可跨同 schema 重建恢复，但系统级单活 Task 约束不变。
 
 常用飞书 Gateway 命令：
 
 ```bash
 anyfusion gateway doctor
+anyfusion gateway health
 anyfusion gateway pairing list
 anyfusion gateway pairing approve <open_id>
 anyfusion gateway pairing revoke <open_id>

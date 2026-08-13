@@ -1,7 +1,7 @@
 import { existsSync } from 'fs';
 import { resolve } from 'path';
 import type { Config } from '../core/types.js';
-import { resolveFeishuGatewayConfig } from './feishu-config.js';
+import { resolveFeishuGatewayConfig, resolveFeishuGatewayEnv } from './feishu-config.js';
 
 export interface GatewayDoctorCheck {
   name: string;
@@ -14,13 +14,13 @@ export function runGatewayDoctor(input: {
   metaclawDir: string;
   env?: NodeJS.ProcessEnv;
 }): GatewayDoctorCheck[] {
-  const env = input.env ?? process.env;
+  const env = resolveFeishuGatewayEnv(input.env ?? process.env);
   const checks: GatewayDoctorCheck[] = [];
-  const feishu = resolveFeishuGatewayConfig(input.config);
+  const feishu = resolveFeishuGatewayConfig(input.config, env);
 
   checks.push({
     name: 'gateway.feishu.enabled',
-    status: feishu.enabled ? 'ok' : 'warn',
+    status: feishu.enabled ? 'ok' : 'fail',
     message: feishu.enabled ? 'Feishu Gateway is enabled' : 'Feishu Gateway is disabled',
   });
 

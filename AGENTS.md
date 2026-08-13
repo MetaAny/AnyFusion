@@ -98,6 +98,8 @@ Tests mirror source domains under [`tests/`](tests/). Scenarios and fixtures are
 - `npm run smoke:metaclaw` — native Planner-session smoke.
 - `npm run smoke:metaclaw -- --scenario artifact` — Planner-to-Executor artifact
   gate; see [runtime security](docs/current/phase-5-runtime-security.md).
+- `docker\gateway.ps1 -Rebuild` — rebuild and recreate the persistent Windows-hosted
+  Feishu Gateway while preserving its schema-scoped data and Project volumes.
 
 `better-sqlite3` is unavailable in the local Windows environment. Run SQLite and
 POSIX-path tests in Docker:

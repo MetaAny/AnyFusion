@@ -91,7 +91,7 @@ function normalizeChatType(value: unknown): GatewayInboundEvent['chatType'] {
 }
 
 function normalizeMessageType(value: unknown): GatewayInboundEvent['messageType'] {
-  if (value === 'text' || value === 'file' || value === 'image' || value === 'audio') {
+  if (value === 'text' || value === 'post' || value === 'file' || value === 'image' || value === 'audio') {
     return value;
   }
   return 'unknown';

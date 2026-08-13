@@ -127,6 +127,7 @@ export interface KernelExecutionRuntimeDeps {
       action: Extract<KernelDecision['action'], { type: 'request_merge_replan' }>;
     }): Promise<KernelEvent | null>;
     buildPlanAdmissionSnapshot(event: Extract<KernelEvent, { type: 'plan_proposed' }>): KernelSnapshot;
+    reissueStalePublication(outcome: Extract<WorkspacePublicationOutcome, { type: 'stale' }>): Promise<void>;
   };
 }
 
@@ -1249,6 +1250,7 @@ export class KernelExecutionRuntime {
         if (outcome.type === 'cancelled') continue;
         if (outcome.type === 'stale') {
           stale = true;
+          await this.deps.callbacks.reissueStalePublication(outcome);
           continue;
         }
         integrated = true;
@@ -1260,6 +1262,7 @@ export class KernelExecutionRuntime {
             outcome.type === 'integrated'
           ),
         );
+        if (stale && !integrated) continue;
         await input.workflow.submit({
           schemaVersion: 5,
           type: 'dispatch_requested',
@@ -1576,11 +1579,7 @@ export class KernelExecutionRuntime {
         systemOutput: cleanAggregate,
         executorUsed: input.subtasks.length === 1 ? input.subtasks[0]!.preferredAgentClassList[0] ?? 'executor' : 'work-graph',
       });
-      if (['running', 'blocked'].includes(
-        this.deps.taskRuntimeService.findTask(input.taskId)?.status ?? '',
-      )) {
-        this.deps.taskRuntimeService.transitionTask(input.taskId, 'done');
-      }
+      this.deps.taskRuntimeService.completeTask(input.taskId);
       const now = new Date().toISOString();
       this.deps.effectOutboxRepo.enqueue({
         id: effectId,

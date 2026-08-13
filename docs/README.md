@@ -52,6 +52,7 @@ replacing those semantics.
 
 ## Active Delivery
 
+- [飞书持久化 Gateway 自动化](plans/2026-08-12-feishu-persistent-gateway-automation.md): adds a dedicated restartable Docker Gateway, strict Feishu WebSocket readiness, per-chat durable Planner sessions, mounted credentials, and a one-command rebuild workflow.
 - [Pi 持久 Session Continuation 与中断恢复](plans/2026-08-11-pi-durable-session-continuation-recovery.md): preserves immutable Pi session checkpoints across attempts so a Kernel-authorized new Executor process can continue an interrupted tool loop in the same Subtask worktree, while keeping format-only correction separate from execution recovery.
 - [Ubuntu Runtime and Executor Registry convergence](plans/2026-08-10-ubuntu-runtime-and-executor-registry-convergence.md): local Ubuntu acceptance is complete; it merges the remote Registry work, makes Planner/Kernel/Runtime consume one live snapshot, removes per-attempt Docker and legacy startup paths, and aligns native Ubuntu plus Windows-hosted Docker on one bootstrap and path contract. Real-server acceptance remains open.
 - [Project workspaces and approved publication](plans/2026-08-10-project-workspaces-and-approved-publication.md): removes launch-cwd workspace inference and adds persistent Project repositories, Runtime-generated Subtask worktrees and user-approved whole-branch promotion to local `main`.

@@ -71,6 +71,11 @@ describe('parseCliArgs', () => {
       connect: false,
       gatewayCommand: 'doctor',
     });
+    expect(parseCliArgs(['gateway', 'health'])).toEqual({
+      gateway: false,
+      connect: false,
+      gatewayCommand: 'health',
+    });
   });
 
   it('rejects unknown gateway subcommands', () => {
