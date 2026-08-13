@@ -8,6 +8,12 @@ The project follows [Semantic Versioning](https://semver.org/) for public previe
 
 ### Added
 
+- A persistent Windows-hosted Feishu Gateway container with per-chat durable
+  sessions, mounted credential files, WebSocket readiness health checks,
+  `unless-stopped` recovery, and one-command rebuild operations.
+- An opt-in Feishu publication auto-approval policy that preserves the durable
+  Kernel permission, grant, and Git publication chain while removing the
+  user-visible approval turn.
 - Native Codex Planner thread binding with same-thread resume and a two-turn
   memory smoke gate.
 - A host-level `$ANYFUSION_CONFIG_HOME/executors.yaml` Registry with controlled
@@ -24,6 +30,9 @@ The project follows [Semantic Versioning](https://semver.org/) for public previe
 
 ### Changed
 
+- Feishu final delivery now waits for the complete Task to reach `done`; an
+  integrated upstream Markdown handoff can no longer terminate tracking or be
+  delivered in place of a downstream PDF or other final artifact.
 - Advanced the current pre-release baseline to Kernel wire/ledger v5 and
   fresh-only SQLite schema v32. Schema v31 and older databases are rejected
   with their exact paths; there is no migration, automatic deletion, or

@@ -351,6 +351,19 @@ Copy-Item docker\executor-pi.env.example docker\executor-pi.env
 和 Registry reload；已存在的定义直接跳过。`-Start` 和 `-Rebuild` 会等待 bootstrap
 和 SSH 真正就绪后再报告成功。Windows 原生 Node.js 不是受支持的 Runtime 路径。
 
+需要持久飞书 Gateway 时，再创建 `docker\feishu.env`，填写
+`FEISHU_APP_ID` 和 `FEISHU_APP_SECRET`，并使用专用服务脚本：
+
+```powershell
+Copy-Item docker\feishu.env.example docker\feishu.env
+.\docker\gateway.ps1 -Rebuild
+.\docker\gateway.ps1 -Status
+.\docker\gateway.ps1 -Logs
+```
+
+`docker\shell.ps1` 继续用于 SSH/TUI 交互开发；`docker\gateway.ps1` 负责可重启的
+飞书服务。后续源码或镜像更新只需再次执行 `-Rebuild`。
+
 ## 安装执行器
 
 AnyFusion 不内置下游执行器 CLI。你需要自己安装要使用的执行器，并确保命令在 `PATH` 中。
@@ -549,6 +562,7 @@ anyfusion
 - 可执行命令为 `anyfusion-planner`；fork 禁用用户可见的 Pi/Earendil 品牌、账号登录、自更新和任意 Provider/Model 切换。
 - 本地 host bridge 传递有界的全局 Task 池以及当前 Task/Subtask/Executor/blocking 投影。宽/中终端在 transcript 右侧显示 dashboard；窄终端自动隐藏并保持普通对话可用。显式 Pi 原生 Loader 动态展示当前快照中的 Executor 名称，并在名称清空或快照 unavailable/stale 时停止。初始 loading、unavailable 和 malformed/stale snapshot 只降级面板，不修改 Task 状态。
 - Host Protocol v2 通过 `executor_result` capability 被动补发当前 MetaClaw session 尚未展示的 integrated Subtask publication。Pi 为每条结果持久化一条可见 custom message，包含 Executor 总结、warnings、integration commit 和全部 artifact 路径。写入使用 `triggerTurn: false`：消息进入后续 Planner 上下文，但不启动或 steer 回合；Planner 仅在当前用户明确询问结果、输出、artifact 或状态时查看。
+- 飞书可显式配置 `gateway.platforms.feishu.delivery.publication_approval: auto`。该模式隐藏用户审批提示，但仍通过既有 Session → Kernel 权限工作流解析每个精确的 `repository_promotion` 请求，并持续等待同一 Task 的后续 publication；只有整个 Task 达到 `done` 才交付最终结果。默认值仍为 `manual`，Windows Docker Gateway 通过 `METACLAW_FEISHU_PUBLICATION_APPROVAL=auto` 显式启用，因此无需改写现有持久卷中的配置。
 - 当前投影和 dashboard 都是只读的，不能写 Task 状态、选择策略、调度 attempt、调用 Kernel 或控制 Executor。
 - direct reply 与 clarification 由 accepted tool result 展示；rejected proposal 可在同一 Agent turn 修订，首个 accepted submission 终止本轮并展示 MetaClaw 权威 `displayText`。
 - bridge 断开、数据过期或格式错误会明确降级 Task 投影或 proposal 提交，不能伪装 Task 已创建，也不得终止普通对话。
@@ -681,6 +695,7 @@ gateway:
         final_markdown_mode: card
         fallback_mode: post
         final_file_fallback: true
+        publication_approval: manual
 
 integrations:
   markdown_preview:
@@ -981,7 +996,7 @@ Task 和真实 Pi `web_search`/`web_fetch` 调研 Task，并在正式 purge 后�
 Task 级数据库、workspace、artifact、CAS 和活动资源零残留。Hermes
 driver/Profile 支持已实现，但本次未注册、未纳入验收。精确 run ID 和关闭
 证据记录在
-[schema 32 完成计划](../plans/2026-08-07-unified-executor-registry-and-schema-32.md)。
+[schema 32 完成计划](../archive/plans/2026-08-07-unified-executor-registry-and-schema-32.md)。
 
 针对性测试：
 
