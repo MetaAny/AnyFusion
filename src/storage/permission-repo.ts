@@ -124,6 +124,30 @@ export class SqlitePermissionRepository implements PermissionRepositoryPort {
     return requestFromRow(row);
   }
 
+  restoreEscalatedRequest(input: {
+    request: NormalizedCapabilityRequest;
+    createdAt: string;
+    decisionId: string;
+    reason: string;
+  }): PermissionRequestRecord {
+    const transaction = this.db.transaction(() => {
+      const restored = this.createRequest(input.request, input.createdAt);
+      if (restored.request.id !== input.request.id || restored.request.fingerprint !== input.request.fingerprint) {
+        throw new Error('permission request identity conflicts with an existing request');
+      }
+      const changed = this.db.prepare(`
+        UPDATE permission_requests
+        SET status = 'escalated', decision_id = ?, decision_reason = ?, resolved_at = NULL
+        WHERE id = ? AND status IN ('pending', 'escalated', 'expired')
+      `).run(input.decisionId, input.reason, input.request.id).changes;
+      if (changed !== 1) {
+        throw new Error(`permission request cannot be restored from status ${restored.status}`);
+      }
+      return this.findRequest(input.request.id)!;
+    });
+    return transaction.immediate();
+  }
+
   findRequest(requestId: string): PermissionRequestRecord | null {
     const row = this.db.prepare('SELECT * FROM permission_requests WHERE id = ?').get(requestId) as PermissionRequestRow | undefined;
     return row ? requestFromRow(row) : null;

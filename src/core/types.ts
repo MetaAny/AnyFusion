@@ -394,7 +394,7 @@ export interface WorkspaceContext {
 }
 
 export interface ExecutionContextBundleV2 {
-  mode: 'fresh' | 'resume-parked' | 'resume-blocked' | 'follow-up';
+  mode: ExecutionMode;
   taskBrief: TaskBrief;
   resumeContext?: ResumeContext;
   memoryContext: MemoryContext;
@@ -405,6 +405,8 @@ export interface ExecutionContextBundleV2 {
 }
 
 export type ExecutionContextBundle = ExecutionContextBundleV2;
+
+export type ExecutionMode = 'fresh' | 'resume-parked' | 'resume-blocked' | 'follow-up';
 
 export type TaskRecoveryTriggerKind =
   | 'timer-recheck'
@@ -505,6 +507,7 @@ export interface Config {
           final_markdown_mode?: 'card' | 'post';
           fallback_mode?: 'post' | 'file';
           final_file_fallback?: boolean;
+          publication_approval?: 'manual' | 'auto';
         };
         home_channel?: string;
       };

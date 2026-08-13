@@ -12,6 +12,7 @@ function createHarness() {
   const taskRepo = new TaskRepo(db);
   const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-command-control');
   const abortTask = vi.fn().mockReturnValue(1);
+  const waitForTaskIdle = vi.fn().mockResolvedValue(undefined);
   const cancelTask = vi.fn(async (taskId: string, reason?: string) => {
     taskEngine.cancel(taskId, reason);
     return { taskId, affectedSubtaskIds: [], cleanupAttemptIds: [] };
@@ -25,11 +26,11 @@ function createHarness() {
   const context = {
     db,
     taskEngine,
-    activeExecutions: { abortTask },
+    activeExecutions: { abortTask, waitForTaskIdle },
     taskControl: { cancelTask, cancelSubtasks, acceptPartialResult },
   } as any;
   return {
-    db, taskRepo, taskEngine, abortTask, cancelTask, cancelSubtasks,
+    db, taskRepo, taskEngine, abortTask, waitForTaskIdle, cancelTask, cancelSubtasks,
     acceptPartialResult, context, catalog: createDefaultCommandCatalog(),
   };
 }
@@ -54,6 +55,7 @@ describe('canonical task control commands', () => {
     expect(result.type).toBe('text');
     expect(harness.taskRepo.findById(task.id)?.status).toBe(expectedStatus);
     expect(harness.abortTask).toHaveBeenCalledWith(task.id);
+    expect(harness.waitForTaskIdle).toHaveBeenCalledWith(task.id);
   });
 
   it('routes Task cancellation through the durable Task control port', async () => {
@@ -120,6 +122,59 @@ describe('canonical task control commands', () => {
     const harness = createHarness();
     const task = createRunningTask(harness.taskEngine, 'target-first');
     const result = await harness.catalog.execute(`/task ${task.id} accept-partial`, harness.context);
+    expect(result.content).toContain('未知命令');
+  });
+
+  it.each(['parked', 'blocked'] as const)(
+    'uses one status-derived resume command for %s tasks',
+    async status => {
+      const harness = createHarness();
+      const task = createRunningTask(harness.taskEngine, `resume-${status}`);
+      if (status === 'parked') {
+        harness.taskEngine.park(task.id);
+      } else {
+        harness.taskEngine.block(task.id, {
+          taskId: task.id,
+          type: 'manual',
+          description: '等待材料',
+          status: 'waiting',
+        });
+      }
+
+      const result = await harness.catalog.execute(`/task resume ${task.id}`, harness.context);
+
+      expect(result.type).toBe('directive');
+      if (result.type !== 'directive') return;
+      expect(result.directive).toMatchObject({ kind: 'resume-task', taskId: task.id });
+      expect(result.directive).not.toHaveProperty('mode');
+    },
+  );
+
+  it('submits an ordinary ready task through the unified resume projection', async () => {
+    const harness = createHarness();
+    const task = harness.taskEngine.create({ title: 'ready task', goal: 'wait for dispatch' });
+    harness.taskEngine.transition(task.id, 'ready');
+
+    const result = await harness.catalog.execute(`/task resume ${task.id}`, harness.context);
+
+    expect(result.type).toBe('directive');
+    if (result.type !== 'directive') return;
+    expect(result.directive).toMatchObject({ kind: 'resume-task', taskId: task.id });
+    expect(result.directive).not.toHaveProperty('mode');
+  });
+
+  it('removes the split unblock command from the command surface', async () => {
+    const harness = createHarness();
+    const task = createRunningTask(harness.taskEngine, 'legacy-unblock');
+    harness.taskEngine.block(task.id, {
+      taskId: task.id,
+      type: 'manual',
+      description: '等待材料',
+      status: 'waiting',
+    });
+
+    const result = await harness.catalog.execute(`/task unblock ${task.id}`, harness.context);
+
     expect(result.content).toContain('未知命令');
   });
 

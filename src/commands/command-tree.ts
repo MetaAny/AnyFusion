@@ -22,7 +22,6 @@ import {
   resumeTask,
   searchTaskIndex,
   showTask,
-  unblockTask,
 } from './task-commands.js';
 import {
   addMemory,
@@ -214,9 +213,8 @@ function taskNodes(): CommandNode[] {
       run: showTask,
     }),
     operation('pause', '暂停任务', ['running'], pauseTask),
-    operation('resume', '恢复任务', ['parked'], resumeTask),
+    operation('resume', '恢复任务', ['parked', 'blocked', 'ready'], resumeTask, [variadic('resources', '新增资源', true)]),
     operation('block', '阻塞任务', ['running'], blockTask, [rest('reason', '阻塞原因')]),
-    operation('unblock', '解除阻塞任务', ['blocked'], unblockTask, [variadic('resources', '新增资源', true)]),
     operation('cancel', '取消任务', ['created', 'ready', 'running', 'parked', 'blocked'], cancelTask),
     action({
       name: 'subtask-cancel',

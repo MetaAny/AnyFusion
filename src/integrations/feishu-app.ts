@@ -5,7 +5,13 @@ import { basename, resolve } from 'path';
 import { createDecipheriv, createHash } from 'crypto';
 import * as Lark from '@larksuiteoapi/node-sdk';
 import type { Config } from '../core/types.js';
-import type { SessionSnapshot } from '../session/metaclaw-session.js';
+import type {
+  PlannerTuiExecutorResult,
+  PlannerTuiPermissionRequest,
+  PlannerTuiPermissionResolutionResult,
+  PlannerTuiSnapshot,
+  SessionSnapshot,
+} from '../session/metaclaw-session.js';
 import type { MetaclawSession } from '../session/metaclaw-session.js';
 import { resolveMetaclawDir } from '../utils/paths.js';
 import { createMarkdownPreviewBaseUrl, createMarkdownPreviewLinks } from './markdown-preview.js';
@@ -407,6 +413,7 @@ interface FeishuEventBridgeDeps {
 export interface FeishuBridge {
   start(): Promise<void>;
   stop(): Promise<void>;
+  waitForFailure(): Promise<never>;
 }
 
 type FeishuIncomingMessageEvent = FeishuRawMessageEvent;
@@ -416,6 +423,13 @@ interface FeishuMessageSession {
   subscribe?: (listener: (snapshot: Pick<SessionSnapshot, 'output'>) => void) => () => void;
   submit(rawInput: string, options?: { awaitAsyncWork?: boolean }): Promise<{ exitRequested: boolean }>;
   appendSystemMessage(...lines: string[]): void;
+  getPlannerTuiSnapshot?: () => Pick<PlannerTuiSnapshot, 'taskPool'>;
+  getPlannerTuiPermissionRequests?: () => PlannerTuiPermissionRequest[];
+  getPlannerTuiExecutorResults?: () => PlannerTuiExecutorResult[];
+  resolvePlannerTuiPermission?: (
+    permissionRequestId: string,
+    resolution: 'approve' | 'deny',
+  ) => Promise<PlannerTuiPermissionResolutionResult>;
 }
 
 export interface FeishuMarkdownPreviewOptions {
@@ -441,20 +455,26 @@ interface FeishuMessageHandlerDeps {
   pendingResourcesByChatId?: Map<string, string[]>;
   uploadDir?: string;
   markdownPreview?: FeishuMarkdownPreviewOptions;
+  autoApproveRepositoryPromotion?: boolean;
 }
+
+type FeishuMessageDispatchDeps = Omit<FeishuMessageHandlerDeps, 'session'> & {
+  session?: FeishuMessageSession;
+  resolveSession?: (chatId: string) => Promise<FeishuMessageSession>;
+};
 
 interface FeishuDeliveryAudit {
   record(event: FeishuDeliveryAuditEvent): void;
 }
 
 interface FeishuDeliveryAuditEvent {
-  kind: 'inbound' | 'policy' | 'session' | 'progress' | 'final' | 'artifact' | 'fallback';
+  kind: 'inbound' | 'policy' | 'session' | 'progress' | 'final' | 'artifact' | 'fallback' | 'permission';
   chatId: string;
   requestId?: string;
   reason?: string;
   chunkIndex?: number;
   chunkCount?: number;
-  method: 'card' | 'post' | 'file' | 'notice' | 'skipped';
+  method: 'card' | 'post' | 'file' | 'local' | 'notice' | 'skipped';
   ok: boolean;
   error?: string;
 }
@@ -498,6 +518,10 @@ export class FeishuEventBridge {
       server.closeAllConnections?.();
       server.close(error => error ? reject(error) : resolve());
     });
+  }
+
+  waitForFailure(): Promise<never> {
+    return new Promise<never>(() => undefined);
   }
 
   private async handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -578,27 +602,37 @@ export class FeishuEventBridge {
       transport: 'webhook',
       pendingResourcesByChatId: this.pendingResourcesByChatId,
       markdownPreview: this.deps.markdownPreview,
+      autoApproveRepositoryPromotion: this.deps.gatewayConfig?.autoApproveRepositoryPromotion,
     });
   }
 }
 
 interface FeishuWebSocketBridgeDeps {
   client: FeishuMessageClient;
-  session: MetaclawSession;
+  session?: MetaclawSession;
+  resolveSession?: (chatId: string) => Promise<MetaclawSession>;
   appId: string;
   appSecret: string;
   verificationToken?: string;
   gatewayConfig?: ResolvedFeishuRuntimeBridgeConfig;
   markdownPreview?: FeishuMessageHandlerDeps['markdownPreview'];
+  onConnectionState?: (state: 'starting' | 'connected' | 'reconnecting' | 'failed' | 'stopped', error?: Error) => void;
+  readyTimeoutMs?: number;
 }
 
 interface ResolvedFeishuRuntimeBridgeConfig {
   accessPolicy: FeishuGatewayAccessPolicy;
   configPath: string;
+  autoApproveRepositoryPromotion: boolean;
 }
 
 export class FeishuWebSocketBridge implements FeishuBridge {
   private wsClient: Lark.WSClient | null = null;
+  private rejectFailure: ((error: Error) => void) | null = null;
+  private failurePromise: Promise<never> = new Promise<never>((_resolve, reject) => {
+    this.rejectFailure = reject;
+  });
+  private ready = false;
   private readonly seenMessageIds = new Set<string>();
   private readonly pendingResourcesByChatId = new Map<string, string[]>();
 
@@ -609,12 +643,14 @@ export class FeishuWebSocketBridge implements FeishuBridge {
       return;
     }
 
+    this.deps.onConnectionState?.('starting');
     const eventDispatcher = new Lark.EventDispatcher({
       verificationToken: this.deps.verificationToken,
       loggerLevel: Lark.LoggerLevel.warn,
     }).register(createFeishuWebSocketEventHandlers({
       client: this.deps.client,
       session: this.deps.session,
+      resolveSession: this.deps.resolveSession,
       seenMessageIds: this.seenMessageIds,
       accessPolicy: this.deps.gatewayConfig?.accessPolicy,
       pairingStore: this.deps.gatewayConfig ? new FeishuPairingStore() : undefined,
@@ -625,34 +661,70 @@ export class FeishuWebSocketBridge implements FeishuBridge {
       transport: 'websocket',
       pendingResourcesByChatId: this.pendingResourcesByChatId,
       markdownPreview: this.deps.markdownPreview,
+      autoApproveRepositoryPromotion: this.deps.gatewayConfig?.autoApproveRepositoryPromotion,
     }));
 
+    let resolveReady: (() => void) | null = null;
+    let rejectReady: ((error: Error) => void) | null = null;
+    const ready = new Promise<void>((resolve, reject) => {
+      resolveReady = resolve;
+      rejectReady = reject;
+    });
     this.wsClient = new Lark.WSClient({
       appId: this.deps.appId,
       appSecret: this.deps.appSecret,
       loggerLevel: Lark.LoggerLevel.warn,
+      onReady: () => {
+        this.ready = true;
+        this.deps.onConnectionState?.('connected');
+        resolveReady?.();
+      },
       onError: error => {
-        this.deps.session.appendSystemMessage(`⚠️ 飞书长连接错误: ${error.message}`);
+        const normalizedError = error instanceof Error ? error : new Error(String(error));
+        this.deps.onConnectionState?.('failed', normalizedError);
+        if (this.ready) {
+          this.rejectFailure?.(normalizedError);
+        } else {
+          rejectReady?.(normalizedError);
+        }
       },
       onReconnecting: () => {
-        this.deps.session.appendSystemMessage('↻ 飞书长连接断开，正在重连');
+        this.deps.onConnectionState?.('reconnecting');
       },
       onReconnected: () => {
-        this.deps.session.appendSystemMessage('→ 飞书长连接已恢复');
+        this.deps.onConnectionState?.('connected');
       },
     });
 
     await this.wsClient.start({ eventDispatcher });
+    const timeoutMs = this.deps.readyTimeoutMs ?? 60_000;
+    let timeout: NodeJS.Timeout | null = null;
+    try {
+      await Promise.race([
+        ready,
+        new Promise<never>((_resolve, reject) => {
+          timeout = setTimeout(() => reject(new Error(`飞书长连接在 ${timeoutMs}ms 内未就绪`)), timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
   }
 
   stop(): Promise<void> {
     this.wsClient?.close({ force: true });
     this.wsClient = null;
+    this.ready = false;
+    this.deps.onConnectionState?.('stopped');
     return Promise.resolve();
+  }
+
+  waitForFailure(): Promise<never> {
+    return this.failurePromise;
   }
 }
 
-export function createFeishuWebSocketEventHandlers(deps: FeishuMessageHandlerDeps): FeishuWebSocketEventHandlers {
+export function createFeishuWebSocketEventHandlers(deps: FeishuMessageDispatchDeps): FeishuWebSocketEventHandlers {
   return {
     'im.message.receive_v1': async data => {
       await handleFeishuMessageEvent(data, deps);
@@ -665,7 +737,7 @@ export function createFeishuWebSocketEventHandlers(deps: FeishuMessageHandlerDep
 
 export async function handleFeishuMessageEvent(
   event: FeishuIncomingMessageEvent | undefined,
-  deps: FeishuMessageHandlerDeps,
+  deps: FeishuMessageDispatchDeps,
 ): Promise<boolean> {
   const normalizedEvent = event
     ? normalizeFeishuInboundEvent(event, { transport: deps.transport ?? 'websocket' })
@@ -677,11 +749,19 @@ export async function handleFeishuMessageEvent(
   const messageId = normalizedEvent.messageId;
   const chatId = normalizedEvent.chatId;
   const messageType = normalizedEvent.messageType;
+  const session = deps.resolveSession
+    ? await deps.resolveSession(chatId)
+    : deps.session;
+  if (!session) {
+    throw new Error('飞书消息没有可用的 Gateway session');
+  }
+  const { resolveSession: _resolveSession, ...baseDeps } = deps;
+  const scopedDeps: FeishuMessageHandlerDeps = { ...baseDeps, session };
   if (deps.seenMessageIds.has(messageId)) {
     return false;
   }
   deps.seenMessageIds.add(messageId);
-  recordFeishuAudit(deps, {
+  recordFeishuAudit(scopedDeps, {
     kind: 'inbound',
     chatId,
     requestId: messageId,
@@ -692,7 +772,7 @@ export async function handleFeishuMessageEvent(
   if (deps.accessPolicy) {
     const identity = extractFeishuGatewayInboundIdentity(event, chatId);
     const decision = evaluateFeishuGatewayPolicy(identity, deps.accessPolicy, deps.pairingStore);
-    recordFeishuAudit(deps, {
+    recordFeishuAudit(scopedDeps, {
       kind: 'policy',
       chatId,
       requestId: messageId,
@@ -703,26 +783,69 @@ export async function handleFeishuMessageEvent(
     if (!decision.allowed) {
       if (decision.reason === 'dm_pairing_pending') {
         await deps.client.sendMarkdownCardToChat(chatId, '已收到你的授权请求。请等待 MetaClaw 管理员批准后再继续使用。')
-          .catch(error => deps.session.appendSystemMessage(`⚠️ 飞书授权提示发送失败: ${(error as Error).message}`));
+          .catch(error => session.appendSystemMessage(`⚠️ 飞书授权提示发送失败: ${(error as Error).message}`));
       }
-      deps.session.appendSystemMessage(`→ 飞书消息已被 Gateway 策略拦截: ${decision.reason}`);
+      session.appendSystemMessage(`→ 飞书消息已被 Gateway 策略拦截: ${decision.reason}`);
       return true;
     }
   }
 
-  if (messageType !== 'text') {
+  const permissionCommand = parseFeishuPermissionResolutionCommand(normalizedEvent.text);
+  if (permissionCommand) {
+    return await handleFeishuPermissionResolutionCommand(permissionCommand, chatId, scopedDeps);
+  }
+  if (normalizedEvent.text.trim() === '重发上次结果') {
+    return await handleFeishuRedeliverLatestResult(chatId, scopedDeps);
+  }
+  const pendingPromotions = messageType === 'text' ? pendingRepositoryPromotions(session) : [];
+  if (pendingPromotions.length > 0) {
+    if (deps.autoApproveRepositoryPromotion) {
+      await completeFeishuTaskWithAutoApproval(chatId, pendingPromotions[0]!.taskId, scopedDeps);
+      return true;
+    }
+    const olderCount = pendingPromotions.length - 1;
+    await deps.client.sendMarkdownCardToChat(
+      chatId,
+      [
+        formatFeishuPermissionPrompt(pendingPromotions[0]!),
+        ...(olderCount > 0 ? [`另有 ${olderCount} 个较早的待授权请求；“本次发布”始终指上面这条最新请求。`] : []),
+      ].join('\n\n'),
+    );
+    return true;
+  }
+
+  let text = normalizedEvent.text;
+  if (messageType === 'post') {
+    const post = parseFeishuPostContent(message.content);
+    if (!post) {
+      return false;
+    }
+    let downloadedResources: DownloadedFeishuResource[] = [];
+    try {
+      downloadedResources = await downloadAndQueueFeishuResources(post.resources, messageId, chatId, scopedDeps);
+    } catch (error) {
+      session.appendSystemMessage(`⚠️ 飞书富文本附件下载失败: ${(error as Error).message}`);
+      await deps.client.sendMarkdownCardToChat(chatId, `图文消息中的附件接收失败：${(error as Error).message}`)
+        .catch(() => undefined);
+      return true;
+    }
+    text = post.text;
+    if (!text) {
+      await sendFeishuResourceReceipt(chatId, downloadedResources.map(item => item.fileName), scopedDeps);
+      return true;
+    }
+  } else if (messageType !== 'text') {
     return await handleFeishuResourceMessage(message, {
       chatId,
       messageId,
       messageType,
       client: deps.client,
-      session: deps.session,
+      session,
       pendingResourcesByChatId: deps.pendingResourcesByChatId,
       uploadDir: deps.uploadDir,
     });
   }
 
-  const text = normalizedEvent.text;
   if (!text) {
     return false;
   }
@@ -730,7 +853,7 @@ export async function handleFeishuMessageEvent(
   if (isFeishuSetHomeCommand(text)) {
     deps.setHomeChannel?.(chatId);
     await deps.client.sendMarkdownCardToChat(chatId, `已将当前飞书会话设置为 MetaClaw home channel：${chatId}`);
-    deps.session.appendSystemMessage(`→ 飞书 home channel 已更新: ${chatId}`);
+    session.appendSystemMessage(`→ 飞书 home channel 已更新: ${chatId}`);
     return true;
   }
 
@@ -738,11 +861,11 @@ export async function handleFeishuMessageEvent(
   try {
     typingReactionId = await deps.client.addReactionToMessage(messageId, FEISHU_TYPING_REACTION);
   } catch (error) {
-    deps.session.appendSystemMessage(`⚠️ 飞书 ${FEISHU_TYPING_REACTION} 表情添加失败: ${(error as Error).message}`);
+    session.appendSystemMessage(`⚠️ 飞书 ${FEISHU_TYPING_REACTION} 表情添加失败: ${(error as Error).message}`);
   }
 
   try {
-    const before = deps.session.getSnapshot().output.length;
+    const before = session.getSnapshot().output.length;
     let observedOutputLength = before;
     let progressSendQueue = Promise.resolve();
     let progressFlushTimer: NodeJS.Timeout | null = null;
@@ -756,7 +879,7 @@ export async function handleFeishuMessageEvent(
       progressSendQueue = progressSendQueue.then(() =>
         deps.client.sendMarkdownCardToChat(chatId, progressOutput)
           .catch((error) => {
-            deps.session.appendSystemMessage(`⚠️ 飞书步骤消息回发失败: ${(error as Error).message}`);
+            session.appendSystemMessage(`⚠️ 飞书步骤消息回发失败: ${(error as Error).message}`);
           })
       );
       return progressSendQueue;
@@ -773,7 +896,7 @@ export async function handleFeishuMessageEvent(
     };
     let progressTargetTaskId: string | null = null;
     let unsubscribe: (() => void) | undefined;
-    unsubscribe = deps.session.subscribe?.((snapshot) => {
+    unsubscribe = session.subscribe?.((snapshot) => {
       const newLines = snapshot.output.slice(observedOutputLength);
       observedOutputLength = snapshot.output.length;
       const allMessageLines = snapshot.output.slice(before);
@@ -792,16 +915,28 @@ export async function handleFeishuMessageEvent(
     let outputLines: string[];
     try {
       const textWithResources = appendPendingFeishuResourcesToText(text, chatId, deps.pendingResourcesByChatId);
-      const submitPromise = deps.session.submit(textWithResources, { awaitAsyncWork: true });
-      outputLines = await waitForFeishuReplyOutputLines(deps.session, before, submitPromise);
+      let submitSucceeded = false;
+      const submitPromise = session.submit(textWithResources, { awaitAsyncWork: true }).then(result => {
+        submitSucceeded = true;
+        return result;
+      });
+      outputLines = await waitForFeishuReplyOutputLines(session, before, submitPromise);
+      if (submitSucceeded && !hasReplayablePlannerFailure(outputLines)) {
+        deps.pendingResourcesByChatId?.delete(chatId);
+      }
     } finally {
       unsubscribe?.();
     }
     const targetTaskId = extractFeishuReplyTargetTaskId(outputLines);
+    if (deps.autoApproveRepositoryPromotion && targetTaskId
+      && pendingRepositoryPromotions(session).some(request => request.taskId === targetTaskId)) {
+      await completeFeishuTaskWithAutoApproval(chatId, targetTaskId, scopedDeps);
+      return true;
+    }
     const replyOutputLines = targetTaskId
       ? filterFeishuOutputLinesForTask(outputLines, targetTaskId)
       : outputLines;
-    const progressOutput = deps.session.subscribe
+    const progressOutput = session.subscribe
       ? ''
       : formatFeishuProgressReply(replyOutputLines);
     const rawOutput = formatFeishuReply(replyOutputLines) || formatFeishuPendingReply(replyOutputLines);
@@ -821,31 +956,43 @@ export async function handleFeishuMessageEvent(
       await flushProgress();
       await progressSendQueue;
       const chunks = splitForFeishu(reply);
-      await sendFeishuFinalReplyChunks(chatId, chunks, deps);
-      await sendArtifactFilesToFeishu(chatId, replyOutputLines, deps);
+      await sendFeishuFinalReplyChunks(chatId, chunks, scopedDeps);
+      await sendArtifactFilesToFeishu(chatId, replyOutputLines, scopedDeps);
     } catch (error) {
-      deps.session.appendSystemMessage(`⚠️ 飞书消息回发失败: ${(error as Error).message}`);
+      session.appendSystemMessage(`⚠️ 飞书消息回发失败: ${(error as Error).message}`);
     }
   } finally {
     if (typingReactionId) {
       try {
         await deps.client.removeReactionFromMessage(messageId, typingReactionId);
       } catch (error) {
-        deps.session.appendSystemMessage(`⚠️ 飞书 ${FEISHU_TYPING_REACTION} 表情删除失败: ${(error as Error).message}`);
+        session.appendSystemMessage(`⚠️ 飞书 ${FEISHU_TYPING_REACTION} 表情删除失败: ${(error as Error).message}`);
       }
     }
   }
   return true;
 }
 
-export function createFeishuBridge(config: Config, session: MetaclawSession): FeishuBridge | null {
-  const gatewayFeishu = resolveFeishuGatewayConfig(config);
+export interface CreateFeishuBridgeOptions {
+  resolveSession?: (chatId: string) => Promise<MetaclawSession>;
+  botOpenId?: string;
+  onConnectionState?: FeishuWebSocketBridgeDeps['onConnectionState'];
+  readyTimeoutMs?: number;
+  credentialEnv?: NodeJS.ProcessEnv;
+}
+
+export function createFeishuBridge(
+  config: Config,
+  session: MetaclawSession | undefined,
+  options: CreateFeishuBridgeOptions = {},
+): FeishuBridge | null {
+  const gatewayFeishu = resolveFeishuGatewayConfig(config, options.credentialEnv);
   const feishu = toFeishuAppConfig(gatewayFeishu);
   if (!gatewayFeishu.enabled || !gatewayFeishu.appId) {
     return null;
   }
 
-  const appSecret = resolveAppSecret(feishu);
+  const appSecret = resolveAppSecret(feishu, options.credentialEnv);
   if (!appSecret) {
     const secretEnvHint = feishu.app_secret_env
       ? `环境变量 ${feishu.app_secret_env} 未设置`
@@ -859,11 +1006,15 @@ export function createFeishuBridge(config: Config, session: MetaclawSession): Fe
   });
   const markdownPreview = buildFeishuMarkdownPreviewOptions(config);
   const gatewayConfig = {
-    accessPolicy: buildFeishuGatewayAccessPolicy(config),
+    accessPolicy: buildFeishuGatewayAccessPolicy(config, options.botOpenId),
     configPath: resolve(resolveMetaclawDir(), 'config.yaml'),
+    autoApproveRepositoryPromotion: gatewayFeishu.publicationApproval === 'auto',
   };
 
   if (gatewayFeishu.connectionMode === 'webhook') {
+    if (!session) {
+      throw new Error('飞书 Webhook 模式需要固定 session');
+    }
     return new FeishuEventBridge({
       config: feishu,
       session,
@@ -875,25 +1026,31 @@ export function createFeishuBridge(config: Config, session: MetaclawSession): Fe
 
   return new FeishuWebSocketBridge({
     session,
+    resolveSession: options.resolveSession,
     client,
     appId: gatewayFeishu.appId,
     appSecret,
     verificationToken: gatewayFeishu.verificationToken,
     gatewayConfig,
     markdownPreview,
+    onConnectionState: options.onConnectionState,
+    readyTimeoutMs: options.readyTimeoutMs,
   });
 }
 
 export const createFeishuEventBridge = createFeishuBridge;
 
-function buildFeishuGatewayAccessPolicy(config: Config): FeishuGatewayAccessPolicy {
+export function buildFeishuGatewayAccessPolicy(
+  config: Config,
+  botOpenId?: string,
+): FeishuGatewayAccessPolicy {
   const feishu = config.gateway?.platforms?.feishu;
   return {
     dmPolicy: feishu?.access?.dm_policy ?? 'pairing',
     allowedUsers: feishu?.access?.allowed_users ?? [],
     groupPolicy: feishu?.access?.group_policy ?? 'open',
     requireMention: feishu?.access?.require_mention ?? true,
-    ...(process.env.FEISHU_BOT_OPEN_ID ? { botOpenId: process.env.FEISHU_BOT_OPEN_ID } : {}),
+    ...(botOpenId ? { botOpenId } : {}),
   };
 }
 
@@ -1419,12 +1576,15 @@ function stripFeishuMarkdownForPlainText(markdown: string): string {
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1 ($2)');
 }
 
-export function resolveAppSecret(config: FeishuAppConfig): string | null {
+export function resolveAppSecret(
+  config: FeishuAppConfig,
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
   if (config.app_secret) {
     return config.app_secret;
   }
   if (config.app_secret_env) {
-    return process.env[config.app_secret_env] || null;
+    return env[config.app_secret_env] || null;
   }
   return null;
 }
@@ -1520,11 +1680,88 @@ function stringValue(value: unknown): string | null {
   return typeof value === 'string' && value.trim().length > 0 ? value : null;
 }
 
-function parseFeishuResourceContent(content: unknown): {
+interface FeishuResourceContent {
   fileKey: string;
   fileName?: string;
   resourceType: 'file' | 'image';
-} | null {
+}
+
+interface FeishuInboundPostContent {
+  text: string;
+  resources: FeishuResourceContent[];
+}
+
+interface FeishuPermissionResolutionCommand {
+  resolution: 'approve' | 'deny';
+  permissionRequestId?: string;
+}
+
+function parseFeishuPermissionResolutionCommand(text: string): FeishuPermissionResolutionCommand | null {
+  const normalized = text.trim();
+  if (normalized === '批准本次发布') {
+    return { resolution: 'approve' };
+  }
+  if (normalized === '拒绝本次发布') {
+    return { resolution: 'deny' };
+  }
+  const match = normalized.match(/^\/permission\s+(approve|deny)\s+(permission_request_[A-Za-z0-9_-]+)$/i);
+  if (!match?.[1] || !match[2]) {
+    return null;
+  }
+  return {
+    resolution: match[1].toLowerCase() as 'approve' | 'deny',
+    permissionRequestId: match[2],
+  };
+}
+
+function parseFeishuPostContent(content: unknown): FeishuInboundPostContent | null {
+  if (typeof content !== 'string') {
+    return null;
+  }
+  try {
+    const parsed = objectValue(JSON.parse(content));
+    const localized = Object.values(parsed)
+      .map(objectValue)
+      .find(value => Array.isArray(value.content));
+    const post = Array.isArray(parsed.content) ? parsed : localized;
+    if (!post || !Array.isArray(post.content)) {
+      return null;
+    }
+    const textParts: string[] = [];
+    const title = stringValue(post.title);
+    if (title) textParts.push(title);
+    const resources: FeishuResourceContent[] = [];
+    for (const row of post.content) {
+      if (!Array.isArray(row)) continue;
+      const rowText: string[] = [];
+      for (const rawElement of row) {
+        const element = objectValue(rawElement);
+        const tag = stringValue(element.tag);
+        if (tag === 'img') {
+          const imageKey = stringValue(element.image_key);
+          if (imageKey) resources.push({ fileKey: imageKey, resourceType: 'image' });
+          continue;
+        }
+        if (tag === 'text' || tag === 'a' || tag === 'code_block') {
+          const elementText = stringValue(element.text);
+          if (elementText) rowText.push(elementText);
+          continue;
+        }
+        if (tag === 'at') {
+          const userName = stringValue(element.user_name);
+          if (userName) rowText.push(`@${userName}`);
+        }
+      }
+      const joined = rowText.join('').trim();
+      if (joined) textParts.push(joined);
+    }
+    return { text: textParts.join('\n').trim(), resources };
+  } catch {
+    return null;
+  }
+}
+
+function parseFeishuResourceContent(content: unknown): FeishuResourceContent | null {
   if (typeof content !== 'string') {
     return null;
   }
@@ -1584,30 +1821,344 @@ async function handleFeishuResourceMessage(
   const resource = parseFeishuResourceContent(message.content);
   if (!resource || !input.client.downloadMessageResource) {
     input.session.appendSystemMessage('⚠️ 收到飞书文件消息，但当前客户端不支持下载消息资源');
+    await input.client.sendMarkdownCardToChat(input.chatId, '收到附件消息，但当前 Gateway 无法下载该资源。')
+      .catch(() => undefined);
     return true;
   }
 
   try {
-    const downloaded = await input.client.downloadMessageResource({
-      messageId: input.messageId,
-      fileKey: resource.fileKey,
-      resourceType: resource.resourceType,
-      fileName: resource.fileName,
-      outputDir: input.uploadDir
-        ? resolve(input.uploadDir, sanitizePathPart(input.chatId), sanitizePathPart(input.messageId))
-        : undefined,
-    });
-    const pendingResources = input.pendingResourcesByChatId ?? new Map<string, string[]>();
-    pendingResources.set(input.chatId, [
-      ...(pendingResources.get(input.chatId) ?? []),
-      downloaded.path,
-    ]);
-    input.session.appendSystemMessage(`→ 已接收飞书文件: ${downloaded.fileName}`);
+    const downloaded = await downloadAndQueueFeishuResources([resource], input.messageId, input.chatId, input);
+    await sendFeishuResourceReceipt(input.chatId, downloaded.map(item => item.fileName), input);
     return true;
   } catch (error) {
     input.session.appendSystemMessage(`⚠️ 飞书文件下载失败: ${(error as Error).message}`);
+    await input.client.sendMarkdownCardToChat(input.chatId, `附件接收失败：${(error as Error).message}`)
+      .catch(() => undefined);
     return true;
   }
+}
+
+async function downloadAndQueueFeishuResources(
+  resources: FeishuResourceContent[],
+  messageId: string,
+  chatId: string,
+  deps: Pick<FeishuMessageHandlerDeps, 'client' | 'session' | 'pendingResourcesByChatId' | 'uploadDir'>,
+): Promise<DownloadedFeishuResource[]> {
+  if (resources.length === 0) return [];
+  if (!deps.client.downloadMessageResource) {
+    throw new Error('当前客户端不支持下载消息资源');
+  }
+  const downloadedResources: DownloadedFeishuResource[] = [];
+  for (const resource of resources) {
+    const downloaded = await deps.client.downloadMessageResource({
+      messageId,
+      fileKey: resource.fileKey,
+      resourceType: resource.resourceType,
+      fileName: resource.fileName,
+      outputDir: deps.uploadDir
+        ? resolve(deps.uploadDir, sanitizePathPart(chatId), sanitizePathPart(messageId))
+        : undefined,
+    });
+    downloadedResources.push(downloaded);
+    deps.session.appendSystemMessage(`→ 已接收飞书文件: ${downloaded.fileName}`);
+  }
+  if (downloadedResources.length > 0) {
+    const pendingResources = deps.pendingResourcesByChatId ?? new Map<string, string[]>();
+    pendingResources.set(chatId, [
+      ...(pendingResources.get(chatId) ?? []),
+      ...downloadedResources.map(item => item.path),
+    ]);
+  }
+  return downloadedResources;
+}
+
+async function sendFeishuResourceReceipt(
+  chatId: string,
+  fileNames: string[],
+  deps: Pick<FeishuMessageHandlerDeps, 'client' | 'session'>,
+): Promise<void> {
+  const label = fileNames.length > 0 ? `附件：${fileNames.join('、')}` : '附件';
+  await deps.client.sendMarkdownCardToChat(chatId, `已收到${label}。请继续发送处理说明。`)
+    .catch(error => deps.session.appendSystemMessage(`⚠️ 飞书附件确认回发失败: ${(error as Error).message}`));
+}
+
+function pendingRepositoryPromotions(session: FeishuMessageSession): PlannerTuiPermissionRequest[] {
+  return (session.getPlannerTuiPermissionRequests?.() ?? [])
+    .filter(request => request.capability === 'repository_promotion')
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+}
+
+const feishuAutoApprovalTasks = new WeakMap<
+  FeishuMessageSession,
+  Map<string, Promise<void>>
+>();
+
+async function completeFeishuTaskWithAutoApproval(
+  chatId: string,
+  taskId: string,
+  deps: FeishuMessageHandlerDeps,
+): Promise<void> {
+  let tasks = feishuAutoApprovalTasks.get(deps.session);
+  if (!tasks) {
+    tasks = new Map<string, Promise<void>>();
+    feishuAutoApprovalTasks.set(deps.session, tasks);
+  }
+  const existing = tasks.get(taskId);
+  if (existing) {
+    return await existing;
+  }
+
+  const completion = (async () => {
+    try {
+      const delivery = await waitForFeishuAutoApprovedExecutorResult(deps.session, taskId, chatId, deps);
+      await deliverFeishuExecutorResult(chatId, delivery, deps);
+    } catch (error) {
+      const message = `飞书自动发布失败：${(error as Error).message}`;
+      deps.session.appendSystemMessage(`⚠️ ${message}`);
+      await deps.client.sendMarkdownCardToChat(chatId, `⚠️ ${message}`);
+    }
+  })().finally(() => {
+    if (tasks?.get(taskId) === completion) {
+      tasks.delete(taskId);
+    }
+  });
+  tasks.set(taskId, completion);
+  return await completion;
+}
+
+async function waitForFeishuAutoApprovedExecutorResult(
+  session: FeishuMessageSession,
+  taskId: string,
+  chatId: string,
+  deps: FeishuMessageHandlerDeps,
+  timeoutMs = FEISHU_REPLY_WAIT_TIMEOUT_MS,
+): Promise<PlannerTuiExecutorResult> {
+  if (!session.resolvePlannerTuiPermission
+    || !session.getPlannerTuiExecutorResults
+    || !session.getPlannerTuiSnapshot) {
+    throw new Error('当前 Gateway session 不支持自动发布');
+  }
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const request = pendingRepositoryPromotions(session)
+      .find(candidate => candidate.taskId === taskId);
+    if (request) {
+      const resolution = await session.resolvePlannerTuiPermission(request.permissionRequestId, 'approve');
+      const ok = resolution.status !== 'conflict';
+      recordFeishuAudit(deps, {
+        kind: 'permission',
+        chatId,
+        requestId: request.permissionRequestId,
+        method: 'local',
+        ok,
+        reason: ok ? 'repository_promotion_auto_approved' : resolution.message,
+      });
+      if (!ok && pendingRepositoryPromotions(session)
+        .some(candidate => candidate.permissionRequestId === request.permissionRequestId)) {
+        throw new Error(resolution.message);
+      }
+      await new Promise(resolveDelay => setTimeout(resolveDelay, 25));
+      continue;
+    }
+
+    const task = session.getPlannerTuiSnapshot().taskPool.find(candidate => candidate.id === taskId);
+    if (task?.status === 'done') {
+      const result = session.getPlannerTuiExecutorResults()
+        .filter(candidate => candidate.taskId === taskId)
+        .sort((left, right) => right.completedAt.localeCompare(left.completedAt))[0];
+      if (result) {
+        return result;
+      }
+    }
+    await new Promise(resolveDelay => setTimeout(resolveDelay, 250));
+  }
+
+  throw new Error(`任务 #${taskId} 在 ${timeoutMs}ms 内未完成自动发布`);
+}
+
+function formatFeishuPermissionPrompt(request: PlannerTuiPermissionRequest): string {
+  const changedPaths = request.changedPaths?.length
+    ? request.changedPaths.map(path => `- ${path}`)
+    : ['- 暂无可展示的路径'];
+  const artifactPreviews = formatFeishuCandidateArtifactPreviews(request.candidateArtifacts ?? []);
+  return [
+    `⚠️ 发布授权请求：任务 #${request.taskId} 已完成执行，等待一次性发布授权。`,
+    `即将把“${request.subtaskTitle}”产生的更改合入当前项目。`,
+    '',
+    '**结果预览**',
+    request.candidateReport?.trim() || 'Executor 未提供结果摘要。',
+    '',
+    '**待发布文件**',
+    ...changedPaths,
+    ...artifactPreviews,
+    '',
+    '批准请只回复：批准本次发布',
+    '拒绝请只回复：拒绝本次发布',
+  ].join('\n');
+}
+
+function formatFeishuCandidateArtifactPreviews(artifactPaths: string[]): string[] {
+  const previews: string[] = [];
+  for (const artifactPath of artifactPaths.slice(0, 3)) {
+    if (!existsSync(artifactPath) || !statSync(artifactPath).isFile()) continue;
+    const size = statSync(artifactPath).size;
+    if (size > 64 * 1024) {
+      previews.push('', `**${basename(artifactPath)} 预览**`, `文件较大（${size} bytes），批准并合并后将发送原文件。`);
+      continue;
+    }
+    const content = readFileSync(artifactPath);
+    if (content.includes(0)) {
+      previews.push('', `**${basename(artifactPath)} 预览**`, `二进制文件（${size} bytes），批准并合并后将发送原文件。`);
+      continue;
+    }
+    const text = content.toString('utf-8').trim();
+    previews.push(
+      '',
+      `**${basename(artifactPath)} 预览**`,
+      text ? `\n\`\`\`\n${text.slice(0, 2_000)}\n\`\`\`` : '（空文件）',
+    );
+  }
+  return previews;
+}
+
+async function handleFeishuPermissionResolutionCommand(
+  command: FeishuPermissionResolutionCommand,
+  chatId: string,
+  deps: FeishuMessageHandlerDeps,
+): Promise<boolean> {
+  const requests = pendingRepositoryPromotions(deps.session);
+  const request = command.permissionRequestId
+    ? requests.find(candidate => candidate.permissionRequestId === command.permissionRequestId)
+    : requests[0];
+  if (!request) {
+    await deps.client.sendMarkdownCardToChat(chatId, '当前会话没有匹配的待发布授权请求。');
+    return true;
+  }
+  if (!deps.session.resolvePlannerTuiPermission) {
+    await deps.client.sendMarkdownCardToChat(chatId, '当前 Gateway 不支持处理发布授权。');
+    return true;
+  }
+
+  const result = await deps.session.resolvePlannerTuiPermission(request.permissionRequestId, command.resolution);
+  if (result.status === 'conflict') {
+    await deps.client.sendMarkdownCardToChat(chatId, `发布授权未生效：${result.message}`);
+    return true;
+  }
+  if (command.resolution === 'deny') {
+    await deps.client.sendMarkdownCardToChat(chatId, `已拒绝任务 #${request.taskId} 的本次发布。`);
+    return true;
+  }
+
+  await deps.client.sendMarkdownCardToChat(chatId, `已批准任务 #${request.taskId} 的本次发布，正在完成合并与交付。`);
+  try {
+    const delivery = await waitForFeishuExecutorResult(deps.session, request.taskId);
+    await deliverFeishuExecutorResult(chatId, delivery, deps);
+  } catch (error) {
+    const message = `发布后的结果交付失败：${(error as Error).message}`;
+    deps.session.appendSystemMessage(`⚠️ ${message}`);
+    recordFeishuAudit(deps, {
+      kind: 'final',
+      chatId,
+      method: 'notice',
+      ok: false,
+      error: (error as Error).message,
+    });
+    await deps.client.sendMarkdownCardToChat(chatId, `⚠️ ${message}`);
+  }
+  return true;
+}
+
+async function handleFeishuRedeliverLatestResult(
+  chatId: string,
+  deps: FeishuMessageHandlerDeps,
+): Promise<boolean> {
+  const latest = deps.session.getPlannerTuiExecutorResults?.()
+    .sort((left, right) => right.completedAt.localeCompare(left.completedAt))[0];
+  if (!latest) {
+    await deps.client.sendMarkdownCardToChat(chatId, '当前会话没有可重发的已集成结果。');
+    return true;
+  }
+  await deliverFeishuExecutorResult(chatId, latest, deps);
+  return true;
+}
+
+async function deliverFeishuExecutorResult(
+  chatId: string,
+  delivery: PlannerTuiExecutorResult,
+  deps: FeishuMessageHandlerDeps,
+): Promise<void> {
+  await sendFeishuFinalReplyChunks(chatId, splitForFeishu([
+    `任务 #${delivery.taskId} 已完成合并与交付。`,
+    '',
+    delivery.report,
+  ].join('\n')), deps);
+  await sendArtifactPathsToFeishu(chatId, delivery.artifacts, deps);
+}
+
+async function waitForFeishuExecutorResult(
+  session: FeishuMessageSession,
+  taskId: string,
+  timeoutMs = FEISHU_REPLY_WAIT_TIMEOUT_MS,
+): Promise<PlannerTuiExecutorResult> {
+  if (!session.getPlannerTuiExecutorResults) {
+    throw new Error('当前 Gateway session 不支持读取已集成结果');
+  }
+  const findResult = () => session.getPlannerTuiExecutorResults?.()
+    .filter(result => result.taskId === taskId)
+    .sort((left, right) => right.completedAt.localeCompare(left.completedAt))[0];
+  const findReapproval = () => pendingRepositoryPromotions(session)
+    .find(request => request.taskId === taskId);
+  const existing = findResult();
+  if (existing) return existing;
+
+  return await new Promise<PlannerTuiExecutorResult>((resolveResult, reject) => {
+    let settled = false;
+    let unsubscribe: (() => void) | undefined;
+    const interval = setInterval(() => {
+      const result = findResult();
+      if (result) finish(result);
+      else {
+        const reapproval = findReapproval();
+        if (reapproval) fail(new Error(
+          `项目主分支在首次批准后发生变化；候选结果已同步并保留，请重新回复“批准本次发布”（新请求 ${reapproval.permissionRequestId}）`,
+        ));
+      }
+    }, 250);
+    const timeout = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      clearInterval(interval);
+      unsubscribe?.();
+      reject(new Error(`任务 #${taskId} 在 ${timeoutMs}ms 内未完成发布`));
+    }, timeoutMs);
+    const finish = (result: PlannerTuiExecutorResult) => {
+      if (settled) return;
+      settled = true;
+      clearInterval(interval);
+      clearTimeout(timeout);
+      unsubscribe?.();
+      resolveResult(result);
+    };
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      clearInterval(interval);
+      clearTimeout(timeout);
+      unsubscribe?.();
+      reject(error);
+    };
+    unsubscribe = session.subscribe?.(() => {
+      const result = findResult();
+      if (result) finish(result);
+      else {
+        const reapproval = findReapproval();
+        if (reapproval) fail(new Error(
+          `项目主分支在首次批准后发生变化；候选结果已同步并保留，请重新回复“批准本次发布”（新请求 ${reapproval.permissionRequestId}）`,
+        ));
+      }
+    });
+  });
 }
 
 function appendPendingFeishuResourcesToText(
@@ -1620,13 +2171,16 @@ function appendPendingFeishuResourcesToText(
     return text;
   }
 
-  pendingResourcesByChatId?.delete(chatId);
   return [
     text,
     '',
     '关联飞书上传文件：',
     ...pendingResources.map(resourcePath => `"${resourcePath}"`),
   ].join('\n');
+}
+
+function hasReplayablePlannerFailure(outputLines: string[]): boolean {
+  return outputLines.some(line => line.includes('规划提案传输状态不确定；请重放同一请求'));
 }
 
 export function formatFeishuReply(outputLines: string[]): string {
@@ -1687,6 +2241,10 @@ function extractExecutorFinalResults(outputLines: string[]): string | null {
 function extractFeishuReplyTargetTaskId(outputLines: string[]): string | null {
   for (const rawLine of outputLines) {
     const line = rawLine.trim();
+    const permissionPrompt = line.match(/^⚠️ 发布授权请求：任务 #(task_[^\s]+) /);
+    if (permissionPrompt) {
+      return permissionPrompt[1] ?? null;
+    }
     const created = line.match(/^任务\s+#(task_[^\s]+)\s+已创建：/)?.[1];
     if (created) {
       return created;
@@ -1715,6 +2273,11 @@ function filterFeishuOutputLinesForTask(outputLines: string[], taskId: string): 
 
   for (const rawLine of outputLines) {
     const line = rawLine.trim();
+    const permissionPrompt = line.match(/^⚠️ 发布授权请求：任务 #(task_[^\s]+) /);
+    if (permissionPrompt) {
+      if (permissionPrompt[1] === taskId) filtered.push(rawLine);
+      continue;
+    }
     const createdMatch = line.match(/^任务\s+#(task_[^\s]+)\s+已创建：/);
     if (createdMatch) {
       if (createdMatch[1] === taskId) {
@@ -1907,6 +2470,16 @@ async function sendArtifactFilesToFeishu(
   deps: FeishuMessageHandlerDeps,
 ): Promise<void> {
   const artifactPaths = extractArtifactPaths(outputLines)
+    .filter(path => existsSync(path) && statSync(path).isFile());
+  await sendArtifactPathsToFeishu(chatId, artifactPaths, deps);
+}
+
+async function sendArtifactPathsToFeishu(
+  chatId: string,
+  paths: string[],
+  deps: FeishuMessageHandlerDeps,
+): Promise<void> {
+  const artifactPaths = Array.from(new Set(paths))
     .filter(path => existsSync(path) && statSync(path).isFile());
   if (artifactPaths.length === 0) {
     return;
@@ -2117,13 +2690,14 @@ async function waitForFeishuReplyOutputLines(
   before: number,
   submitPromise: Promise<{ exitRequested: boolean }>,
   timeoutMs = FEISHU_REPLY_WAIT_TIMEOUT_MS,
+  initialTargetTaskId: string | null = null,
 ): Promise<string[]> {
   if (!session.subscribe) {
     await submitPromise;
     return session.getSnapshot().output.slice(before);
   }
 
-  let targetTaskId: string | null = null;
+  let targetTaskId: string | null = initialTargetTaskId;
   let lastLines = session.getSnapshot().output.slice(before);
   let resolved = false;
   let unsubscribe: (() => void) | undefined;
@@ -2168,6 +2742,12 @@ async function waitForFeishuReplyOutputLines(
       const scopedLines = targetTaskId
         ? filterFeishuOutputLinesForTask(lines, targetTaskId)
         : lines;
+      const permissionRequest = pendingRepositoryPromotions(session)
+        .find(request => !targetTaskId || request.taskId === targetTaskId);
+      if (permissionRequest) {
+        finish([...scopedLines, formatFeishuPermissionPrompt(permissionRequest)]);
+        return;
+      }
       if (isFeishuPendingTerminal(scopedLines)) {
         if (submitSettled) {
           finish(scopedLines);

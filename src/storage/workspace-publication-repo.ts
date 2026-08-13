@@ -152,6 +152,24 @@ export class WorkspacePublicationRepo {
     return row ? rowToPublication(row) : null;
   }
 
+  listAwaitingApproval(): WorkspacePublicationRecord[] {
+    return (this.db.prepare(`
+      SELECT * FROM workspace_publications
+      WHERE status = 'awaiting_approval'
+      ORDER BY created_at ASC, id ASC
+    `).all() as PublicationRow[]).map(rowToPublication);
+  }
+
+  findAwaitingApprovalByTask(taskId: string): WorkspacePublicationRecord | null {
+    const row = this.db.prepare(`
+      SELECT * FROM workspace_publications
+      WHERE task_id = ? AND status = 'awaiting_approval'
+      ORDER BY created_at ASC, id ASC
+      LIMIT 1
+    `).get(taskId) as PublicationRow | undefined;
+    return row ? rowToPublication(row) : null;
+  }
+
   find(id: string): WorkspacePublicationRecord | null {
     const row = this.db.prepare(`
       SELECT * FROM workspace_publications WHERE id = ?
@@ -305,6 +323,52 @@ export class WorkspacePublicationRepo {
       SET status = 'parked', error_summary = ?, updated_at = ?
       WHERE id = ? AND status = 'applying'
     `).run(errorSummary, now, id);
+  }
+
+  listParkedStale(): WorkspacePublicationRecord[] {
+    return (this.db.prepare(`
+      SELECT * FROM workspace_publications
+      WHERE status = 'parked'
+        AND error_summary LIKE 'Project main changed after publication approval was requested%'
+      ORDER BY updated_at ASC, id ASC
+    `).all() as PublicationRow[]).map(rowToPublication);
+  }
+
+  listRecoverySessionIds(sessionIdPrefix: string): string[] {
+    return (this.db.prepare(`
+      SELECT DISTINCT decision.session_id
+      FROM workspace_publications publication
+      INNER JOIN kernel_decisions decision
+        ON decision.correlation_id = publication.permission_request_id
+      WHERE publication.status IN ('awaiting_approval', 'pending', 'conflicted', 'parked')
+        AND decision.action = 'escalate_capability'
+        AND decision.session_id LIKE ?
+      ORDER BY decision.session_id ASC
+    `).all(`${sessionIdPrefix}%`) as Array<{ session_id: string }>).map(row => row.session_id);
+  }
+
+  reissueAfterStale(input: {
+    id: string;
+    permissionRequestId: string;
+    mainBaseCommit: string;
+    candidateCommit: string;
+    changedPaths: string[];
+    now: string;
+  }): boolean {
+    return this.db.prepare(`
+      UPDATE workspace_publications
+      SET status = 'awaiting_approval', permission_request_id = ?,
+          main_base_commit = ?, candidate_commit = ?, changed_paths_json = ?,
+          error_summary = NULL, updated_at = ?
+      WHERE id = ? AND status = 'parked'
+    `).run(
+      input.permissionRequestId,
+      input.mainBaseCommit,
+      input.candidateCommit,
+      JSON.stringify(input.changedPaths),
+      input.now,
+      input.id,
+    ).changes === 1;
   }
 
   requestCancellation(input: {

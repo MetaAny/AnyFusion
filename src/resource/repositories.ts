@@ -102,6 +102,12 @@ export interface UserAuthorizationRecord {
 
 export interface PermissionRepositoryPort {
   createRequest(request: NormalizedCapabilityRequest, createdAt: string): PermissionRequestRecord;
+  restoreEscalatedRequest(input: {
+    request: NormalizedCapabilityRequest;
+    createdAt: string;
+    decisionId: string;
+    reason: string;
+  }): PermissionRequestRecord;
   findRequest(requestId: string): PermissionRequestRecord | null;
   findPendingForTask(taskId: string): PermissionRequestRecord | null;
   findOldestPending(): PermissionRequestRecord | null;

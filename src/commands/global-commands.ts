@@ -65,7 +65,7 @@ export async function attachTaskResources(
   if (targetTask.status === 'blocked') {
     return {
       type: 'text',
-      content: `${summaryLine}\n任务 #${taskId} 当前仍为 BLOCKED，可继续执行 /task unblock ${taskId}`,
+      content: `${summaryLine}\n任务 #${taskId} 当前仍为 BLOCKED，可继续执行 /task resume ${taskId}`,
     };
   }
 

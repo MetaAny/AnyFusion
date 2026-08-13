@@ -238,7 +238,6 @@ describe('CommandCatalog', () => {
 /task pause
 /task resume
 /task block
-/task unblock
 /task cancel
 /task subtask-cancel
 /task accept-partial

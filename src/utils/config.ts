@@ -58,6 +58,7 @@ const DEFAULT_CONFIG: Config = {
           final_markdown_mode: 'card',
           fallback_mode: 'post',
           final_file_fallback: true,
+          publication_approval: 'manual',
         },
       },
     },

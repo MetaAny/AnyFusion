@@ -125,6 +125,30 @@ export class KernelEffectOutboxRepo {
     `).all(now) as EffectRow[]).map(rowToRecord);
   }
 
+  listIncompleteCompletionTaskIds(): string[] {
+    return (this.db.prepare(`
+      SELECT DISTINCT effect.task_id
+      FROM kernel_effect_outbox effect
+      INNER JOIN tasks task ON task.id = effect.task_id
+      WHERE effect.effect_type = 'task_completion_notification'
+        AND task.status IN ('ready', 'running', 'blocked')
+      ORDER BY effect.task_id ASC
+    `).all() as Array<{ task_id: string }>).map(row => row.task_id);
+  }
+
+  listCompletionRecoverySessionIds(sessionIdPrefix: string): string[] {
+    return (this.db.prepare(`
+      SELECT DISTINCT decision.session_id
+      FROM kernel_effect_outbox effect
+      INNER JOIN tasks task ON task.id = effect.task_id
+      INNER JOIN kernel_decisions decision ON decision.id = effect.decision_id
+      WHERE effect.effect_type = 'task_completion_notification'
+        AND task.status IN ('ready', 'running', 'blocked')
+        AND decision.session_id LIKE ?
+      ORDER BY decision.session_id ASC
+    `).all(`${sessionIdPrefix}%`) as Array<{ session_id: string }>).map(row => row.session_id);
+  }
+
   resolve(id: string, resolution: 'assume_applied' | 'retry', now: string): void {
     const next = resolution === 'assume_applied' ? 'sent' : 'pending';
     this.db.prepare(`

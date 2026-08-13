@@ -112,6 +112,23 @@ describe('PlanningAgent plan schemas', () => {
     }).success).toBe(false);
   });
 
+  it('rejects the removed split blocked-recovery control', () => {
+    const valid = outputPlan();
+    expect(PlanningAgentPlanSchema.safeParse({
+      ...valid,
+      action: 'task_control',
+      task: {
+        ...valid.task,
+        binding: 'reference',
+        taskId: 'task_1',
+        control: 'recover_blocked',
+        title: null,
+        goal: null,
+      },
+      workGraph: null,
+    }).success).toBe(false);
+  });
+
   it('rejects an empty work graph at the structured-output boundary', () => {
     const valid = outputPlan();
     const parsed = PlanningAgentPlanOutputSchema.safeParse({

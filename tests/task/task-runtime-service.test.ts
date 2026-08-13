@@ -36,6 +36,14 @@ describe('TaskRuntimeService Task Domain facade', () => {
     expect(service.unblockTask(task.id).status).toBe('ready');
   });
 
+  it('completes a recovered ready Task through legal lifecycle transitions', () => {
+    const task = service.createTask({ title: 'Recovered Task', goal: 'Finish after publication' });
+    service.transitionTask(task.id, 'ready');
+
+    expect(service.completeTask(task.id).status).toBe('done');
+    expect(service.completeTask(task.id).status).toBe('done');
+  });
+
   it('contains no generic command switch or queue/preemption interface', () => {
     expect('execute' in service).toBe(false);
     expect('preemptCurrentTask' in service).toBe(false);

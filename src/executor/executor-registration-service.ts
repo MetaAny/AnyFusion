@@ -264,7 +264,7 @@ export class ExecutorRegistrationService {
       permissionProfileId: executor.binding.effectivePermissionProfile,
       sessionProtocol: executor.binding.sessionProtocol,
     };
-    const invocation = verificationInvocation(binding, challengeText, sessionId);
+    const invocation = verificationInvocation(binding, verificationPrompt(challengeText), sessionId);
     const result = await this.runner()({
       command: binding.binaryPath,
       args: invocation.args,
@@ -477,6 +477,10 @@ async function discoverBinary(commands: string[]): Promise<string | null> {
 
 function challenge(): string {
   return `ANYFUSION_VERIFY_${randomBytes(16).toString('hex')}`;
+}
+
+function verificationPrompt(challengeText: string): string {
+  return `Return exactly this verification token and no other text: ${challengeText}`;
 }
 
 function snapshotConfig(snapshot: ReturnType<ExecutorRegistryService['current']>): ExecutorRegistryConfig {

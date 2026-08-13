@@ -1,0 +1,4 @@
+interface:
+  display_name: "AnyFusion Evidence-First Diagnosis"
+  short_description: "Use logs and durable facts to localize AnyFusion failures"
+  default_prompt: "Use $diagnosing-anyfusion-bugs to diagnose this AnyFusion issue from runtime logs and durable database facts before forming hypotheses."

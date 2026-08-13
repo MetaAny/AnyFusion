@@ -6,6 +6,7 @@ describe('Docker shell SQLite schema isolation', () => {
   it('builds one Node 22 runtime from both repository contexts', () => {
     const runtimeDockerfile = readFileSync(resolve('docker/Dockerfile.runtime'), 'utf-8');
     const shell = readFileSync(resolve('docker/shell.ps1'), 'utf-8');
+    const runtimeCommon = readFileSync(resolve('docker/runtime-common.ps1'), 'utf-8');
     const smoke = readFileSync(resolve('scripts/smoke-metaclaw-real-task.mjs'), 'utf-8');
 
     expect(runtimeDockerfile).toContain(
@@ -26,7 +27,8 @@ describe('Docker shell SQLite schema isolation', () => {
     expect(runtimeDockerfile).toContain('/app/dist/capability-use-cli.js');
     expect(runtimeDockerfile).not.toContain('ANYFUSION_PI_IMAGE');
     expect(runtimeDockerfile).not.toContain('FROM ${ANYFUSION_PI_IMAGE}');
-    expect(shell).toContain('docker build --build-context "anyfusion-pi=$anyFusionPiRoot"');
+    expect(shell).toContain("runtime-common.ps1");
+    expect(runtimeCommon).toContain('docker build --build-context "anyfusion-pi=$AnyFusionPiRoot"');
     expect(shell).not.toContain('Build-AnyFusionPiImage');
     expect(shell).not.toContain('Build-Image');
     expect(shell).not.toContain('Build-BaseImage');

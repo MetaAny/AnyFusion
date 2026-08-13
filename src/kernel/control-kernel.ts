@@ -68,7 +68,7 @@ export interface KernelPlanProposal {
   task: {
     binding: 'new' | 'reference' | 'none';
     taskId: string | null;
-    control: 'clear_tasks' | 'status_query' | 'resume_task' | 'recover_blocked' | 'none';
+    control: 'clear_tasks' | 'status_query' | 'resume_task' | 'none';
     scope: string | null;
     title: string | null;
     goal: string | null;
@@ -138,6 +138,11 @@ export type KernelEvent =
   | (KernelEventEnvelope & {
       type: 'permission_requested';
       request: NormalizedCapabilityRequest;
+    })
+  | (KernelEventEnvelope & {
+      type: 'permission_review_represented';
+      requestId: string;
+      requestFingerprint: string;
     })
   | (KernelEventEnvelope & {
       type: 'permission_resolution_received';
@@ -502,6 +507,7 @@ export class ControlKernel {
       case 'recovery_resolution_requested':
         return this.decideRecovery(event, snapshot as Extract<KernelSnapshot, { type: 'recovery' }>);
       case 'permission_requested':
+      case 'permission_review_represented':
       case 'permission_resolution_received':
         return this.decidePermission(event, snapshot as Extract<KernelSnapshot, { type: 'permission' }>);
       case 'partition_conflict_observed':
@@ -566,8 +572,19 @@ export class ControlKernel {
       return decision(event, { type: 'reject_request' }, `task not found: ${proposal.task.taskId}`);
     }
     if (proposal.action === 'task_control') {
-      if ((proposal.task.control === 'resume_task' || proposal.task.control === 'recover_blocked') && !proposal.task.taskId) {
+      if (proposal.task.control === 'resume_task' && !proposal.task.taskId) {
         return decision(event, { type: 'request_clarification', question: proposal.clarificationQuestion ?? 'Which task should be resumed?' }, 'resume requires an explicit task');
+      }
+      if (proposal.task.control === 'resume_task') {
+        const target = snapshot.tasks.find(task => task.id === proposal.task.taskId);
+        const resumable = target && (
+          target.status === 'ready'
+          || target.status === 'parked'
+          || target.status === 'blocked'
+        );
+        if (target && !resumable) {
+          return decision(event, { type: 'reject_request' }, `task ${target.id} cannot resume from status ${target.status}`);
+        }
       }
       if (snapshot.runningTaskId && proposal.task.taskId !== snapshot.runningTaskId && !['status_query', 'clear_tasks'].includes(proposal.task.control)) {
         return decision(event, { type: 'reject_request' }, `single-active Task constraint: ${snapshot.runningTaskId}`);
@@ -779,6 +796,13 @@ export class ControlKernel {
     }
     if (snapshot.task?.status === 'cancelled' || subtask.status === 'cancelled') {
       return decision(event, { type: 'no_op' }, 'cancellation fence makes the late attempt outcome stale');
+    }
+    if (
+      failure.code === 'task_paused'
+      && snapshot.task?.status === 'parked'
+      && subtask.status === 'ready'
+    ) {
+      return decision(event, { type: 'no_op' }, 'pause fence settled the interrupted attempt for explicit resume');
     }
     if (!snapshot.automaticRecoveryAllowed || snapshot.recoverySafety === 'external_non_idempotent') {
       return decision(event, { type: 'block_work', taskId, subtaskId: subtask.id }, 'automatic recovery cannot prove external effect safety');
@@ -1029,7 +1053,9 @@ export class ControlKernel {
   }
 
   private decidePermission(
-    event: Extract<KernelEvent, { type: 'permission_requested' | 'permission_resolution_received' }>,
+    event: Extract<KernelEvent, {
+      type: 'permission_requested' | 'permission_review_represented' | 'permission_resolution_received';
+    }>,
     snapshot: Extract<KernelSnapshot, { type: 'permission' }>,
   ): KernelDecision {
     const request = snapshot.request;
@@ -1038,6 +1064,10 @@ export class ControlKernel {
     }
     if (event.type === 'permission_resolution_received' && event.requestId !== request.id) {
       return decision(event, { type: 'deny_capability', requestId: event.requestId, notifyPlanner: false, authorization: null }, 'permission resolution request ID mismatch');
+    }
+    if (event.type === 'permission_review_represented'
+      && (event.requestId !== request.id || event.requestFingerprint !== request.fingerprint)) {
+      return decision(event, { type: 'deny_capability', requestId: event.requestId, notifyPlanner: false, authorization: null }, 'permission review identity mismatch');
     }
     if (snapshot.requestStatus !== 'pending') {
       const existing = snapshot.currentGrants.find(grant => grant.requestId === request.id);
@@ -1051,6 +1081,11 @@ export class ControlKernel {
         }, 'duplicate request returns the existing grant');
       }
       return decision(event, { type: 'deny_capability', requestId: request.id, notifyPlanner: false, authorization: null }, `permission request is ${snapshot.requestStatus ?? 'missing'}`);
+    }
+    if (event.type === 'permission_review_represented') {
+      return decision(event, {
+        type: 'escalate_capability', requestId: request.id, notifyPlanner: true,
+      }, 'unresolved permission review re-presented after Session replacement');
     }
     if (event.type === 'permission_resolution_received' && event.resolution === 'deny') {
       return decision(event, {
@@ -1205,7 +1240,11 @@ function snapshotMatches(event: KernelEvent, snapshot: KernelSnapshot): boolean 
   if (event.type === 'executor_recovered') return snapshot.type === 'availability_recovery';
   if (event.type === 'timer_tick') return snapshot.type === 'timer';
   if (event.type === 'recovery_resolution_requested') return snapshot.type === 'recovery';
-  if (event.type === 'permission_requested' || event.type === 'permission_resolution_received') return snapshot.type === 'permission';
+  if (
+    event.type === 'permission_requested'
+    || event.type === 'permission_review_represented'
+    || event.type === 'permission_resolution_received'
+  ) return snapshot.type === 'permission';
   if (event.type === 'partition_conflict_observed') return snapshot.type === 'partition';
   if (event.type === 'sandbox_lost') return snapshot.type === 'sandbox_recovery';
   if (

@@ -32,6 +32,18 @@ describe('Feishu Gateway policy', () => {
       allowedUsers: [],
       groupPolicy: 'open',
       requireMention: true,
+    }).reason).toBe('bot_identity_missing');
+
+    expect(evaluateFeishuGatewayPolicy({
+      chatId: 'oc_group',
+      chatType: 'group',
+      senderId: 'ou_user',
+      mentionOpenIds: [],
+    }, {
+      dmPolicy: 'pairing',
+      allowedUsers: [],
+      groupPolicy: 'open',
+      requireMention: true,
       botOpenId: 'ou_bot',
     }).reason).toBe('mention_required');
 

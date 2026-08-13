@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ControlKernel, type KernelEvent, type KernelSnapshot } from '../../src/kernel/control-kernel.js';
 import { testPlannerExecutorCatalog } from '../support/executor-registry.js';
-import { workGraphPlan } from '../support/planning-agent-plans.js';
+import { taskControlPlan, workGraphPlan } from '../support/planning-agent-plans.js';
 import { capabilityRequestFingerprint, type NormalizedCapabilityRequest } from '../../src/resource/index.js';
 
 const event: KernelEvent = {
@@ -108,6 +108,33 @@ describe('ControlKernel', () => {
     })).toMatchObject({
       action: { type: 'reject_request' },
       reason: 'task not found: ',
+    });
+  });
+
+  it.each(['created', 'running', 'done', 'cancelled'] as const)(
+    'rejects resume_task for a %s task',
+    status => {
+      const proposal = taskControlPlan({ control: 'resume_task', taskId: 'task_1' });
+
+      expect(new ControlKernel().decide({ ...event, proposal }, {
+        ...snapshot,
+        tasks: [{ id: 'task_1', status }],
+        runningTaskId: status === 'running' ? 'task_1' : null,
+      })).toMatchObject({
+        action: { type: 'reject_request' },
+        reason: `task task_1 cannot resume from status ${status}`,
+      });
+    },
+  );
+
+  it.each(['ready', 'parked', 'blocked'] as const)('authorizes resume_task for a %s task', status => {
+    const proposal = taskControlPlan({ control: 'resume_task', taskId: 'task_1' });
+
+    expect(new ControlKernel().decide({ ...event, proposal }, {
+      ...snapshot,
+      tasks: [{ id: 'task_1', status }],
+    })).toMatchObject({
+      action: { type: 'authorize_task_control', task: { control: 'resume_task', taskId: 'task_1' } },
     });
   });
 
@@ -610,6 +637,45 @@ describe('ControlKernel', () => {
     expect(decision.action).toMatchObject({
       type: 'recover_workspace_attempt', requestId: request.id, workspaceId: 'workspace-1',
       authorization: { resolution: 'approve', source: 'command' },
+    });
+  });
+
+  it('re-presents an unresolved permission review without granting from prior authorization facts', () => {
+    const request = permissionRequest({
+      capability: 'repository_promotion',
+      operation: 'promote_commit:candidate',
+    });
+    const event = runtimeEvent({
+      type: 'permission_review_represented',
+      attemptId: request.attemptId,
+      requestId: request.id,
+      requestFingerprint: request.fingerprint,
+    });
+    const decision = new ControlKernel().decide(event, {
+      schemaVersion: 5,
+      type: 'permission',
+      request,
+      requestStatus: 'pending',
+      rules: [{
+        id: 'would-allow',
+        effect: 'allow',
+        capability: request.capability,
+        operation: request.operation,
+        partition: request.partition,
+        reason: 'must not authorize a review presentation',
+      }],
+      currentGrants: [],
+      userAuthorizationFingerprints: [request.fingerprint],
+      previouslyDeniedFingerprints: [],
+      attemptActive: false,
+      workspaceId: 'workspace-1',
+      checkpointId: null,
+    });
+
+    expect(decision.action).toEqual({
+      type: 'escalate_capability',
+      requestId: request.id,
+      notifyPlanner: true,
     });
   });
 

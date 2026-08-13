@@ -37,6 +37,7 @@ import { WorktreeAttemptSandboxAdapter } from '../execution/worktree-attempt-san
 import type { AttemptSandboxPort } from '../execution/attempt-sandbox.js';
 import { ResourceLeaseService } from '../execution/resource-lease-service.js';
 import { WorkspacePublicationWorker } from '../execution/workspace-publication-worker.js';
+import type { StaleWorkspacePublication } from '../execution/workspace-publication-worker.js';
 import { SqliteResourceLeaseRepository } from '../storage/resource-lease-repo.js';
 import { SqlitePermissionRepository } from '../storage/permission-repo.js';
 import { SqliteAttemptSandboxRepository } from '../storage/attempt-sandbox-repo.js';
@@ -48,7 +49,11 @@ import {
   PermissionWorkflowService,
 } from '../execution/permission-workflow-service.js';
 import { RegisteredCapabilityResourceResolver } from '../execution/capability-resource-resolver.js';
-import { buildPermissionRules } from '../resource/index.js';
+import {
+  buildPermissionRules,
+  capabilityRequestFingerprint,
+  type PermissionRequestRecord,
+} from '../resource/index.js';
 import { AttemptSandboxReconciler } from '../execution/attempt-sandbox-reconciler.js';
 import { InputController } from './input-controller.js';
 import { SessionPresentationService, type GuidanceState } from './session-presentation-service.js';
@@ -75,10 +80,13 @@ import type { PlanningAgentPlan, PlanningContext } from '../planning/planning-ty
 import type { KernelExecutorStatusProjection } from '../kernel/executor-status-projection.js';
 import { ControlKernel, type KernelDecision, type KernelEvent, type KernelSnapshot } from '../kernel/control-kernel.js';
 import { DurableKernelWorkflow } from '../kernel/kernel-workflow.js';
-import { KernelDecisionRepo } from '../storage/kernel-decision-repo.js';
+import { KernelDecisionRepo, type KernelDecisionLedgerRecord } from '../storage/kernel-decision-repo.js';
 import { KernelWorkflowRepo } from '../storage/kernel-workflow-repo.js';
 import { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
-import { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
+import {
+  WorkspacePublicationRepo,
+  type WorkspacePublicationRecord,
+} from '../storage/workspace-publication-repo.js';
 import { GenerationReplanRequestRepo } from '../storage/generation-replan-request-repo.js';
 import { TaskCancellationCoordinator } from '../execution/task-cancellation-coordinator.js';
 import { SessionKernelRuntime } from './session-kernel-runtime.js';
@@ -188,7 +196,9 @@ export interface PlannerTuiSnapshot {
   schemaVersion: 1;
   session: {
     id: string;
-    focusedTask: SessionSnapshot['currentTask'];
+    focusedTask: (Omit<NonNullable<SessionSnapshot['currentTask']>, 'status'> & {
+      status: Task['status'] | 'waiting_approval';
+    }) | null;
     runtimeState: RuntimeState;
     plannerState: SessionSnapshot['plannerState'];
     recentOutput: string[];
@@ -197,7 +207,7 @@ export interface PlannerTuiSnapshot {
     id: string;
     title: string;
     goal: string;
-    status: Task['status'];
+    status: Task['status'] | 'waiting_approval';
     blockingReason: string | null;
     subtasks: Array<{
       id: string;
@@ -237,6 +247,7 @@ export interface PlannerTuiExecutorResult {
 export interface PlannerTuiPermissionRequest {
   schemaVersion: 1;
   permissionRequestId: string;
+  reviewId: string;
   taskId: string;
   taskTitle: string;
   generationId: string;
@@ -251,6 +262,9 @@ export interface PlannerTuiPermissionRequest {
   reason: string;
   suggestedScope: 'once' | 'attempt';
   escalationReason: string;
+  candidateReport?: string;
+  candidateArtifacts?: string[];
+  changedPaths?: string[];
   createdAt: string;
   expiresAt: string;
 }
@@ -303,6 +317,7 @@ export class MetaclawSession {
   private lastBlockedRecheckAt: number | null = null;
   private blockedRecheckInFlight = false;
   private backgroundWork = new Set<Promise<void>>();
+  private readonly backgroundWorkByTask = new Map<string, Set<Promise<void>>>();
   private currentTaskId: string | null = null;
   private focusContext: FocusContext | null = null;
   private readonly memoryContextService: MemoryContextService;
@@ -348,6 +363,10 @@ export class MetaclawSession {
   private readonly executorRecoveryRefreshService: ExecutorRecoveryRefreshService;
   private readonly plannerProposalRepo: PlannerProposalRepo;
   private readonly publicationRepo: WorkspacePublicationRepo;
+  private readonly publicationWorker: WorkspacePublicationWorker;
+  private readonly sourceRoot: string;
+  private readonly projectId: string;
+  private readonly autoApproveRepositoryPromotions: boolean;
   private unregisterPlannerHost: (() => void) | null = null;
 
   constructor(private deps: MetaclawSessionDeps) {
@@ -360,6 +379,9 @@ export class MetaclawSession {
         : (() => { throw new Error('MetaclawSession requires an explicit Project'); })());
     const projectId = deps.project?.id
       ?? (usingTestProjectFallback ? `project_test_${deps.sessionId}` : 'project_test_default');
+    this.sourceRoot = sourceRoot;
+    this.projectId = projectId;
+    this.autoApproveRepositoryPromotions = usingTestProjectFallback;
     const workspaceStoreRoot = process.env.NODE_ENV === 'test' && !deps.project
       ? resolve(`${sourceRoot}.anyfusion-runtime`, 'project-worktrees', projectId)
       : resolve(resolveMetaclawDir(), 'project-worktrees', projectId);
@@ -506,6 +528,15 @@ export class MetaclawSession {
       sourceRoot,
       autoApproveRepositoryPromotions: usingTestProjectFallback,
     });
+    this.publicationWorker = new WorkspacePublicationWorker({
+      db: deps.db,
+      sourceRoot,
+      workspaceStore: this.workspaceStore,
+      workspaceRepository: this.workspaceRepository,
+      subtaskRepo: this.subtaskRepo,
+      attemptReceiptRepo: this.attemptReceiptRepo,
+      taskRuntimeService: this.taskRuntimeService,
+    });
     this.kernelExecutionRuntime = new KernelExecutionRuntime({
       sessionId: deps.sessionId,
       orchestration: deps.orchestration,
@@ -525,15 +556,7 @@ export class MetaclawSession {
       kernelWorkflowStore: this.kernelWorkflowRepo,
       dispatchItemRepo,
       maxConcurrentAttempts: deps.config.orchestration.max_concurrent_attempts,
-      publicationWorker: new WorkspacePublicationWorker({
-        db: deps.db,
-        sourceRoot,
-        workspaceStore: this.workspaceStore,
-        workspaceRepository: this.workspaceRepository,
-        subtaskRepo: this.subtaskRepo,
-        attemptReceiptRepo: this.attemptReceiptRepo,
-        taskRuntimeService: this.taskRuntimeService,
-      }),
+      publicationWorker: this.publicationWorker,
       publicationRepo: this.publicationRepo,
       generationReplanRepo,
       cancellationCoordinator,
@@ -557,6 +580,7 @@ export class MetaclawSession {
         requestReplan: decision => this.requestKernelReplan(decision),
         requestMergeReplan: decision => this.requestKernelMergeReplan(decision),
         buildPlanAdmissionSnapshot: event => this.buildPlanAdmissionSnapshot(event),
+        reissueStalePublication: outcome => this.reissueStalePublication(outcome),
       },
     });
     this.taskExecutionApplicationService = new SessionTaskExecutionApplicationService({
@@ -670,11 +694,17 @@ export class MetaclawSession {
   getPlannerTuiSnapshot(): PlannerTuiSnapshot {
     const snapshot = this.getSnapshot();
     const executorRegistry = this.executorRegistryService.current();
+    const focusedPublication = snapshot.currentTask
+      ? this.publicationRepo.findAwaitingApprovalByTask(snapshot.currentTask.id)
+      : null;
     return {
       schemaVersion: 1,
       session: {
         id: this.deps.sessionId,
-        focusedTask: snapshot.currentTask ? { ...snapshot.currentTask } : null,
+        focusedTask: snapshot.currentTask ? {
+          ...snapshot.currentTask,
+          status: focusedPublication ? 'waiting_approval' : snapshot.currentTask.status,
+        } : null,
         runtimeState: {
           ...snapshot.runtimeState,
           readyTaskIds: [...snapshot.runtimeState.readyTaskIds],
@@ -684,21 +714,26 @@ export class MetaclawSession {
         plannerState: { ...snapshot.plannerState },
         recentOutput: snapshot.output.slice(-100),
       },
-      taskPool: this.taskRuntimeService.listTasks().slice(0, 100).map(task => ({
-        id: task.id,
-        title: task.title,
-        goal: task.goal,
-        status: task.status,
-        blockingReason: (task.lastInterruptionReason
-          || task.dependencies.find(dependency => dependency.status === 'waiting')?.description
-          || '').slice(0, 500) || null,
-        subtasks: this.subtaskRepo.listByTask(task.id).slice(0, 100).map(subtask => ({
-          id: subtask.id,
-          title: subtask.title,
-          status: subtask.status,
-          preferredAgentClassList: [...subtask.preferredAgentClassList],
-        })),
-      })),
+      taskPool: this.taskRuntimeService.listTasks().slice(0, 100).map(task => {
+        const publication = this.publicationRepo.findAwaitingApprovalByTask(task.id);
+        return {
+          id: task.id,
+          title: task.title,
+          goal: task.goal,
+          status: publication ? 'waiting_approval' : task.status,
+          blockingReason: publication
+            ? `等待批准仓库发布请求 ${publication.permissionRequestId}`
+            : (task.lastInterruptionReason
+              || task.dependencies.find(dependency => dependency.status === 'waiting')?.description
+              || '').slice(0, 500) || null,
+          subtasks: this.subtaskRepo.listByTask(task.id).slice(0, 100).map(subtask => ({
+            id: subtask.id,
+            title: subtask.title,
+            status: subtask.status,
+            preferredAgentClassList: [...subtask.preferredAgentClassList],
+          })),
+        };
+      }),
       executorRegistry: {
         configDigest: executorRegistry.configDigest,
         planner: executorRegistry.planner,
@@ -728,7 +763,9 @@ export class MetaclawSession {
         attemptId: publication.sourceAttemptId,
         executorName: publication.agentClassName,
         report: publication.originalCompletion.body,
-        artifacts: [...publication.originalCompletion.artifacts],
+        artifacts: subtask?.artifacts.length
+          ? [...subtask.artifacts]
+          : [...publication.originalCompletion.artifacts],
         warnings: [...publication.originalCompletion.warnings],
         integrationCommit: publication.integrationCommit,
         completedAt: publication.updatedAt,
@@ -751,24 +788,39 @@ export class MetaclawSession {
     });
   }
 
+  private findActiveAppliedPermissionEscalation(requestId: string): KernelDecisionLedgerRecord | null {
+    const escalations = this.kernelDecisionRepo.listByCorrelation(requestId)
+      .filter(record => record.action === 'escalate_capability'
+        && this.kernelWorkflowRepo.isDecisionApplied(record.id));
+    const supersededDecisionIds = new Set(escalations
+      .map(record => record.causationId)
+      .filter((id): id is string => Boolean(id)));
+    return [...escalations].reverse()
+      .find(record => !supersededDecisionIds.has(record.id)) ?? null;
+  }
+
   getPlannerTuiPermissionRequests(): PlannerTuiPermissionRequest[] {
     const now = new Date().toISOString();
-    const decisions = this.kernelDecisionRepo.listBySession(this.deps.sessionId);
-    const appliedEscalations = new Map(decisions
-      .filter(record => record.action === 'escalate_capability'
-        && this.kernelWorkflowRepo.isDecisionApplied(record.id))
-      .map(record => [record.correlationId, record]));
     return this.permissionRepository.listEscalated()
-      .filter(record => appliedEscalations.has(record.request.id))
-      .filter(record => !this.kernelDecisionRepo.listByCorrelation(record.request.id)
+      .map(record => ({
+        record,
+        escalation: this.findActiveAppliedPermissionEscalation(record.request.id),
+      }))
+      .filter((item): item is typeof item & { escalation: KernelDecisionLedgerRecord } => (
+        item.escalation?.sessionId === this.deps.sessionId
+      ))
+      .filter(item => !this.kernelDecisionRepo.listByCorrelation(item.record.request.id)
         .some(decision => decision.event.type === 'permission_resolution_received'
           && this.kernelWorkflowRepo.isDecisionApplied(decision.id)))
-      .filter(record => isPermissionRequestActive(record.createdAt, now))
-      .map(record => {
-        const escalation = appliedEscalations.get(record.request.id)!;
+      .filter(item => isPermissionRequestActive(item.escalation.createdAt, now))
+      .map(({ record, escalation }) => {
+        const publication = record.request.capability === 'repository_promotion'
+          ? this.publicationRepo.findByPermissionRequestId(record.request.id)
+          : null;
         return {
           schemaVersion: 1,
           permissionRequestId: record.request.id,
+          reviewId: escalation.id,
           taskId: record.request.taskId,
           taskTitle: this.taskRuntimeService.findTask(record.request.taskId)?.title ?? record.request.taskId,
           generationId: record.request.generationId,
@@ -783,8 +835,13 @@ export class MetaclawSession {
           reason: record.request.reason,
           suggestedScope: record.request.suggestedScope,
           escalationReason: escalation.reason,
-          createdAt: record.createdAt,
-          expiresAt: permissionRequestExpiresAt(record.createdAt)!,
+          ...(publication ? {
+            candidateReport: publication.originalCompletion.body,
+            candidateArtifacts: [...publication.originalCompletion.artifacts],
+            changedPaths: [...publication.changedPaths],
+          } : {}),
+          createdAt: escalation.createdAt,
+          expiresAt: permissionRequestExpiresAt(escalation.createdAt)!,
         };
       });
   }
@@ -795,10 +852,8 @@ export class MetaclawSession {
   ): Promise<PlannerTuiPermissionResolutionResult> {
     await this.initialization;
     const decisions = this.kernelDecisionRepo.listByCorrelation(permissionRequestId);
-    const escalation = decisions.find(record => record.sessionId === this.deps.sessionId
-      && record.action === 'escalate_capability'
-      && this.kernelWorkflowRepo.isDecisionApplied(record.id));
-    if (!escalation) {
+    const escalation = this.findActiveAppliedPermissionEscalation(permissionRequestId);
+    if (escalation?.sessionId !== this.deps.sessionId) {
       return { status: 'conflict', resolution: null, message: 'Permission request does not belong to this session.' };
     }
     const appliedResolution = decisions.find(record => record.event.type === 'permission_resolution_received'
@@ -815,7 +870,7 @@ export class MetaclawSession {
     if (!record || record.status !== 'escalated') {
       return { status: 'conflict', resolution: null, message: 'Permission request is no longer escalated.' };
     }
-    if (!isPermissionRequestActive(record.createdAt, new Date().toISOString())) {
+    if (!isPermissionRequestActive(escalation.createdAt, new Date().toISOString())) {
       return { status: 'conflict', resolution: null, message: 'Permission request has expired.' };
     }
     await this.resolvePermission({ requestId: permissionRequestId, resolution, source: 'button' });
@@ -1098,19 +1153,31 @@ export class MetaclawSession {
 
     if (showDashboard && this.deps.config.ui.dashboard_on_start) {
       const dashboard = this.deps.orchestration.getDashboard();
+      const priorityPublication = dashboard.priorityTask
+        ? this.publicationRepo.findAwaitingApprovalByTask(dashboard.priorityTask.id)
+        : null;
       this.output = [
         '┌─ Metaclaw v1.0 ─────────────────────────────────┐',
         `│ 你有 ${dashboard.summary.active} 个活跃任务，${dashboard.summary.blocked} 个 Blocked。`,
       ];
 
-      if (dashboard.priorityTask) {
+      if (dashboard.priorityTask && priorityPublication) {
+        this.output.push(`│ 等待审批：#${dashboard.priorityTask.id} ${dashboard.priorityTask.title}`);
+        this.output.push(`│   → 批准仓库发布请求 ${priorityPublication.permissionRequestId}`);
+      } else if (dashboard.priorityTask) {
         this.output.push(`│ 建议优先：#${dashboard.priorityTask.id} ${dashboard.priorityTask.title}`);
         dashboard.priorityTask.reasons.forEach(reason => this.output.push(`│   → ${reason}`));
       }
 
       this.output.push('└──────────────────────────────────────────────────┘');
 
-      if (dashboard.priorityTask) {
+      if (dashboard.priorityTask && priorityPublication) {
+        this.appendGuidance('启动建议', {
+          taskId: dashboard.priorityTask.id,
+          recommendedAction: `批准仓库发布请求 ${priorityPublication.permissionRequestId}`,
+          reasons: ['Executor 已完成候选结果；审批是唯一下一步，不会重复调度'],
+        });
+      } else if (dashboard.priorityTask) {
         this.appendGuidance('启动建议', {
           taskId: dashboard.priorityTask.id,
           recommendedAction: `优先处理任务 #${dashboard.priorityTask.id}: ${dashboard.priorityTask.title}`,
@@ -1129,7 +1196,10 @@ export class MetaclawSession {
     }
 
     const startupProposal = resumeStartupTasks ? this.deps.orchestration.generateProposals('startup')[0] : null;
-    if (startupProposal) {
+    const startupPublication = startupProposal?.taskId
+      ? this.publicationRepo.findAwaitingApprovalByTask(startupProposal.taskId)
+      : null;
+    if (startupProposal && !startupPublication) {
       this.queueProposal('启动建议', startupProposal);
     }
 
@@ -1154,7 +1224,14 @@ export class MetaclawSession {
     options: { awaitAsyncWork?: boolean } = {},
   ): Promise<{ exitRequested: boolean }> {
     await this.initialization;
-    return this.inputController.submit(rawInput, options);
+    if (!options.awaitAsyncWork) {
+      return this.inputController.submit(rawInput, options);
+    }
+
+    const existingWork = new Set(this.backgroundWork);
+    const result = await this.inputController.submit(rawInput, { awaitAsyncWork: false });
+    await this.waitForAsyncWorkStartedAfter(existingWork);
+    return result;
   }
 
   async waitForAsyncWork(): Promise<void> {
@@ -1162,6 +1239,18 @@ export class MetaclawSession {
     while (this.backgroundWork.size > 0) {
       await Promise.allSettled(Array.from(this.backgroundWork));
     }
+  }
+
+  private async waitForAsyncWorkStartedAfter(existingWork: ReadonlySet<Promise<void>>): Promise<void> {
+    while (true) {
+      const pending = Array.from(this.backgroundWork).filter(work => !existingWork.has(work));
+      if (pending.length === 0) return;
+      await Promise.allSettled(pending);
+    }
+  }
+
+  async waitForInitialization(): Promise<void> {
+    await this.initialization;
   }
 
   appendSystemMessage(...lines: string[]): void {
@@ -1716,19 +1805,42 @@ export class MetaclawSession {
     taskId: string,
     request: QueuedExecutionRequest,
   ): void {
+    const publication = this.publicationRepo.findAwaitingApprovalByTask(taskId);
+    if (publication) {
+      this.appendOutput(
+        `Task #${taskId} 的 Executor 已完成候选结果，当前只等待仓库发布审批。`,
+        `请在权限面板批准请求 ${publication.permissionRequestId}；继续/重试不会重复启动 Executor。`,
+      );
+      this.refreshRuntimeState();
+      return;
+    }
+    const task = this.taskRuntimeService.findTask(taskId);
+    if (
+      (request.executionMode === 'resume-parked' || request.executionMode === 'resume-blocked')
+      && task?.status !== 'parked'
+      && task?.status !== 'blocked'
+    ) {
+      this.appendOutput(`Task #${taskId} 当前为 ${task?.status ?? 'missing'}，不能执行恢复操作。`);
+      this.refreshRuntimeState();
+      return;
+    }
     return this.taskExecutionApplicationService.prepareTaskExecution(taskId, request);
   }
 
   private startBackgroundExecution(taskId: string, launch: () => Promise<void>): void {
+    const priorTaskWork = Array.from(this.backgroundWorkByTask.get(taskId) ?? []);
     const scheduled = new Promise<void>(resolveWork => {
       setTimeout(() => {
-        void launch().catch(error => {
-          this.appendOutput(`Executor background failure for ${taskId}: ${(error as Error).message}`);
-          this.refreshRuntimeState();
-        }).finally(resolveWork);
+        void Promise.allSettled(priorTaskWork)
+          .then(() => launch())
+          .catch(error => {
+            this.appendOutput(`Executor background failure for ${taskId}: ${(error as Error).message}`);
+            this.refreshRuntimeState();
+          })
+          .finally(resolveWork);
       }, 0);
     });
-    this.trackBackgroundWork(scheduled);
+    this.trackBackgroundWork(scheduled, taskId);
   }
 
   private appendOutput(...lines: string[]): void {
@@ -1816,26 +1928,39 @@ export class MetaclawSession {
       const directive = result.directive;
       const resumedTask = this.taskRuntimeService.findTask(directive.taskId);
       if (resumedTask) {
+        const isBlocked = resumedTask.status === 'blocked';
+        const executionMode = resumedTask.status === 'ready'
+          ? 'fresh'
+          : isBlocked ? 'resume-blocked' : 'resume-parked';
         this.setCurrentTaskId(resumedTask.id);
         await this.prepareTaskExecution(resumedTask.id, {
           userPrompt: resumedTask.goal,
           contextTaskId: resumedTask.id,
-          executionMode: directive.mode,
-          schedulingReason: directive.mode === 'resume-blocked' ? '解除阻塞' : '恢复已暂停任务',
+          executionMode,
+          schedulingReason: resumedTask.status === 'ready'
+            ? '继续待执行任务'
+            : isBlocked ? '恢复阻塞任务' : '恢复已暂停任务',
           newlyProvidedResources: directive.newlyProvidedResources,
-          recoveryTrigger: directive.mode === 'resume-blocked'
+          recoveryTrigger: isBlocked
             ? this.buildRecoveryTrigger(resumedTask, {
                 kind: 'explicit-task-command',
                 blockedReason: directive.blockedReason,
                 triggerReason: directive.newlyProvidedResources?.length
-                  ? '显式解除阻塞并补充材料'
-                  : '显式解除阻塞',
+                  ? '显式恢复阻塞任务并补充材料'
+                  : '显式恢复阻塞任务',
                 sourceInput: userInput,
                 newlyProvidedResources: directive.newlyProvidedResources,
               })
             : undefined,
         });
       }
+    }
+
+    if (result.type === 'directive' && result.directive.kind === 'resume-publication-review') {
+      await this.reissuePublicationPermissionReview(
+        result.directive.taskId,
+        result.directive.permissionRequestId,
+      );
     }
 
     if (result.type === 'directive' && result.directive.kind === 'show-task-recovery') {
@@ -1875,15 +2000,39 @@ export class MetaclawSession {
     if (record.request.capability === 'repository_promotion' && !publication) {
       throw new Error(`repository promotion publication not found: ${input.requestId}`);
     }
+    const task = this.taskRuntimeService.findTask(record.request.taskId);
+    const workflow = this.createPermissionWorkflow(record, publication, task);
+    await workflow.resolve({
+      requestId: input.requestId,
+      resolution: input.resolution,
+      source: input.source,
+      plannerPlanId: input.plannerPlanId ?? null,
+    });
+    if (publication && input.resolution === 'deny') {
+      const now = new Date().toISOString();
+      if (this.publicationRepo.markDenied(publication.id, 'user denied repository promotion', now)) {
+        this.subtaskRepo.updateStatus(publication.subtaskId, 'blocked', {
+          error: 'user denied repository promotion',
+        });
+        if (task?.status === 'running') this.taskRuntimeService.transitionTask(task.id, 'blocked');
+      }
+    }
+  }
+
+  private createPermissionWorkflow(
+    record: PermissionRequestRecord,
+    publication: WorkspacePublicationRecord | null,
+    task: Task | null,
+  ): PermissionWorkflowService {
     const sandbox = this.attemptSandboxRepository.find(record.request.attemptId);
     const workspaceId = sandbox?.workspaceId
       ?? `workspace:${record.request.taskId}:${record.request.generationId}:${record.request.subtaskId}`;
-    const task = this.taskRuntimeService.findTask(record.request.taskId);
     const resourceRegistrations = new Map((task?.resources ?? []).map((resource, index) => [
       resource,
       { kind: 'path' as const, mountId: `inputs-${record.request.taskId}`, normalizedRelativePath: `resource-${index}` },
     ]));
-    const workflow = new PermissionWorkflowService({
+    const activeReview = this.findActiveAppliedPermissionEscalation(record.request.id);
+    return new PermissionWorkflowService({
       context: {
         sessionId: this.deps.sessionId,
         taskId: record.request.taskId,
@@ -1912,13 +2061,13 @@ export class MetaclawSession {
           if (!task || !request) return;
           if (request.capability === 'repository_promotion') {
             if (!publication || !this.publicationRepo.markApproved(publication.id, new Date().toISOString())) {
-              throw new Error(`repository promotion is no longer awaiting approval: ${input.requestId}`);
+              throw new Error(`repository promotion is no longer awaiting approval: ${record.request.id}`);
             }
             await this.prepareTaskExecution(task.id, {
               userPrompt: task.goal,
               contextTaskId: task.id,
               executionMode: 'follow-up',
-              schedulingReason: `repository promotion ${input.requestId} approved`,
+              schedulingReason: `repository promotion ${record.request.id} approved`,
               origin: 'system',
             });
             return;
@@ -1927,26 +2076,196 @@ export class MetaclawSession {
             userPrompt: task.goal,
             contextTaskId: task.id,
             executionMode: 'resume-blocked',
-            schedulingReason: `permission ${input.requestId} approved; recover persistent workspace`,
+            schedulingReason: `permission ${record.request.id} approved; recover persistent workspace`,
           });
         },
       },
+      reviewIssuedAt: activeReview?.createdAt ?? record.createdAt,
     });
-    await workflow.resolve({
-      requestId: input.requestId,
-      resolution: input.resolution,
-      source: input.source,
-      plannerPlanId: input.plannerPlanId ?? null,
-    });
-    if (publication && input.resolution === 'deny') {
-      const now = new Date().toISOString();
-      if (this.publicationRepo.markDenied(publication.id, 'user denied repository promotion', now)) {
-        this.subtaskRepo.updateStatus(publication.subtaskId, 'blocked', {
-          error: 'user denied repository promotion',
-        });
-        if (task?.status === 'running') this.taskRuntimeService.transitionTask(task.id, 'blocked');
-      }
+  }
+
+  private async reissuePublicationPermissionReview(
+    taskId: string,
+    permissionRequestId: string,
+  ): Promise<void> {
+    const publication = this.publicationRepo.findAwaitingApprovalByTask(taskId);
+    if (!publication || publication.permissionRequestId !== permissionRequestId) {
+      this.appendOutput(`Task #${taskId} 当前没有可恢复的仓库发布审批。`);
+      this.refreshRuntimeState();
+      return;
     }
+    const decisions = this.kernelDecisionRepo.listByCorrelation(permissionRequestId);
+    if (decisions.some(decision => decision.event.type === 'permission_resolution_received'
+      && this.kernelWorkflowRepo.isDecisionApplied(decision.id))) {
+      this.appendOutput(`仓库发布审批 ${permissionRequestId} 已处理，不能再次签发。`);
+      this.refreshRuntimeState();
+      return;
+    }
+    let record = this.permissionRepository.findRequest(permissionRequestId);
+    const activeReview = this.findActiveAppliedPermissionEscalation(permissionRequestId);
+    if (!record || record.status === 'pending' || record.status === 'expired') {
+      const original = decisions.find(decision => decision.event.type === 'permission_requested');
+      const request = original?.event.type === 'permission_requested' ? original.event.request : null;
+      if (!request || !activeReview || !this.publicationPermissionRequestMatches(publication, request)) {
+        this.appendOutput(
+          `仓库发布审批 ${permissionRequestId} 无法安全恢复。`,
+          `候选提交 ${publication.candidateCommit} 已保留，但原始权限身份缺失或与 publication 不一致。`,
+        );
+        this.refreshRuntimeState();
+        return;
+      }
+      record = this.permissionRepository.restoreEscalatedRequest({
+        request,
+        createdAt: original!.event.occurredAt,
+        decisionId: activeReview.id,
+        reason: activeReview.reason,
+      });
+    }
+    if (!['pending', 'escalated'].includes(record.status)
+      || !this.publicationPermissionRequestMatches(publication, record.request)) {
+      this.appendOutput(
+        `仓库发布审批 ${permissionRequestId} 已失效，不能自动重签。`,
+        `候选提交 ${publication.candidateCommit} 保持不变；请查看 /task recovery ${taskId}。`,
+      );
+      this.refreshRuntimeState();
+      return;
+    }
+    const task = this.taskRuntimeService.findTask(taskId);
+    const currentReview = this.findActiveAppliedPermissionEscalation(permissionRequestId);
+    const now = new Date().toISOString();
+    if (currentReview?.sessionId === this.deps.sessionId
+      && isPermissionRequestActive(currentReview.createdAt, now)) {
+      this.appendOutput(
+        `Task #${taskId} 的仓库发布审批仍然有效。`,
+        `请在权限面板处理请求 ${permissionRequestId}；不会重复启动 Executor。`,
+      );
+      this.refreshRuntimeState();
+      return;
+    }
+    if (!currentReview || record.status !== 'escalated') {
+      this.appendOutput(`仓库发布审批 ${permissionRequestId} 当前不可重签，请查看 /task recovery ${taskId}。`);
+      this.refreshRuntimeState();
+      return;
+    }
+    await this.createPermissionWorkflow(record, publication, task).representEscalated(
+      permissionRequestId,
+      { allowExpired: true, causationId: currentReview.id },
+    );
+    this.appendOutput(
+      `已为 Task #${taskId} 重新签发仓库发布审批。`,
+      `请求身份与候选提交 ${publication.candidateCommit} 保持不变；批准后继续原发布链路。`,
+    );
+    this.refreshRuntimeState();
+  }
+
+  private async reissueStalePublication(outcome: StaleWorkspacePublication): Promise<void> {
+    if (!outcome.synchronized) {
+      this.appendOutput(
+        `Task #${outcome.taskId} 的仓库发布无法同步到最新主分支。`,
+        `候选结果已保留：${outcome.reason}`,
+      );
+      this.refreshRuntimeState();
+      return;
+    }
+    const publication = this.publicationRepo.find(outcome.publicationId);
+    const task = this.taskRuntimeService.findTask(outcome.taskId);
+    const subtask = this.subtaskRepo.findById(outcome.subtaskId);
+    if (!publication || !task || !subtask || publication.status !== 'parked') {
+      throw new Error(`stale publication cannot be reissued: ${outcome.publicationId}`);
+    }
+    const workspaceRecord = this.workspaceRepository.findByIdentity(
+      publication.taskId,
+      publication.generationId,
+      publication.subtaskId,
+    );
+    const workspaceId = workspaceRecord?.id
+      ?? `workspace:${publication.taskId}:${publication.generationId}:${publication.subtaskId}`;
+    const now = new Date().toISOString();
+    const originalRequest = this.permissionRepository.findRequest(publication.permissionRequestId)?.request;
+    const permissionProfileId = originalRequest?.permissionProfileId ?? 'workspace-engineering';
+    const workflow = new PermissionWorkflowService({
+      context: {
+        sessionId: this.deps.sessionId,
+        taskId: publication.taskId,
+        generationId: publication.generationId,
+        subtaskId: publication.subtaskId,
+        attemptId: publication.sourceAttemptId,
+        agentClassName: publication.agentClassName,
+        permissionProfileId,
+        runtimeHandle: '',
+        workspaceId,
+        checkpointId: null,
+      },
+      repository: this.permissionRepository,
+      resolver: new RegisteredCapabilityResourceResolver(new Map([
+        [this.sourceRoot, { kind: 'repository' as const, repositoryId: this.projectId }],
+      ])),
+      sandbox: this.attemptSandbox,
+      workflowStore: this.kernelWorkflowRepo,
+      kernel: this.controlKernel,
+      rules: buildPermissionRules({
+        permissionProfileId,
+        additionalReadPartitions: [],
+      }),
+      hooks: {
+        checkpoint: async () => null,
+        onEscalation: async () => undefined,
+        onRecoveryAuthorized: async () => undefined,
+      },
+      clock: { now: () => now },
+    });
+    const request = await workflow.request({
+      capability: 'repository_promotion',
+      resource: this.sourceRoot,
+      operation: `promote_commit:${outcome.synchronized.candidateCommit}`,
+      reason: [
+        `Re-review synchronized Subtask ${publication.subtaskId} for Project main.`,
+        `Approved main base: ${outcome.synchronized.mainBaseCommit}.`,
+        `Candidate: ${outcome.synchronized.candidateCommit}.`,
+        `Changed paths (${outcome.synchronized.changedPaths.length}): ${outcome.synchronized.changedPaths.join(', ') || '(none)'}.`,
+        'The previously approved main base advanced before publication, so this exact candidate requires fresh approval.',
+      ].join(' '),
+      suggestedScope: 'once',
+    }, { suspendAttempt: false });
+    if (request.status !== 'escalated' || !this.publicationRepo.reissueAfterStale({
+      id: publication.id,
+      permissionRequestId: request.requestId,
+      mainBaseCommit: outcome.synchronized.mainBaseCommit,
+      candidateCommit: outcome.synchronized.candidateCommit,
+      changedPaths: outcome.synchronized.changedPaths,
+      now,
+    })) {
+      throw new Error(`stale publication reissue did not become awaiting approval: ${publication.id}`);
+    }
+    this.subtaskRepo.updateStatus(publication.subtaskId, 'awaiting_integration', { error: null });
+    if (task.status === 'blocked') this.taskRuntimeService.transitionTask(task.id, 'ready');
+    if (this.autoApproveRepositoryPromotions) {
+      if (!this.publicationRepo.markApproved(publication.id, now)) {
+        throw new Error(`test stale publication approval failed: ${publication.id}`);
+      }
+      return;
+    }
+    this.appendOutput(
+      `Task #${task.id} 的候选结果已同步到最新主分支，需重新批准发布。`,
+      `原审批对应的主分支已变化；候选内容已保留，新的发布请求为 ${request.requestId}。`,
+    );
+    this.refreshRuntimeState();
+  }
+
+  private publicationPermissionRequestMatches(
+    publication: WorkspacePublicationRecord,
+    request: PermissionRequestRecord['request'],
+  ): boolean {
+    return request.id === publication.permissionRequestId
+      && request.fingerprint === capabilityRequestFingerprint(request)
+      && request.taskId === publication.taskId
+      && request.generationId === publication.generationId
+      && request.subtaskId === publication.subtaskId
+      && request.attemptId === publication.sourceAttemptId
+      && request.agentClassName === publication.agentClassName
+      && request.capability === 'repository_promotion'
+      && request.operation === `promote_commit:${publication.candidateCommit}`
+      && request.suggestedScope === 'once';
   }
 
   private formatTaskRecovery(taskId: string): string {
@@ -2038,7 +2357,11 @@ export class MetaclawSession {
       taskEngine: this.deps.taskEngine,
       memoryEngine: this.deps.memoryEngine,
       orchestration: this.deps.orchestration,
-      activeExecutions: this.executionRuntime,
+      activeExecutions: {
+        abortAttempt: (taskId, attemptId) => this.executionRuntime.abortAttempt(taskId, attemptId),
+        abortTask: taskId => this.executionRuntime.abortTask(taskId),
+        waitForTaskIdle: taskId => this.waitForTaskBackgroundWork(taskId),
+      },
       taskControl: this.kernelExecutionRuntime,
       readServices: this.commandReadServices,
       refreshExecutors: agentClassNames => this.executorRecoveryRefreshService.refresh({
@@ -2269,7 +2592,7 @@ export class MetaclawSession {
           });
         }
       }
-      await this.kernelExecutionRuntime.recoverCancellations();
+    await this.kernelExecutionRuntime.recoverCancellations();
     } catch (error) {
       recoveryBlockedReason = error instanceof Error ? error.message : String(error);
     }
@@ -2297,6 +2620,11 @@ export class MetaclawSession {
     }
     this.effectOutboxRepo.reconcileSending(now);
     this.kernelWorkflowRepo.reconcileProcessing();
+    for (const taskId of this.effectOutboxRepo.listIncompleteCompletionTaskIds()) {
+      this.taskRuntimeService.completeTask(taskId);
+    }
+    await this.recoverStalePublications();
+    await this.recoverPublicationPermissionReviews(now);
     for (const effect of this.effectOutboxRepo.listPending(now)) {
       if (effect.effectType !== 'task_completion_notification') continue;
       await this.effectOutboxRepo.deliver(effect.id, async record => {
@@ -2408,6 +2736,45 @@ export class MetaclawSession {
     return recovered;
   }
 
+  private async recoverPublicationPermissionReviews(now: string): Promise<void> {
+    for (const publication of this.publicationRepo.listAwaitingApproval()) {
+      const record = this.permissionRepository.findRequest(publication.permissionRequestId);
+      if (!record || !['pending', 'escalated'].includes(record.status)) {
+        this.appendOutput(
+          `仓库发布 ${publication.id} 仍在等待审批，但权限请求 ${publication.permissionRequestId} 已丢失或失效。`,
+          `候选提交 ${publication.candidateCommit} 已保留；请查看 /task show ${publication.taskId} 后重新发起恢复。`,
+        );
+        continue;
+      }
+      const decisions = this.kernelDecisionRepo.listByCorrelation(record.request.id);
+      if (decisions.some(decision => decision.event.type === 'permission_resolution_received'
+        && this.kernelWorkflowRepo.isDecisionApplied(decision.id))) {
+        continue;
+      }
+      const activeReview = this.findActiveAppliedPermissionEscalation(record.request.id);
+      if (!activeReview || !isPermissionRequestActive(activeReview.createdAt, now)) {
+        this.appendOutput(
+          `仓库发布审批 ${record.request.id} 已过期，候选提交 ${publication.candidateCommit} 仍被保留。`,
+          `请查看 /task show ${publication.taskId}；系统不会重复运行 Executor 或丢弃候选结果。`,
+        );
+        continue;
+      }
+      const task = this.taskRuntimeService.findTask(record.request.taskId);
+      const workflow = this.createPermissionWorkflow(record, publication, task);
+      await workflow.recover();
+      const recoveredRecord = this.permissionRepository.findRequest(record.request.id);
+      if (recoveredRecord?.status !== 'escalated') continue;
+      const activeEscalation = this.findActiveAppliedPermissionEscalation(record.request.id);
+      if (activeEscalation?.sessionId === this.deps.sessionId) continue;
+      await this.createPermissionWorkflow(recoveredRecord, publication, task)
+        .representEscalated(record.request.id);
+      this.appendOutput(
+        `已恢复 Task #${publication.taskId} 的仓库发布审批。`,
+        `候选提交 ${publication.candidateCommit} 保持不变；请在权限面板处理请求 ${record.request.id}。`,
+      );
+    }
+  }
+
   private setRunningExecutorName(
     taskId: string,
     subtaskId: string,
@@ -2445,10 +2812,39 @@ export class MetaclawSession {
     return [...counts].map(([name, count]) => count === 1 ? name : `${name} ×${count}`).join(', ');
   }
 
-  private trackBackgroundWork(work: Promise<void>): void {
+  private async waitForTaskBackgroundWork(taskId: string): Promise<void> {
+    while ((this.backgroundWorkByTask.get(taskId)?.size ?? 0) > 0) {
+      await Promise.allSettled(Array.from(this.backgroundWorkByTask.get(taskId) ?? []));
+    }
+  }
+
+  private async recoverStalePublications(): Promise<void> {
+    for (const publication of this.publicationRepo.listParkedStale()) {
+      try {
+        await this.reissueStalePublication(await this.publicationWorker.synchronizeParked(publication));
+      } catch (error) {
+        console.error(`Stale publication recovery failed for ${publication.id}:`, error);
+        this.appendOutput(
+          `仓库发布 ${publication.id} 的旧候选仍被保留，但启动恢复失败。`,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    }
+  }
+
+  private trackBackgroundWork(work: Promise<void>, taskId?: string): void {
     this.backgroundWork.add(work);
+    if (taskId) {
+      const taskWork = this.backgroundWorkByTask.get(taskId) ?? new Set();
+      taskWork.add(work);
+      this.backgroundWorkByTask.set(taskId, taskWork);
+    }
     void work.finally(() => {
       this.backgroundWork.delete(work);
+      if (!taskId) return;
+      const taskWork = this.backgroundWorkByTask.get(taskId);
+      taskWork?.delete(work);
+      if (taskWork?.size === 0) this.backgroundWorkByTask.delete(taskId);
     });
   }
 

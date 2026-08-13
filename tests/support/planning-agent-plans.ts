@@ -127,7 +127,7 @@ export function taskControlPlan(input: {
       taskId: input.taskId ?? null,
       control: input.control,
       scope: input.scope ?? null,
-      priority: input.control === 'resume_task' || input.control === 'recover_blocked'
+      priority: input.control === 'resume_task'
         ? { level: 'normal', reason: 'test resume priority' }
         : null,
     },

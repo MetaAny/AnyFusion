@@ -330,6 +330,67 @@ describe('natural-language planning/kernel path', () => {
     }
   });
 
+  it('settles a paused running attempt and resumes the Subtask through a fresh dispatch', async () => {
+    let notifyFirstAttemptStarted!: () => void;
+    const firstAttemptStarted = new Promise<void>(resolve => {
+      notifyFirstAttemptStarted = resolve;
+    });
+    let finishFirstAttempt!: (exitCode: number) => void;
+    const firstAttempt = new Promise<number>(resolve => {
+      finishFirstAttempt = resolve;
+    });
+    const rawPlan = plan({ id: 'plan_pause_resume_running_attempt' });
+    const harness = createSession(
+      'sess_pause_resume_running_attempt',
+      rawPlan,
+      (_input, attemptIndex) => {
+        if (attemptIndex === 0) {
+          notifyFirstAttemptStarted();
+          return { rawOutput: 'interrupted by user pause', wait: firstAttempt };
+        }
+        return { body: 'resumed attempt completed' };
+      },
+    );
+    const turnId = 'turn_pause_resume_running_attempt';
+    const proposal = await harness.session.submitPlannerProposal({
+      sessionId: harness.sessionId,
+      turnId,
+      userInput: '创建一个可以暂停后恢复的任务',
+      submissionId: createPlannerProposalSubmissionId(harness.sessionId, turnId, rawPlan),
+      plan: rawPlan,
+      runtimeMode: 'interactive',
+    });
+    expect(proposal).toMatchObject({
+      status: 'accepted', outcome: 'task_authorized', taskId: expect.stringMatching(/^task_/),
+    });
+    if (proposal.status !== 'accepted' || !proposal.taskId) {
+      throw new Error('pause/resume test Task was not authorized');
+    }
+    const taskId = proposal.taskId;
+    await firstAttemptStarted;
+    await vi.waitFor(() => expect(harness.attemptSandbox.start).toHaveBeenCalledTimes(1));
+
+    const pause = harness.session.submitPlannerTuiCommand(`/task pause ${taskId}`);
+    await vi.waitFor(() => expect(harness.attemptSandbox.stop).toHaveBeenCalledTimes(1));
+    finishFirstAttempt(137);
+    await pause;
+
+    expect(harness.taskRepo.findById(taskId)?.status).toBe('parked');
+    expect(new SubtaskRepo(harness.db).listByTask(taskId)).toMatchObject([{
+      status: 'ready',
+    }]);
+    expect(harness.db.prepare(`
+      SELECT status FROM kernel_dispatch_items
+      WHERE task_id = ? ORDER BY created_at
+    `).all(taskId)).toEqual([{ status: 'terminal' }]);
+
+    await harness.session.submitPlannerTuiCommand(`/task resume ${taskId}`);
+    await harness.session.waitForAsyncWork();
+
+    expect(harness.attemptSandbox.create).toHaveBeenCalledTimes(2);
+    expect(harness.taskRepo.findById(taskId)?.status).toBe('done');
+  });
+
   it('replays the same accepted submission without duplicating Kernel or interaction facts', async () => {
     const harness = createSession('sess_native_idempotent', plan());
     const direct = plan({
@@ -693,7 +754,6 @@ describe('natural-language planning/kernel path', () => {
     }))).toEqual([
       { subtask_id: 'subtask_a', status: 'terminal', batch_order: 0 },
       { subtask_id: 'subtask_b', status: 'terminal', batch_order: 1 },
-      { subtask_id: 'subtask_b', status: 'terminal', batch_order: 4 },
     ]);
     expect((harness.db.prepare(`
       SELECT subtask_id, status, first_dispatch_order
@@ -704,8 +764,7 @@ describe('natural-language planning/kernel path', () => {
       subtask_id: item.subtask_id.endsWith('_subtask_a') ? 'subtask_a' : 'subtask_b',
     }))).toEqual([
       { subtask_id: 'subtask_a', status: 'integrated', first_dispatch_order: 0 },
-      { subtask_id: 'subtask_b', status: 'parked', first_dispatch_order: 1 },
-      { subtask_id: 'subtask_b', status: 'integrated', first_dispatch_order: 4 },
+      { subtask_id: 'subtask_b', status: 'integrated', first_dispatch_order: 1 },
     ]);
   });
 
@@ -786,6 +845,64 @@ describe('natural-language planning/kernel path', () => {
     expect(audits).toHaveLength(1);
     expect(audits[0]!.action).toBe('deliver_direct_reply');
     expect(audits[0]!.taskId).toBeNull();
+  });
+
+  it('does not make a direct reply wait for background work started by an earlier submit', async () => {
+    let plannerCall = 0;
+    let notifyExecutorStarted!: () => void;
+    const executorStarted = new Promise<void>(resolve => {
+      notifyExecutorStarted = resolve;
+    });
+    let finishExecutor!: (exitCode: number) => void;
+    const executorWait = new Promise<number>(resolve => {
+      finishExecutor = resolve;
+    });
+    const harness = createSession('sess_direct_during_background', () => {
+      plannerCall += 1;
+      if (plannerCall === 1) return plan({ id: 'plan_background_before_direct' });
+      return plan({
+        id: 'plan_direct_during_background',
+        action: 'direct_reply',
+        reason: 'status query',
+        response: { directReply: '任务仍在执行。' },
+        task: {
+          binding: 'none',
+          taskId: null,
+          control: 'none',
+          scope: null,
+          title: null,
+          goal: null,
+          includeRecentConversationContext: false,
+          priority: null,
+        },
+        workGraph: null,
+      });
+    }, input => {
+      notifyExecutorStarted();
+      return {
+        rawOutput: completionResponseFromSandboxInput(input, 'background work done'),
+        wait: executorWait,
+      };
+    });
+
+    const backgroundSubmission = harness.session.submit('开始长任务', { awaitAsyncWork: true });
+    await executorStarted;
+    const directSubmission = harness.session.submit('还在执行吗？', { awaitAsyncWork: true });
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    const resolvedBeforeBackground = await Promise.race([
+      directSubmission.then(() => true),
+      new Promise<boolean>(resolve => {
+        timeoutId = setTimeout(() => resolve(false), 250);
+      }),
+    ]);
+
+    if (timeoutId) clearTimeout(timeoutId);
+    finishExecutor(0);
+    await backgroundSubmission;
+    await directSubmission;
+
+    expect(resolvedBeforeBackground).toBe(true);
+    expect(harness.session.getSnapshot().output.join('\n')).toContain('任务仍在执行。');
   });
 
   it('routes direct replies through the same persisted decide() seam', async () => {

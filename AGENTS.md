@@ -98,6 +98,8 @@ Tests mirror source domains under [`tests/`](tests/). Scenarios and fixtures are
 - `npm run smoke:metaclaw` — native Planner-session smoke.
 - `npm run smoke:metaclaw -- --scenario artifact` — Planner-to-Executor artifact
   gate; see [runtime security](docs/current/phase-5-runtime-security.md).
+- `docker\gateway.ps1 -Rebuild` — rebuild and recreate the persistent Windows-hosted
+  Feishu Gateway while preserving its schema-scoped data and Project volumes.
 
 `better-sqlite3` is unavailable in the local Windows environment. Run SQLite and
 POSIX-path tests in Docker:
@@ -120,7 +122,7 @@ Host defaults are `~/.config/anyfusion` plus
 `/workspace/default`. Keep packaging wrappers thin and do not reintroduce a
 second startup/configuration path.
 
-On this Linux server, `anyfusion` is the canonical startup path. Runtime and
+On Linux servers, `anyfusion` is the canonical startup path. Runtime and
 AnyFusion-Pi are separate host Node.js processes, canonical Executors reuse the
 installed `codex` and `pi` commands, and attempts use isolated homes plus
 managed Git worktrees. Docker is retained for CI, cross-platform deployment,

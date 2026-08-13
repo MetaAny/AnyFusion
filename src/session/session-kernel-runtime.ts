@@ -160,13 +160,16 @@ export class SessionKernelRuntime {
     if (!task) throw new Error(`task not found: ${taskCommand.taskId}`);
     this.deps.callbacks.setCurrentTaskId(task.id);
     this.deps.callbacks.setFocusContext({ kind: 'task', taskId: task.id });
-    const executionMode = task.status === 'blocked' ? 'resume-blocked' : 'resume-parked';
+    const isBlocked = task.status === 'blocked';
+    const executionMode = task.status === 'ready'
+      ? 'fresh'
+      : isBlocked ? 'resume-blocked' : 'resume-parked';
     this.deps.callbacks.prepareTaskExecution(task.id, buildExecutionRequest({
       userInput,
       taskId: task.id,
       executionMode,
       decision,
-      recoveryTrigger: taskCommand.control === 'recover_blocked'
+      recoveryTrigger: isBlocked
         ? {
             kind: 'natural-language-resume',
             blockedReason: task.dependencies

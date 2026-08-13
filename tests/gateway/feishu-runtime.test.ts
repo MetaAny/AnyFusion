@@ -20,15 +20,20 @@ describe('Feishu runtime bridge', () => {
       language: 'zh-CN',
       dashboard_on_start: true,
     },
-    integrations: {
-      feishu: {
-        enabled: true,
-        mode: 'websocket',
-        app_id: 'cli_test',
-        app_secret_env: 'FEISHU_APP_SECRET',
-        event_port: 8787,
-        event_path: '/feishu/events',
+    gateway: {
+      enabled: true,
+      platforms: {
+        feishu: {
+          enabled: true,
+          connection_mode: 'websocket',
+          app_id: 'cli_test',
+          app_secret_env: 'FEISHU_APP_SECRET',
+          event_port: 8787,
+          event_path: '/feishu/events',
+        },
       },
+    },
+    integrations: {
       markdown_preview: {
         enabled: true,
         host: '127.0.0.1',
@@ -38,9 +43,11 @@ describe('Feishu runtime bridge', () => {
   };
 
   it('starts the existing Feishu bridge and reports websocket readiness', async () => {
+    process.env.FEISHU_APP_SECRET = 'secret';
     const bridge = {
       start: vi.fn().mockResolvedValue(undefined),
       stop: vi.fn().mockResolvedValue(undefined),
+      waitForFailure: vi.fn(() => new Promise<never>(() => undefined)),
     };
     const session = {
       appendSystemMessage: vi.fn(),
@@ -48,30 +55,33 @@ describe('Feishu runtime bridge', () => {
 
     const runtimeBridge = await startFeishuRuntimeBridge(
       baseConfig,
-      session as any,
+      {
+        session: session as any,
+        probeBot: vi.fn().mockResolvedValue({ botOpenId: 'ou_bot' }),
+      },
       () => bridge,
     );
 
     expect(bridge.start).toHaveBeenCalledTimes(1);
-    expect(session.appendSystemMessage).toHaveBeenCalledWith('→ 飞书长连接桥接已启动，等待飞书消息');
     await runtimeBridge?.stop();
     expect(bridge.stop).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps startup alive when Feishu bridge creation fails', async () => {
+  it('fails startup when Feishu bridge creation fails', async () => {
+    process.env.FEISHU_APP_SECRET = 'secret';
     const session = {
       appendSystemMessage: vi.fn(),
     };
 
-    const runtimeBridge = await startFeishuRuntimeBridge(
+    await expect(startFeishuRuntimeBridge(
       baseConfig,
-      session as any,
+      {
+        session: session as any,
+        probeBot: vi.fn().mockResolvedValue({ botOpenId: 'ou_bot' }),
+      },
       () => {
         throw new Error('missing secret');
       },
-    );
-
-    expect(runtimeBridge).toBeNull();
-    expect(session.appendSystemMessage).toHaveBeenCalledWith('⚠️ 飞书应用桥接未启动: missing secret');
+    )).rejects.toThrow('missing secret');
   });
 });

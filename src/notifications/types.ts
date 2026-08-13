@@ -1,4 +1,4 @@
-import type { TaskRecoveryTrigger } from '../core/types.js';
+import type { ExecutionMode, TaskRecoveryTrigger } from '../core/types.js';
 
 export interface TaskCompletedNotification {
   taskId: string;
@@ -7,7 +7,7 @@ export interface TaskCompletedNotification {
   output: string;
   artifactPaths: string[];
   durationMs: number;
-  executionMode: 'fresh' | 'resume-parked' | 'resume-blocked' | 'follow-up';
+  executionMode: ExecutionMode;
   origin: 'user' | 'system';
   recoveryTrigger?: TaskRecoveryTrigger;
 }

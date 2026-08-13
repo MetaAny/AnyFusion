@@ -30,6 +30,11 @@ import { runPlannerTuiProcess } from './tui-bridge/planner-tui-process.js';
 import { runExecutorCli } from './cli/executor-cli.js';
 import { ProjectRepo } from './storage/project-repo.js';
 import { ProjectService } from './project/project-service.js';
+import { GatewayStatusReporter, inspectGatewayHealth } from './gateway/health.js';
+import { FeishuSessionRegistry } from './gateway/feishu-session-registry.js';
+import { WorkspacePublicationRepo } from './storage/workspace-publication-repo.js';
+import { KernelEffectOutboxRepo } from './storage/kernel-effect-outbox-repo.js';
+import { shouldRunPlannerTui } from './cli/runtime-mode.js';
 
 async function main() {
   const cliArgs = parseCliArgs(process.argv.slice(2));
@@ -67,7 +72,16 @@ async function main() {
   if (cliArgs.gatewayCommand === 'doctor') {
     const configPath = resolve(metaclawDir, 'config.yaml');
     const config = loadConfig(configPath);
-    console.log(formatGatewayDoctorChecks(runGatewayDoctor({ config, metaclawDir })));
+    const checks = runGatewayDoctor({ config, metaclawDir });
+    console.log(formatGatewayDoctorChecks(checks));
+    if (checks.some(check => check.status === 'fail')) process.exitCode = 1;
+    return;
+  }
+
+  if (cliArgs.gatewayCommand === 'health') {
+    const result = inspectGatewayHealth(metaclawDir);
+    console.log(result.message);
+    if (!result.healthy) process.exitCode = 1;
     return;
   }
 
@@ -155,7 +169,7 @@ async function main() {
   const plannerTuiSocketPath = plannerHostSocketPath;
   const plannerTuiCommand = process.env.METACLAW_PLANNER_TUI_COMMAND?.trim() ?? 'anyfusion-planner';
   process.env.METACLAW_PLANNER_TUI_COMMAND = plannerTuiCommand;
-  if (process.env.METACLAW_STANDBY_TUI !== '1') {
+  if (shouldRunPlannerTui(cliArgs)) {
     const plannerTuiSession = new MetaclawSession({
       taskEngine,
       memoryEngine,
@@ -219,57 +233,50 @@ async function main() {
     plannerHost,
   });
 
-  await gatewayServer.start();
   let gatewayFeishuBridge: Awaited<ReturnType<typeof startFeishuRuntimeBridge>> = null;
-  let gatewayBlockedRecheckTimer: NodeJS.Timeout | null = null;
-  let gatewaySession: MetaclawSession | null = null;
+  let gatewaySessionRegistry: FeishuSessionRegistry | null = null;
   if (cliArgs.gateway) {
-    const session = new MetaclawSession({
+    const statusReporter = new GatewayStatusReporter(metaclawDir, gatewaySocketPath);
+    statusReporter.update('starting');
+    gatewaySessionRegistry = new FeishuSessionRegistry(stableSessionId => new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
       db,
       config,
-      sessionId,
+      sessionId: stableSessionId,
       contextRecaller,
       notifier,
       plannerHost,
       project,
+    }));
+    await gatewaySessionRegistry.preload([...new Set([
+      ...new WorkspacePublicationRepo(db).listRecoverySessionIds('sess_feishu_'),
+      ...new KernelEffectOutboxRepo(db).listCompletionRecoverySessionIds('sess_feishu_'),
+    ])]);
+    gatewayFeishuBridge = await startFeishuRuntimeBridge(config, {
+      resolveSession: chatId => gatewaySessionRegistry!.get(chatId),
+      statusReporter,
     });
-    gatewaySession = session;
-    session.initialize({ showDashboard: false });
-    gatewayFeishuBridge = await startFeishuRuntimeBridge(config, session);
-    gatewayBlockedRecheckTimer = setInterval(() => {
-      void session.maybeReviewTaskPoolOnTimer().catch(error => {
-        session.appendSystemMessage(`错误: ${(error as Error).message}`);
-      });
-    }, session.getBlockedRecheckIntervalMs());
+    if (!gatewayFeishuBridge) throw new Error('Gateway service requires an enabled Feishu bridge');
   }
+  await gatewayServer.start();
   let shutdownPromise: Promise<void> | null = null;
   const shutdown = (): Promise<void> => {
     if (shutdownPromise) return shutdownPromise;
     shutdownPromise = (async () => {
-      if (gatewayBlockedRecheckTimer) {
-        clearInterval(gatewayBlockedRecheckTimer);
-        gatewayBlockedRecheckTimer = null;
-      }
-      try {
-        await Promise.all([
-          gatewayFeishuBridge?.stop() ?? Promise.resolve(),
-          gatewayServer.stop(),
-          plannerHost.stop(),
-          markdownPreviewServer?.stop() ?? Promise.resolve(),
-        ]);
-      } finally {
-        await gatewaySession?.shutdown();
-        gatewaySession = null;
-      }
+      await Promise.all([
+        gatewayFeishuBridge?.stop() ?? Promise.resolve(),
+        gatewaySessionRegistry?.stop() ?? Promise.resolve(),
+        gatewayServer.stop(),
+        plannerHost.stop(),
+        markdownPreviewServer?.stop() ?? Promise.resolve(),
+      ]);
     })();
     return shutdownPromise;
   };
   process.once('exit', () => {
-    if (gatewayBlockedRecheckTimer) clearInterval(gatewayBlockedRecheckTimer);
-    void gatewaySession?.shutdown();
+    void gatewaySessionRegistry?.stop();
     void gatewayFeishuBridge?.stop();
     void markdownPreviewServer?.stop();
     void gatewayServer.stop();
@@ -284,7 +291,12 @@ async function main() {
 
   if (cliArgs.gateway) {
     console.log(`Metaclaw Gateway listening: ${gatewaySocketPath}`);
-    await new Promise(() => undefined);
+    try {
+      await gatewayFeishuBridge!.waitForFailure();
+    } catch (error) {
+      await shutdown();
+      throw error;
+    }
     return;
   }
 

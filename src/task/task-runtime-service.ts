@@ -57,6 +57,15 @@ export class TaskRuntimeService {
     return this.deps.taskEngine.transition(taskId, status);
   }
 
+  completeTask(taskId: string): Task {
+    let task = this.findTask(taskId);
+    if (!task) throw new Error(`任务不存在: ${taskId}`);
+    if (task.status === 'done') return task;
+    if (task.status === 'ready') task = this.transitionTask(taskId, 'running');
+    if (['running', 'blocked'].includes(task.status)) return this.transitionTask(taskId, 'done');
+    throw new Error(`Task cannot complete from status ${task.status}: ${taskId}`);
+  }
+
   cancelTask(taskId: string, reason?: string): Task {
     return this.deps.taskEngine.cancel(taskId, reason);
   }

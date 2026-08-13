@@ -105,6 +105,13 @@ the Subtask for another local-main merge and a new approval. Otherwise Runtime
 merges the complete candidate branch into `main`, publishes completion facts,
 marks the Subtask done, and deletes the Subtask worktree and branch.
 
+An expired or lost approval presentation does not invalidate the immutable
+candidate. Explicit Task resume may issue another review round for the same
+exact permission request without rerunning the Executor. A missing request row
+is recoverable only from its original Kernel request event after its full
+identity is matched to the publication; otherwise recovery fails closed.
+Approving the renewed review invokes this same publication application path.
+
 Independent Subtasks may execute concurrently, but promotions are serialized.
 A dependent Subtask becomes runnable only after every direct dependency has
 been approved and merged into `main`; its worktree is then created from the

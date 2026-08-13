@@ -1,5 +1,5 @@
 import { existsSync } from 'fs';
-import type { ResolvedPreference, Task, TaskRecoveryTrigger, WorkspaceContext } from '../core/types.js';
+import type { ExecutionMode, ResolvedPreference, Task, TaskRecoveryTrigger, WorkspaceContext } from '../core/types.js';
 import type { NotificationService } from '../notifications/types.js';
 import {
   ExecutionAggregator,
@@ -50,7 +50,7 @@ export interface TaskCompletionDeliveryInput {
   output: string;
   artifactPaths: string[];
   durationMs: number;
-  executionMode: 'fresh' | 'resume-parked' | 'resume-blocked' | 'follow-up';
+  executionMode: ExecutionMode;
   origin: 'user' | 'system';
   recoveryTrigger?: TaskRecoveryTrigger;
 }

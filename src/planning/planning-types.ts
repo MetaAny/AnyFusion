@@ -20,7 +20,6 @@ export type IntentTaskControl =
   | 'clear_tasks'
   | 'status_query'
   | 'resume_task'
-  | 'recover_blocked'
   | 'none';
 export type TaskSemanticPriority = 'normal' | 'high' | 'urgent';
 

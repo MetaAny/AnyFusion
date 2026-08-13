@@ -57,4 +57,39 @@ describe('SqlitePermissionRepository grant budgets', () => {
       'request-a', 'request-c', 'request-b',
     ]);
   });
+
+  it('restores a missing immutable request as the same escalated request', () => {
+    const db = new Database(':memory:');
+    runMigrations(db);
+    db.pragma('foreign_keys = OFF');
+    const repo = new SqlitePermissionRepository(db);
+    const normalized = request('request-restored');
+
+    expect(repo.restoreEscalatedRequest({
+      request: normalized,
+      createdAt: '2026-08-01T00:00:00.000Z',
+      decisionId: 'decision-review-1',
+      reason: 'approval required',
+    })).toMatchObject({
+      request: normalized,
+      status: 'escalated',
+      decisionId: 'decision-review-1',
+    });
+  });
+
+  it('rejects restore when the attempt fingerprint belongs to another request identity', () => {
+    const db = new Database(':memory:');
+    runMigrations(db);
+    db.pragma('foreign_keys = OFF');
+    const repo = new SqlitePermissionRepository(db);
+    const existing = request('request-existing');
+    repo.createRequest(existing, '2026-08-01T00:00:00.000Z');
+
+    expect(() => repo.restoreEscalatedRequest({
+      request: { ...existing, id: 'request-conflicting' },
+      createdAt: '2026-08-01T00:00:00.000Z',
+      decisionId: 'decision-review-1',
+      reason: 'approval required',
+    })).toThrow('permission request identity conflicts with an existing request');
+  });
 });

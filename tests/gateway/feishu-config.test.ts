@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { Config } from '../../src/core/types.js';
-import { resolveFeishuGatewayConfig, toFeishuAppConfig } from '../../src/gateway/feishu-config.js';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { resolve } from 'node:path';
+import {
+  resolveFeishuGatewayConfig,
+  resolveFeishuGatewayEnv,
+  toFeishuAppConfig,
+} from '../../src/gateway/feishu-config.js';
 
 function baseConfig(): Config {
   return {
@@ -52,6 +59,7 @@ describe('Feishu Gateway config resolution', () => {
       eventPort: 8787,
       eventPath: '/feishu/events',
       verificationToken: 'new-token',
+      publicationApproval: 'manual',
       source: 'gateway',
     });
   });
@@ -67,6 +75,7 @@ describe('Feishu Gateway config resolution', () => {
       eventPath: '/feishu/events',
       verificationToken: undefined,
       encryptKeyEnv: undefined,
+      publicationApproval: 'manual',
       source: 'default',
     });
   });
@@ -80,6 +89,7 @@ describe('Feishu Gateway config resolution', () => {
       appSecretEnv: 'FEISHU_APP_SECRET',
       eventPort: 8787,
       eventPath: '/feishu/events',
+      publicationApproval: 'manual',
       source: 'gateway',
     })).toEqual({
       enabled: true,
@@ -90,5 +100,38 @@ describe('Feishu Gateway config resolution', () => {
       event_path: '/feishu/events',
       verification_token: undefined,
     });
+  });
+
+  it('lets mounted credential environment override YAML app identity and domain', () => {
+    const config = baseConfig();
+    expect(resolveFeishuGatewayConfig(config, {
+      FEISHU_APP_ID: 'cli_env',
+      FEISHU_DOMAIN: 'lark',
+    })).toMatchObject({
+      appId: 'cli_env',
+      domain: 'lark',
+    });
+  });
+
+  it('lets the Gateway service override publication approval without rewriting persistent config', () => {
+    expect(resolveFeishuGatewayConfig(baseConfig(), {
+      METACLAW_FEISHU_PUBLICATION_APPROVAL: 'auto',
+    }).publicationApproval).toBe('auto');
+  });
+
+  it('loads a mounted credential file into a scoped environment only', () => {
+    const dir = mkdtempSync(resolve(tmpdir(), 'metaclaw-feishu-env-'));
+    const envPath = resolve(dir, 'feishu.env');
+    writeFileSync(envPath, 'FEISHU_APP_ID=cli_mounted\nFEISHU_APP_SECRET=mounted-secret\n');
+    const originalSecret = process.env.FEISHU_APP_SECRET;
+    const scoped = resolveFeishuGatewayEnv({
+      METACLAW_FEISHU_ENV_FILE: envPath,
+      FEISHU_APP_ID: 'stale-app-id',
+      FEISHU_APP_SECRET: 'stale-secret',
+    });
+
+    expect(scoped.FEISHU_APP_ID).toBe('cli_mounted');
+    expect(scoped.FEISHU_APP_SECRET).toBe('mounted-secret');
+    expect(process.env.FEISHU_APP_SECRET).toBe(originalSecret);
   });
 });

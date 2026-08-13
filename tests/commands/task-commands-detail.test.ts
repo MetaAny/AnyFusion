@@ -8,7 +8,9 @@ import { TaskEngine } from '../../src/task/task-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
-import { showTask } from '../../src/commands/task-commands.js';
+import { SqlitePermissionRepository } from '../../src/storage/permission-repo.js';
+import { WorkspacePublicationRepo } from '../../src/storage/workspace-publication-repo.js';
+import { listTasks, resumeTask, showTask } from '../../src/commands/task-commands.js';
 import type { CommandContext } from '../../src/commands/catalog.js';
 import type { Config } from '../../src/core/types.js';
 
@@ -238,5 +240,78 @@ describe('showTask detail view', () => {
 
     expect(result.content).toContain('任务产物');
     expect(result.content).toContain('/tmp/metaclaw-artifacts/harness-analysis.md');
+  });
+
+  it('projects a ready Task awaiting repository promotion as waiting for approval', async () => {
+    const now = '2026-08-12T02:00:00.000Z';
+    const task = taskEngine.create({ title: '世界杯赔率模拟', goal: '生成并发布赔率模拟结果' });
+    taskEngine.transition(task.id, 'ready');
+    db.prepare(`
+      INSERT INTO subtasks (
+        id, task_id, title, goal, status, dependencies_json, context_refs_json,
+        required_capabilities_json, preferred_agent_class_list_json, acceptance_json,
+        risk_level, result, artifacts_json, verification_json, error, created_at,
+        updated_at, graph_revision, generation_id
+      ) VALUES (?, ?, ?, ?, 'awaiting_integration', '[]', '[]', '[]', '["codex"]',
+        '[]', 'low', '', '[]', '{"warnings":[],"completionSchemaVersion":4}', NULL,
+        ?, ?, 1, 'generation-approval')
+    `).run('subtask-approval', task.id, '赔率模拟', '生成赔率模拟结果', now, now);
+    const permissions = new SqlitePermissionRepository(db);
+    permissions.createRequest({
+      id: 'permission-publication',
+      fingerprint: 'fingerprint-publication',
+      taskId: task.id,
+      generationId: 'generation-approval',
+      subtaskId: 'subtask-approval',
+      attemptId: 'attempt-approval',
+      agentClassName: 'codex',
+      permissionProfileId: 'workspace-engineering',
+      capability: 'repository_promotion',
+      resource: '/workspace/default',
+      partition: { kind: 'repository', repositoryId: 'project-default' },
+      operation: 'promote_commit:candidate',
+      reason: 'Merge the completed candidate into Project main.',
+      suggestedScope: 'once',
+      distinctRequestOrdinal: 1,
+    }, now);
+    permissions.escalate('permission-publication', 'decision-publication', 'requires approval', now);
+    new WorkspacePublicationRepo(db).insertCandidate({
+      id: 'publication-approval',
+      taskId: task.id,
+      generationId: 'generation-approval',
+      subtaskId: 'subtask-approval',
+      sourceAttemptId: 'attempt-approval',
+      agentClassName: 'codex',
+      mainBaseCommit: 'base',
+      candidateCommit: 'candidate',
+      permissionRequestId: 'permission-publication',
+      changedPaths: ['next_world_cup_odds.md'],
+      completion: {
+        body: 'candidate complete', artifacts: [], warnings: [], handoffs: [], completionSchemaVersion: 4,
+      },
+      topologyLayer: 0,
+      firstDispatchOrder: 0,
+      createdAt: now,
+    });
+
+    const detail = await showTask({ positionals: { taskId: task.id }, options: {} }, context);
+    const list = await listTasks({ positionals: {}, options: {} }, context);
+    const resume = await resumeTask({ positionals: { taskId: task.id }, options: {} }, context);
+
+    expect(detail.content).toContain('当前状态: waiting_approval（底层 Task 仍为 ready）');
+    expect(detail.content).toContain('批准发布请求 permission-publication');
+    expect(detail.content).not.toContain('恢复操作: 无');
+    expect(list.content).toContain('[WAITING_APPROVAL]');
+    expect(list.content).toContain('在权限面板批准请求 permission-publication');
+    expect(resume.type).toBe('directive');
+    expect(resume.content).toContain('Executor 已完成候选结果，无需再次调度');
+    expect(resume.content).toContain('正在恢复仓库发布审批 permission-publication');
+    expect(resume).toMatchObject({
+      directive: {
+        kind: 'resume-publication-review',
+        taskId: task.id,
+        permissionRequestId: 'permission-publication',
+      },
+    });
   });
 });

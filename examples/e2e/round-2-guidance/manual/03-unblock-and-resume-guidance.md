@@ -21,7 +21,7 @@ anyfusion
 让任务进入 blocked 状态后，执行：
 
 ```text
-/task unblock <task_id> /tmp/evidence-v3.pdf
+/task resume <task_id> /tmp/evidence-v3.pdf
 ```
 
 ## 预期 TUI 展示

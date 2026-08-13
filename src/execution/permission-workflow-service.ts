@@ -65,6 +65,7 @@ export class PermissionWorkflowService {
     rules: PermissionRule[];
     hooks: PermissionWorkflowHooks;
     clock?: { now(): string };
+    reviewIssuedAt?: string;
   }) {}
 
   async request(input: CapabilityRequestInput, options: { suspendAttempt?: boolean } = {}): Promise<{
@@ -125,6 +126,38 @@ export class PermissionWorkflowService {
     };
   }
 
+  async representEscalated(
+    requestId: string,
+    options: { allowExpired?: boolean; causationId?: string | null } = {},
+  ): Promise<void> {
+    const record = this.deps.repository.findRequest(requestId);
+    if (!record || record.request.taskId !== this.deps.context.taskId || record.status !== 'escalated') {
+      throw new Error('permission request is missing, stale, or belongs to another Task');
+    }
+    if (!options.allowExpired && !isPermissionRequestActive(this.reviewIssuedAt(record), this.now())) {
+      throw new Error('permission request has expired and must be reissued precisely');
+    }
+    const causationId = options.causationId ?? record.decisionId;
+    await this.workflow().submit({
+      schemaVersion: 5,
+      type: 'permission_review_represented',
+      id: `permission_review_${requestId}_${this.deps.context.sessionId}_${causationId ?? 'initial'}`,
+      correlationId: requestId,
+      causationId,
+      occurredAt: this.now(),
+      sessionId: this.deps.context.sessionId,
+      taskId: record.request.taskId,
+      subtaskId: record.request.subtaskId,
+      attemptId: record.request.attemptId,
+      requestId,
+      requestFingerprint: record.request.fingerprint,
+    });
+  }
+
+  async recover(): Promise<void> {
+    await this.workflow().recover();
+  }
+
   use(input: CapabilityUseInput): CapabilityUseResult {
     const bytes = Buffer.byteLength(input.payload, 'utf8');
     const grant = this.deps.repository.consumeGrant(
@@ -161,7 +194,7 @@ export class PermissionWorkflowService {
     if (!record || record.request.taskId !== this.deps.context.taskId || !['pending', 'escalated'].includes(record.status)) {
       throw new Error('permission request is missing, stale, or belongs to another Task');
     }
-    if (!isPermissionRequestActive(record.createdAt, this.now())) {
+    if (!isPermissionRequestActive(this.reviewIssuedAt(record), this.now())) {
       throw new Error('permission request has expired and must be reissued precisely');
     }
     await this.workflow().submit({
@@ -189,7 +222,11 @@ export class PermissionWorkflowService {
       store: this.deps.workflowStore,
       clock: { now: () => this.now() },
       runtime: { apply: decision => this.apply(decision) },
-      acceptedEventTypes: ['permission_requested', 'permission_resolution_received'],
+      acceptedEventTypes: [
+        'permission_requested',
+        'permission_review_represented',
+        'permission_resolution_received',
+      ],
       acceptedActions: ['grant_capability', 'deny_capability', 'escalate_capability', 'recover_workspace_attempt'],
       taskId: this.deps.context.taskId,
     });
@@ -198,7 +235,9 @@ export class PermissionWorkflowService {
   private buildSnapshot(event: KernelEvent): KernelSnapshot {
     const requestId = event.type === 'permission_requested'
       ? event.request.id
-      : event.type === 'permission_resolution_received' ? event.requestId : '';
+      : event.type === 'permission_review_represented' || event.type === 'permission_resolution_received'
+        ? event.requestId
+        : '';
     const record = this.deps.repository.findRequest(requestId);
     return {
       schemaVersion: 5,
@@ -291,5 +330,9 @@ export class PermissionWorkflowService {
 
   private now(): string {
     return this.deps.clock?.now() ?? new Date().toISOString();
+  }
+
+  private reviewIssuedAt(record: PermissionRequestRecord): string {
+    return this.deps.reviewIssuedAt ?? record.createdAt;
   }
 }

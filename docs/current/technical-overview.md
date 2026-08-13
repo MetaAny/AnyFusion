@@ -510,7 +510,8 @@ The default command launches the pinned AnyFusion-Pi Planner TUI:
 - The executable is `anyfusion-planner`; user-visible Pi/Earendil branding and upstream account/update flows are disabled in the fork.
 - The local host bridge delivers a bounded global Task pool plus focused Task/Subtask/Executor/blocking projection. Wide and medium terminals render the dashboard beside the transcript; narrow terminals hide it and keep ordinary conversation usable. An explicit Pi-native Loader animates the current snapshot's Executor name and stops when the name clears or the snapshot becomes unavailable/stale. Initial loading, unavailable, and malformed/stale snapshot states degrade the panel without mutating Task state.
 - Host Protocol v2 advertises `executor_result` and passively replays each unseen integrated Subtask publication associated with the current MetaClaw session. Pi persists one visible custom message containing the Executor report, warnings, integration commit, and every artifact path. The write uses `triggerTurn: false`: it enters later Planner context but never starts or steers a turn, and the Planner consults it only when the current user explicitly asks about results, output, artifacts, or status.
-- Host Protocol v2 advertises `permission_request` only to interactive clients. The Session derives open requests from applied Kernel escalation/resolution facts plus the durable request status and 24-hour validity window. Pi keeps a non-persistent sorted inbox and uses its native approve/deny Selector; Esc, expiry, and disconnect produce no authorization fact. Button resolution re-enters the existing permission workflow with `source: button`. Interactive Planner authorization proposals and `/permission` commands are unavailable, while RPC, Feishu, and Session Planner exact natural-language resolution retain their existing validation path.
+- Host Protocol v2 advertises `permission_request` only to interactive clients. The Session derives open requests from the active current-session applied Kernel escalation, resolution facts, durable request status, and 24-hour review validity window measured from that escalation. When an unresolved `awaiting_approval` publication survives process replacement, startup submits the same immutable request through the permission workflow to obtain a current-Session review Decision. Explicit `/task resume` similarly issues a new review after expiry; when the request row is missing it restores only the exact original Kernel `permission_requested` identity after matching Task, generation, Subtask, attempt, Executor, fingerprint, operation, scope, and candidate commit to the durable publication. Missing or mismatched source identity fails closed. Each new review causally supersedes the old presentation without granting access, changing the exact candidate, or rerunning the Executor, so stale Session buttons conflict and approval continues the original merge, artifact, handoff, and Executor-report publication path. Pi keeps a non-persistent sorted inbox and uses its native approve/deny Selector; Esc, expiry, and disconnect produce no authorization fact. Button resolution re-enters the existing permission workflow with `source: button`. Interactive Planner authorization proposals and `/permission` commands are unavailable, while RPC, Feishu, and Session Planner exact natural-language resolution retain their existing validation path.
+- Feishu can opt into `gateway.platforms.feishu.delivery.publication_approval: auto`. This suppresses the approval prompt and resolves every exact repository-promotion request for the active Task through the existing durable permission workflow until final delivery. The default remains `manual`; the Windows Docker Gateway profile explicitly selects `auto` through `METACLAW_FEISHU_PUBLICATION_APPROVAL=auto` so existing persistent configs do not need rewriting.
 - The projection and dashboard are read-only. They cannot write Task state, choose policy, schedule attempts, call Kernel, or control Executor processes.
 - Direct replies and clarifications render from the accepted tool result. The raw v7 plan remains internal; rejected revisions may be resubmitted in the same Agent turn, and the first accepted submission terminates with MetaClaw's authoritative `displayText`.
 - Bridge failure, stale data, or malformed data degrades Task projection and proposal submission explicitly; it never pretends a Task was created and does not terminate ordinary conversation.
@@ -581,6 +582,16 @@ The Runtime Dockerfile and `docker/shell.ps1` provide the same Ubuntu runtime
 for CI and Windows-hosted development.
 
 Local validation covers TypeScript lint/build, focused Planner RPC and host-protocol tests, the Docker Vitest suite, Unix-socket bridge behavior, Session validation, and unchanged Kernel/Execution/Executor regressions. Linux container smoke additionally verifies the single Node 22.19+ executable, isolated application dependency trees and processes, absence of an embedded Planner Node, Planner RPC JSONL, entrypoint config separation, and the final unified image.
+
+For a persistent Windows-hosted Feishu service, `docker/gateway.ps1` creates a
+separate `anyfusion-gateway` container. The foreground command is
+`node /app/dist/index.js gateway run --project /workspace/default`; no inbound
+port is published, Docker uses `unless-stopped`, and ordinary rebuilds reuse the
+schema-scoped data volume plus Project volume. Feishu credentials are loaded
+from the read-only `/run/metaclaw/env/feishu.env` mount selected by
+`METACLAW_FEISHU_ENV_FILE`, rather than copied into runtime data or Docker
+environment values. `gateway health` reports healthy only when the process,
+Unix socket, and Feishu WebSocket are connected.
 
 ## Configuration
 
@@ -689,12 +700,18 @@ Access control is handled by the Gateway:
 - Direct messages default to `dm_policy: pairing`. The first DM user is approved automatically; later users can be approved or revoked with `anyfusion gateway pairing`.
 - Group chats default to `group_policy: open` with `require_mention: true`.
 - `/sethome` sent in a Feishu chat records that chat as `gateway.platforms.feishu.home_channel`.
-- Feishu configuration is read only from `gateway.platforms.feishu`.
+- Feishu behavior is read from `gateway.platforms.feishu`; `FEISHU_APP_ID` and
+  optional `FEISHU_DOMAIN` may supply mounted application identity, while the
+  secret remains in the environment named by `app_secret_env`.
+- Each Feishu `chat_id` maps to a stable opaque Planner session ID. Private and
+  group conversations retain separate context across container restart or
+  same-schema rebuild, while the global single-active-Task rule remains in force.
 
 Useful Feishu Gateway commands:
 
 ```bash
 anyfusion gateway doctor
+anyfusion gateway health
 anyfusion gateway pairing list
 anyfusion gateway pairing approve <open_id>
 anyfusion gateway pairing revoke <open_id>
@@ -750,9 +767,8 @@ Useful commands:
 /task show <id>
 /task pause <id>
 /task resume <id>
+/task resume <id> /tmp/evidence-v4.pdf
 /task block <id> waiting for customer data
-/task unblock <id>
-/task unblock <id> /tmp/evidence-v4.pdf
 /task cancel <id>
 /task purge <taskId> --confirm <taskId>
 /task <taskId> subtask cancel <subtaskId...>
@@ -840,7 +856,7 @@ baseline.
 
 `SubtaskExecutionContext` is the only production Executor input. Task title/goal are background, the current Subtask goal is the sole operational instruction, siblings expose only titles as out of scope, and Planner-selected evidence has deterministic per-reference and total preview budgets. Runtime keeps Task/Subtask/attempt/WorkUnit identities and acceptance/handoff keys outside the model-facing prompt and report. Ordinary assistant/Executor history never enters the context. Codex and Pi may access eligible Task evidence through the same attempt-bound read-only authorization; unsupported Adapters receive only selected previews.
 
-Every Executor response must end with Completion Protocol v4. The required non-empty Markdown before the marker is the result description. The model-facing strict JSON is `{}` or contains only optional `resultFilePaths`; a controlled `failure` is also accepted, while identity fields and other model-authored fields are rejected. Runtime verifies declared result paths as existing workspace-relative files, uses the description for acceptance evidence and text handoffs, and uses declared files for artifact handoffs. Workspace changes are allowed but not required. Runtime still computes and persists one authoritative commit-derived workspace delta independently of Completion validation. If files changed, the Executor commits them, merges current local `main`, resolves conflicts and leaves the assigned branch clean; otherwise a clean assigned worktree is sufficient. Runtime then validates the assigned branch and `main` ancestry, materializes the internal acceptance/handoff envelope, strips the machine report, checks budgets, and persists the exact candidate in `awaiting_approval` with a `repository_promotion` request. Approval merges the complete branch into Project `main`; denial blocks and preserves the worktree. If `main` moved after review began, Runtime preserves the worktree and reruns the Executor to synchronize before creating a new approval. Successful promotion atomically publishes normalized handoffs, clean body, artifacts, workspace state and `done`, then deletes the Subtask worktree and branch. No remote Git operation or file-selective publication occurs.
+Every Executor response must end with Completion Protocol v4. The required non-empty Markdown before the marker is the result description. The model-facing strict JSON is `{}` or contains only optional `resultFilePaths`; a controlled `failure` is also accepted, while identity fields and other model-authored fields are rejected. Runtime verifies declared result paths as existing workspace-relative files, uses the description for acceptance evidence and text handoffs, and uses declared files for artifact handoffs. Workspace changes are allowed but not required. Runtime still computes and persists one authoritative commit-derived workspace delta independently of Completion validation. If files changed, the Executor commits them, merges current local `main`, resolves conflicts and leaves the assigned branch clean; otherwise a clean assigned worktree is sufficient. Runtime then validates the assigned branch and `main` ancestry, materializes the internal acceptance/handoff envelope, strips the machine report, checks budgets, and persists the exact candidate in `awaiting_approval` with a `repository_promotion` request. While that publication exists, Task status/detail and resume paths report approval as the only next action; user or Planner continuation does not dispatch another attempt. Approval merges the complete branch into Project `main`; denial blocks and preserves the worktree. If `main` moved after review began, Runtime preserves the worktree and reruns the Executor to synchronize before creating a new approval. Successful promotion atomically publishes normalized handoffs, clean body, artifacts, workspace state and `done`, then deletes the Subtask worktree and branch. No remote Git operation or file-selective publication occurs.
 
 On the first Completion Protocol failure, Kernel may authorize one persisted `contract_correction` attempt. Despite the retained name, this is a complete retry through the ordinary Executor path: a new session reuses the Subtask worktree, receives the original goal and acceptance plus a bounded recovery packet with the violations, and gets the same AgentClass permission profile, mounts, evidence/capability MCP servers, tools and network policy. Attempt-scoped grants are not inherited. Runtime recomputes the retry's workspace delta and validates its new final response normally; a second contract failure blocks. Pi terminal-event extraction and correction quota scoping by source attempt remain separate technical debt.
 

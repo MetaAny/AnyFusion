@@ -302,6 +302,41 @@ describe('PlannerTuiBridge shared Proposal Host', () => {
     socket.destroy();
   });
 
+  it('closes the stale review and reopens the same permission request for a new review', async () => {
+    const socketPath = join(tmpdir(), `planner-host-${process.pid}-${Date.now()}-permission-reissue.sock`);
+    const session = new FakeSession();
+    session.permissionRequests.push(permissionRequest('permission-1'));
+    const bridge = new PlannerTuiBridge({ socketPath });
+    bridges.push(bridge);
+    bridge.registerSession('session-1', session);
+    await bridge.start();
+    const socket = await connect(socketPath);
+    write(socket, { protocolVersion: 2, type: 'hello', requestId: 'hello-1', runtimeVersion: 'test', sessionId: 'session-1', mode: 'interactive' });
+    await read(socket);
+    write(socket, { protocolVersion: 2, type: 'snapshot_subscribe', requestId: 'subscribe-1' });
+    await readMany(socket, 3);
+
+    session.permissionRequests[0] = {
+      ...session.permissionRequests[0]!,
+      reviewId: 'review-permission-1-reissued',
+      createdAt: '2026-08-06T00:00:00.000Z',
+      expiresAt: '2026-08-07T00:00:00.000Z',
+    };
+    session.emit();
+
+    const messages = await readMany(socket, 3);
+    expect(messages.map(message => message.type)).toEqual([
+      'snapshot', 'permission_request_closed', 'permission_request',
+    ]);
+    expect(messages[2]).toMatchObject({
+      permission: {
+        permissionRequestId: 'permission-1',
+        reviewId: 'review-permission-1-reissued',
+      },
+    });
+    socket.destroy();
+  });
+
   it('does not project or accept permission requests on rpc sockets', async () => {
     const socketPath = join(tmpdir(), `planner-host-${process.pid}-${Date.now()}-rpc-permissions.sock`);
     const session = new FakeSession();
@@ -322,7 +357,8 @@ describe('PlannerTuiBridge shared Proposal Host', () => {
 
 function permissionRequest(permissionRequestId: string): PlannerTuiPermissionRequest {
   return {
-    schemaVersion: 1, permissionRequestId, taskId: 'task-1', taskTitle: 'Task',
+    schemaVersion: 1, permissionRequestId, reviewId: `review-${permissionRequestId}`,
+    taskId: 'task-1', taskTitle: 'Task',
     generationId: 'generation-1', subtaskId: 'subtask-1', subtaskTitle: 'Subtask',
     attemptId: 'attempt-1', executorName: 'codex-cli', permissionProfileId: 'restricted-coding',
     capability: 'network', resource: 'https://example.com', operation: 'GET', reason: 'Fetch docs',

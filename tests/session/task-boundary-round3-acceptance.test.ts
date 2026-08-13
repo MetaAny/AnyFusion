@@ -611,7 +611,7 @@ describe('Round 3 task boundary acceptance', () => {
       sessionId: 'sess_resume_blocked_without_new_task',
       contextRecaller,
       planningAgent: planningAgentFromPlanMock(
-        vi.fn(async () => taskControlPlan({ control: 'recover_blocked', taskId: blockedTaskId })),
+        vi.fn(async () => taskControlPlan({ control: 'resume_task', taskId: blockedTaskId })),
       ),
     });
 

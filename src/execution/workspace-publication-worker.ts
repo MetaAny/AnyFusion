@@ -31,6 +31,11 @@ export interface StaleWorkspacePublication {
   taskId: string;
   subtaskId: string;
   reason: string;
+  synchronized?: {
+    mainBaseCommit: string;
+    candidateCommit: string;
+    changedPaths: string[];
+  };
 }
 
 export interface CancelledWorkspacePublication {
@@ -77,6 +82,26 @@ export class WorkspacePublicationWorker {
       .finally(() => this.activeDrains.delete(key));
     this.activeDrains.set(key, drain);
     return drain;
+  }
+
+  async synchronizeParked(publication: WorkspacePublicationRecord): Promise<StaleWorkspacePublication> {
+    if (publication.status !== 'parked') {
+      throw new Error(`publication is not parked: ${publication.id}`);
+    }
+    const workspace = await this.git.ensure({
+      taskId: publication.taskId,
+      generationId: publication.generationId,
+      subtaskId: publication.subtaskId,
+    }, this.deps.sourceRoot);
+    const synchronized = await this.git.synchronizeCandidate(workspace, publication.candidateCommit);
+    return {
+      type: 'stale',
+      publicationId: publication.id,
+      taskId: publication.taskId,
+      subtaskId: publication.subtaskId,
+      reason: publication.errorSummary ?? 'Project main changed after publication approval was requested',
+      synchronized,
+    };
   }
 
   private async drainSerial(taskId: string, generationId: string): Promise<WorkspacePublicationOutcome[]> {
@@ -135,12 +160,27 @@ export class WorkspacePublicationWorker {
         const now = new Date().toISOString();
         this.publications.markParked(publication.id, reason, now);
         this.deps.subtaskRepo.updateStatus(publication.subtaskId, 'ready', { error: reason });
+        let synchronized: StaleWorkspacePublication['synchronized'];
+        try {
+          synchronized = await this.git.synchronizeCandidate(workspace, publication.candidateCommit);
+        } catch (syncError) {
+          const syncReason = syncError instanceof Error ? syncError.message : String(syncError);
+          this.publications.markParked(publication.id, `${reason}; ${syncReason}`, new Date().toISOString());
+          return {
+            type: 'stale',
+            publicationId: publication.id,
+            taskId: publication.taskId,
+            subtaskId: publication.subtaskId,
+            reason: `${reason}; ${syncReason}`,
+          };
+        }
         return {
           type: 'stale',
           publicationId: publication.id,
           taskId: publication.taskId,
           subtaskId: publication.subtaskId,
           reason,
+          synchronized,
         };
       }
       this.publications.markPending(publication.id, reason, new Date().toISOString());

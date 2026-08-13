@@ -39,7 +39,7 @@ examples/trial-scenarios/assets/customer-evidence-v3.md
 5. 等拿到新材料后，解除阻塞并附带资源路径：
 
 ```text
-/task unblock <task_id> examples/trial-scenarios/assets/customer-evidence-v3.md
+/task resume <task_id> examples/trial-scenarios/assets/customer-evidence-v3.md
 ```
 
 6. 再执行：

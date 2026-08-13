@@ -73,9 +73,13 @@ export interface CommandContext {
 
 export type CommandDirective =
   | {
+      kind: 'resume-publication-review';
+      taskId: string;
+      permissionRequestId: string;
+    }
+  | {
       kind: 'resume-task';
       taskId: string;
-      mode: 'resume-parked' | 'resume-blocked';
       newlyProvidedResources?: string[];
       blockedReason?: string;
     }

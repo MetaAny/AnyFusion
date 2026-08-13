@@ -137,6 +137,9 @@ describe('ExecutorRegistrationService', () => {
       request.args.some(arg => arg.includes('ANYFUSION_VERIFY_'))
     );
     expect(challengeRequests).toHaveLength(2);
+    expect(challengeRequests.every(request => request.args.some(arg => (
+      arg.startsWith('Return exactly this verification token and no other text: ANYFUSION_VERIFY_')
+    )))).toBe(true);
     expect(challengeRequests[0]?.args).toEqual(expect.arrayContaining(['start', '--prompt']));
     expect(challengeRequests[1]?.args).toEqual(expect.arrayContaining(['resume', 'session-1', '--prompt']));
     expect(challengeRequests.every(request => request.cwd.endsWith('/workspace'))).toBe(true);
