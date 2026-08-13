@@ -40,4 +40,4 @@ CLI、TUI、RPC 及未显式启用该策略的飞书部署继续使用手动审�
 - 运行镜像：`sha256:ed55b16a7f7585be9be3b4c172354a97bfbe1b2df4d0e2e1f3a014e6d5164913`。
 - 升级前已经停在 `awaiting_approval` 的 Task 会在所属 Chat 的下一条消息到达时
   进入新自动批准路径；无需再发送批准口令。真实文件交付验收待该消息触发。
-- Closing commit：待与工作区中并行文档整理变更分离后补记。
+- Closing commit：`ae9bfc5`（`feat: automate Feishu publication delivery`）。
