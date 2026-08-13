@@ -136,8 +136,38 @@ The launcher builds both repositories and uses only verified absolute CLI
 bindings from `$ANYFUSION_CONFIG_HOME/executors.yaml`. Use
 `anyfusion --no-build` to reuse current outputs. Runtime data is stored under
 `~/.local/share/anyfusion/runtime`; the Registry and private Executor source
-configuration are stored under `~/.config/anyfusion`. Docker remains only for
-the unified Ubuntu Runtime/test environment used from Windows.
+configuration are stored under `~/.config/anyfusion`. Docker provides the
+unified Ubuntu Runtime/test environment and persistent Feishu Gateway used
+from Windows.
+
+### Windows-hosted Feishu Gateway
+
+Windows runs Docker Desktop while Runtime, Planner and Executors stay inside
+the same Ubuntu image. The Feishu app must have bot capability and the
+`im.message.receive_v1` event configured for long-connection delivery. Keep
+`AnyFusion` and `AnyFusion-Pi` side by side, then create the four mounted
+credential files:
+
+```powershell
+Copy-Item docker\planner-pi.env.example docker\planner-pi.env
+Copy-Item docker\executor-codex.env.example docker\executor-codex.env
+Copy-Item docker\executor-pi.env.example docker\executor-pi.env
+Copy-Item docker\feishu.env.example docker\feishu.env
+```
+
+Set the provider credentials and Feishu `FEISHU_APP_ID` / `FEISHU_APP_SECRET`,
+then build and start the persistent Gateway:
+
+```powershell
+.\docker\gateway.ps1 -Rebuild
+.\docker\gateway.ps1 -Status
+.\docker\gateway.ps1 -Logs
+```
+
+The `anyfusion-gateway` container uses `unless-stopped`, publishes no inbound
+port, and reuses its data and Project volumes across rebuilds. Subsequent source
+updates need only `-Rebuild`. Use `docker\shell.ps1` separately when an
+interactive SSH/TUI development container is required.
 
 ## Project Status
 

@@ -348,6 +348,20 @@ existing definitions are skipped. `-Start` and `-Rebuild` wait for this bootstra
 and SSH readiness before reporting success. Native Windows Node.js is not a
 supported Runtime path.
 
+For a persistent Feishu Gateway, also create `docker\feishu.env`, set
+`FEISHU_APP_ID` and `FEISHU_APP_SECRET`, and use the dedicated service wrapper:
+
+```powershell
+Copy-Item docker\feishu.env.example docker\feishu.env
+.\docker\gateway.ps1 -Rebuild
+.\docker\gateway.ps1 -Status
+.\docker\gateway.ps1 -Logs
+```
+
+`docker\shell.ps1` remains the interactive SSH/TUI development path;
+`docker\gateway.ps1` owns the restartable Feishu service. Later source or image
+updates need only another `-Rebuild`.
+
 ## Install Executors
 
 AnyFusion does not vendor the downstream executor CLIs. Install the ones you want to use and make sure each command is available on `PATH`.
@@ -511,7 +525,7 @@ The default command launches the pinned AnyFusion-Pi Planner TUI:
 - The local host bridge delivers a bounded global Task pool plus focused Task/Subtask/Executor/blocking projection. Wide and medium terminals render the dashboard beside the transcript; narrow terminals hide it and keep ordinary conversation usable. An explicit Pi-native Loader animates the current snapshot's Executor name and stops when the name clears or the snapshot becomes unavailable/stale. Initial loading, unavailable, and malformed/stale snapshot states degrade the panel without mutating Task state.
 - Host Protocol v2 advertises `executor_result` and passively replays each unseen integrated Subtask publication associated with the current MetaClaw session. Pi persists one visible custom message containing the Executor report, warnings, integration commit, and every artifact path. The write uses `triggerTurn: false`: it enters later Planner context but never starts or steers a turn, and the Planner consults it only when the current user explicitly asks about results, output, artifacts, or status.
 - Host Protocol v2 advertises `permission_request` only to interactive clients. The Session derives open requests from the active current-session applied Kernel escalation, resolution facts, durable request status, and 24-hour review validity window measured from that escalation. When an unresolved `awaiting_approval` publication survives process replacement, startup submits the same immutable request through the permission workflow to obtain a current-Session review Decision. Explicit `/task resume` similarly issues a new review after expiry; when the request row is missing it restores only the exact original Kernel `permission_requested` identity after matching Task, generation, Subtask, attempt, Executor, fingerprint, operation, scope, and candidate commit to the durable publication. Missing or mismatched source identity fails closed. Each new review causally supersedes the old presentation without granting access, changing the exact candidate, or rerunning the Executor, so stale Session buttons conflict and approval continues the original merge, artifact, handoff, and Executor-report publication path. Pi keeps a non-persistent sorted inbox and uses its native approve/deny Selector; Esc, expiry, and disconnect produce no authorization fact. Button resolution re-enters the existing permission workflow with `source: button`. Interactive Planner authorization proposals and `/permission` commands are unavailable, while RPC, Feishu, and Session Planner exact natural-language resolution retain their existing validation path.
-- Feishu can opt into `gateway.platforms.feishu.delivery.publication_approval: auto`. This suppresses the approval prompt and resolves every exact repository-promotion request for the active Task through the existing durable permission workflow until final delivery. The default remains `manual`; the Windows Docker Gateway profile explicitly selects `auto` through `METACLAW_FEISHU_PUBLICATION_APPROVAL=auto` so existing persistent configs do not need rewriting.
+- Feishu can opt into `gateway.platforms.feishu.delivery.publication_approval: auto`. This suppresses the approval prompt and resolves every exact repository-promotion request for the active Task through the existing durable permission workflow. Intermediate publications continue the same Task; delivery waits for Task status `done` before selecting the latest integrated result, so an upstream Markdown handoff cannot be mistaken for the final artifact. The default remains `manual`; the Windows Docker Gateway profile explicitly selects `auto` through `METACLAW_FEISHU_PUBLICATION_APPROVAL=auto` so existing persistent configs do not need rewriting.
 - The projection and dashboard are read-only. They cannot write Task state, choose policy, schedule attempts, call Kernel, or control Executor processes.
 - Direct replies and clarifications render from the accepted tool result. The raw v7 plan remains internal; rejected revisions may be resubmitted in the same Agent turn, and the first accepted submission terminates with MetaClaw's authoritative `displayText`.
 - Bridge failure, stale data, or malformed data degrades Task projection and proposal submission explicitly; it never pretends a Task was created and does not terminate ordinary conversation.
@@ -650,6 +664,7 @@ gateway:
         final_markdown_mode: card
         fallback_mode: post
         final_file_fallback: true
+        publication_approval: manual
 
 integrations:
   markdown_preview:
@@ -987,7 +1002,7 @@ real Codex artifact Task and a real Pi `web_search`/`web_fetch` research Task,
 and confirmed zero Task-scoped residue after formal purge. Hermes driver/profile
 support is implemented, but Hermes was intentionally not registered or included
 in that acceptance. Exact run IDs and close-out evidence are recorded in the
-[schema 32 completion plan](../plans/2026-08-07-unified-executor-registry-and-schema-32.md).
+[schema 32 completion plan](../archive/plans/2026-08-07-unified-executor-registry-and-schema-32.md).
 
 Targeted tests:
 

@@ -133,8 +133,35 @@ launcher 默认构建两个仓库，并且只使用
 `$ANYFUSION_CONFIG_HOME/executors.yaml` 中已验证的绝对 CLI binding。
 `anyfusion --no-build` 可复用当前构建产物。Runtime 数据位于
 `~/.local/share/anyfusion/runtime`，Registry 和 Executor 私有源配置位于
-`~/.config/anyfusion`。Docker 只提供统一的 Ubuntu Runtime/测试环境，供
-Windows 开发机编排使用；Executor attempt 不会启动嵌套容器。
+`~/.config/anyfusion`。Docker 为 Windows 提供统一 Ubuntu Runtime/测试环境和
+持久飞书 Gateway 部署；Executor attempt 不会启动嵌套容器。
+
+### Windows 持久飞书 Gateway
+
+Windows 只运行 Docker Desktop，Runtime、Planner 和 Executor 全部留在同一个
+Ubuntu 镜像中。飞书应用需启用机器人能力，并将 `im.message.receive_v1` 配置为
+长连接接收。将 `AnyFusion` 与 `AnyFusion-Pi` 放在同一父目录，然后创建四份只读
+挂载的凭据文件：
+
+```powershell
+Copy-Item docker\planner-pi.env.example docker\planner-pi.env
+Copy-Item docker\executor-codex.env.example docker\executor-codex.env
+Copy-Item docker\executor-pi.env.example docker\executor-pi.env
+Copy-Item docker\feishu.env.example docker\feishu.env
+```
+
+填写模型 provider 凭据以及飞书 `FEISHU_APP_ID` / `FEISHU_APP_SECRET`，再构建并
+启动持久 Gateway：
+
+```powershell
+.\docker\gateway.ps1 -Rebuild
+.\docker\gateway.ps1 -Status
+.\docker\gateway.ps1 -Logs
+```
+
+`anyfusion-gateway` 使用 `unless-stopped`，不发布入站端口，重建时复用数据卷和
+Project 卷。后续源码更新只需再次执行 `-Rebuild`。需要 SSH/TUI 交互开发容器时，
+另行使用 `docker\shell.ps1`。
 
 ## 项目状态
 

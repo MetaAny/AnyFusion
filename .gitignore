@@ -14,3 +14,4 @@ docker/*.env
 docs/competitive-analysis/
 .agents/skills/research-metaclaw-competitors/
 docs/sales/
+.codex/environments/environment.toml
