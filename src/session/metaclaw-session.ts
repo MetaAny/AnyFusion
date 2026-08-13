@@ -1224,13 +1224,28 @@ export class MetaclawSession {
     options: { awaitAsyncWork?: boolean } = {},
   ): Promise<{ exitRequested: boolean }> {
     await this.initialization;
-    return this.inputController.submit(rawInput, options);
+    if (!options.awaitAsyncWork) {
+      return this.inputController.submit(rawInput, options);
+    }
+
+    const existingWork = new Set(this.backgroundWork);
+    const result = await this.inputController.submit(rawInput, { awaitAsyncWork: false });
+    await this.waitForAsyncWorkStartedAfter(existingWork);
+    return result;
   }
 
   async waitForAsyncWork(): Promise<void> {
     await this.initialization;
     while (this.backgroundWork.size > 0) {
       await Promise.allSettled(Array.from(this.backgroundWork));
+    }
+  }
+
+  private async waitForAsyncWorkStartedAfter(existingWork: ReadonlySet<Promise<void>>): Promise<void> {
+    while (true) {
+      const pending = Array.from(this.backgroundWork).filter(work => !existingWork.has(work));
+      if (pending.length === 0) return;
+      await Promise.allSettled(pending);
     }
   }
 

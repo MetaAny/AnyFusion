@@ -847,6 +847,64 @@ describe('natural-language planning/kernel path', () => {
     expect(audits[0]!.taskId).toBeNull();
   });
 
+  it('does not make a direct reply wait for background work started by an earlier submit', async () => {
+    let plannerCall = 0;
+    let notifyExecutorStarted!: () => void;
+    const executorStarted = new Promise<void>(resolve => {
+      notifyExecutorStarted = resolve;
+    });
+    let finishExecutor!: (exitCode: number) => void;
+    const executorWait = new Promise<number>(resolve => {
+      finishExecutor = resolve;
+    });
+    const harness = createSession('sess_direct_during_background', () => {
+      plannerCall += 1;
+      if (plannerCall === 1) return plan({ id: 'plan_background_before_direct' });
+      return plan({
+        id: 'plan_direct_during_background',
+        action: 'direct_reply',
+        reason: 'status query',
+        response: { directReply: '任务仍在执行。' },
+        task: {
+          binding: 'none',
+          taskId: null,
+          control: 'none',
+          scope: null,
+          title: null,
+          goal: null,
+          includeRecentConversationContext: false,
+          priority: null,
+        },
+        workGraph: null,
+      });
+    }, input => {
+      notifyExecutorStarted();
+      return {
+        rawOutput: completionResponseFromSandboxInput(input, 'background work done'),
+        wait: executorWait,
+      };
+    });
+
+    const backgroundSubmission = harness.session.submit('开始长任务', { awaitAsyncWork: true });
+    await executorStarted;
+    const directSubmission = harness.session.submit('还在执行吗？', { awaitAsyncWork: true });
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    const resolvedBeforeBackground = await Promise.race([
+      directSubmission.then(() => true),
+      new Promise<boolean>(resolve => {
+        timeoutId = setTimeout(() => resolve(false), 250);
+      }),
+    ]);
+
+    if (timeoutId) clearTimeout(timeoutId);
+    finishExecutor(0);
+    await backgroundSubmission;
+    await directSubmission;
+
+    expect(resolvedBeforeBackground).toBe(true);
+    expect(harness.session.getSnapshot().output.join('\n')).toContain('任务仍在执行。');
+  });
+
   it('routes direct replies through the same persisted decide() seam', async () => {
     const decideSpy = vi.spyOn(ControlKernel.prototype, 'decide');
     const harness = createSession('sess_shortcircuit', plan({
