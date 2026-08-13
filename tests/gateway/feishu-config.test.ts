@@ -59,6 +59,7 @@ describe('Feishu Gateway config resolution', () => {
       eventPort: 8787,
       eventPath: '/feishu/events',
       verificationToken: 'new-token',
+      publicationApproval: 'manual',
       source: 'gateway',
     });
   });
@@ -74,6 +75,7 @@ describe('Feishu Gateway config resolution', () => {
       eventPath: '/feishu/events',
       verificationToken: undefined,
       encryptKeyEnv: undefined,
+      publicationApproval: 'manual',
       source: 'default',
     });
   });
@@ -87,6 +89,7 @@ describe('Feishu Gateway config resolution', () => {
       appSecretEnv: 'FEISHU_APP_SECRET',
       eventPort: 8787,
       eventPath: '/feishu/events',
+      publicationApproval: 'manual',
       source: 'gateway',
     })).toEqual({
       enabled: true,
@@ -108,6 +111,12 @@ describe('Feishu Gateway config resolution', () => {
       appId: 'cli_env',
       domain: 'lark',
     });
+  });
+
+  it('lets the Gateway service override publication approval without rewriting persistent config', () => {
+    expect(resolveFeishuGatewayConfig(baseConfig(), {
+      METACLAW_FEISHU_PUBLICATION_APPROVAL: 'auto',
+    }).publicationApproval).toBe('auto');
   });
 
   it('loads a mounted credential file into a scoped environment only', () => {

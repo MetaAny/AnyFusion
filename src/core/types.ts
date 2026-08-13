@@ -507,6 +507,7 @@ export interface Config {
           final_markdown_mode?: 'card' | 'post';
           fallback_mode?: 'post' | 'file';
           final_file_fallback?: boolean;
+          publication_approval?: 'manual' | 'auto';
         };
         home_channel?: string;
       };

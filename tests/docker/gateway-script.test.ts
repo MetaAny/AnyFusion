@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 const repoRoot = resolve(import.meta.dirname, '..', '..');
 const gatewayScript = readFileSync(resolve(repoRoot, 'docker', 'gateway.ps1'), 'utf-8');
 const entrypoint = readFileSync(resolve(repoRoot, 'docker', 'entrypoint.sh'), 'utf-8');
+const gatewayConfig = readFileSync(resolve(repoRoot, 'docker', 'gateway-config.yaml'), 'utf-8');
 
 describe('persistent Docker Gateway orchestration', () => {
   it('uses a foreground Gateway, stable volumes, restart policy, and no published port', () => {
@@ -25,5 +26,10 @@ describe('persistent Docker Gateway orchestration', () => {
 
   it('lets packaging select a non-TUI default config through the shared entrypoint', () => {
     expect(entrypoint).toContain('ANYFUSION_DEFAULT_CONFIG="${ANYFUSION_DEFAULT_CONFIG:-/opt/metaclaw/default-config.yaml}"');
+  });
+
+  it('auto-approves repository publication only in the Feishu Gateway profile', () => {
+    expect(gatewayConfig).toContain('publication_approval: auto');
+    expect(gatewayScript).toContain('METACLAW_FEISHU_PUBLICATION_APPROVAL=auto');
   });
 });

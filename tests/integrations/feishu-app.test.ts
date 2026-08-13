@@ -1526,6 +1526,173 @@ describe('Feishu app helpers', () => {
     ].join('\n'));
   });
 
+  it('auto-approves every Feishu publication for the active task without showing approval prompts', async () => {
+    const deliveryRoot = mkdtempSync(resolve(tmpdir(), 'metaclaw-feishu-auto-publish-'));
+    const deliveryArtifact = resolve(deliveryRoot, 'report.pdf');
+    writeFileSync(deliveryArtifact, 'pdf-result', 'utf-8');
+    let output = ['before'];
+    let listener: ((snapshot: { output: string[] }) => void) | null = null;
+    const baseRequest = {
+      schemaVersion: 1 as const,
+      taskId: 'task_auto_publish',
+      taskTitle: '生成报告',
+      generationId: 'generation_auto_publish',
+      executorName: 'codex',
+      permissionProfileId: 'default',
+      capability: 'repository_promotion',
+      resource: '/workspace/default',
+      suggestedScope: 'once' as const,
+      escalationReason: 'capability requires exact user authorization',
+      createdAt: '2026-08-13T02:26:41.000Z',
+      expiresAt: '2026-08-13T04:26:41.000Z',
+    };
+    const firstRequest = {
+      ...baseRequest,
+      permissionRequestId: 'permission_request_auto_first',
+      reviewId: 'decision_auto_first',
+      subtaskId: 'subtask_auto_first',
+      subtaskTitle: '调研资料',
+      attemptId: 'attempt_auto_first',
+      operation: 'promote_commit:first',
+      reason: 'Changed paths (1): research.md.',
+    };
+    const secondRequest = {
+      ...baseRequest,
+      permissionRequestId: 'permission_request_auto_second',
+      reviewId: 'decision_auto_second',
+      subtaskId: 'subtask_auto_second',
+      subtaskTitle: '生成 PDF',
+      attemptId: 'attempt_auto_second',
+      operation: 'promote_commit:second',
+      reason: 'Changed paths (1): report.pdf.',
+      createdAt: '2026-08-13T02:27:41.000Z',
+    };
+    let permissionRequests: any[] = [];
+    let taskStatus = 'running';
+    const intermediateArtifact = resolve(deliveryRoot, 'research.md');
+    writeFileSync(intermediateArtifact, 'research-result', 'utf-8');
+    let integratedResults: any[] = [];
+    const session = {
+      getSnapshot: vi.fn(() => ({ output: [...output] })),
+      subscribe: vi.fn((next: (snapshot: { output: string[] }) => void) => {
+        listener = next;
+        next({ output: [...output] });
+        return () => {
+          listener = null;
+        };
+      }),
+      submit: vi.fn().mockImplementation(() => {
+        output = [...output,
+          '任务 #task_auto_publish 已创建：生成报告',
+          '→ 正在执行任务 #task_auto_publish...',
+        ];
+        permissionRequests = [firstRequest];
+        listener?.({ output: [...output] });
+        return new Promise<{ exitRequested: boolean }>(() => undefined);
+      }),
+      appendSystemMessage: vi.fn(),
+      getPlannerTuiPermissionRequests: vi.fn(() => permissionRequests),
+      getPlannerTuiExecutorResults: vi.fn(() => integratedResults),
+      getPlannerTuiSnapshot: vi.fn(() => ({
+        taskPool: [{ id: 'task_auto_publish', status: taskStatus }],
+      })),
+      resolvePlannerTuiPermission: vi.fn().mockImplementation(async (requestId: string) => {
+        if (requestId === firstRequest.permissionRequestId) {
+          permissionRequests = [];
+          integratedResults = [{
+            schemaVersion: 1,
+            publicationId: 'publication_auto_first',
+            taskId: 'task_auto_publish',
+            taskTitle: '生成报告',
+            subtaskId: 'subtask_auto_first',
+            subtaskTitle: '调研资料',
+            attemptId: 'attempt_auto_first',
+            executorName: 'pi',
+            report: '调研资料已发布。',
+            artifacts: [intermediateArtifact],
+            warnings: [],
+            integrationCommit: 'first',
+            completedAt: '2026-08-13T02:27:41.000Z',
+            reportTruncated: false,
+          }];
+          setTimeout(() => {
+            permissionRequests = [secondRequest];
+            listener?.({ output: [...output] });
+          }, 50);
+        } else {
+          permissionRequests = [];
+          integratedResults = [...integratedResults, {
+            schemaVersion: 1,
+            publicationId: 'publication_auto_second',
+            taskId: 'task_auto_publish',
+            taskTitle: '生成报告',
+            subtaskId: 'subtask_auto_second',
+            subtaskTitle: '生成 PDF',
+            attemptId: 'attempt_auto_second',
+            executorName: 'codex',
+            report: '报告已生成并发布。',
+            artifacts: [deliveryArtifact],
+            warnings: [],
+            integrationCommit: 'second',
+            completedAt: '2026-08-13T02:28:41.000Z',
+            reportTruncated: false,
+          }];
+          taskStatus = 'done';
+        }
+        listener?.({ output: [...output] });
+        return { status: 'resolved' as const, resolution: 'approve' as const, message: 'recorded' };
+      }),
+    };
+    const client = {
+      addReactionToMessage: vi.fn().mockResolvedValue('reaction_typing'),
+      removeReactionFromMessage: vi.fn().mockResolvedValue(undefined),
+      sendMarkdownCardToChat: vi.fn().mockResolvedValue(undefined),
+      uploadFile: vi.fn().mockResolvedValue('file_key_report'),
+      sendFileToChat: vi.fn().mockResolvedValue(undefined),
+    };
+    const audit = { record: vi.fn() };
+
+    await handleFeishuMessageEvent({
+      message: {
+        message_id: 'om_auto_publish',
+        chat_id: 'oc_chat',
+        message_type: 'text',
+        content: '{"text":"生成报告"}',
+      },
+    }, {
+      session,
+      client,
+      seenMessageIds: new Set<string>(),
+      audit,
+      autoApproveRepositoryPromotion: true,
+    });
+
+    expect(session.resolvePlannerTuiPermission).toHaveBeenNthCalledWith(
+      1,
+      firstRequest.permissionRequestId,
+      'approve',
+    );
+    expect(session.resolvePlannerTuiPermission).toHaveBeenNthCalledWith(
+      2,
+      secondRequest.permissionRequestId,
+      'approve',
+    );
+    expect(client.sendMarkdownCardToChat.mock.calls.flat().join('\n')).not.toContain('发布授权请求');
+    expect(client.sendMarkdownCardToChat.mock.calls.flat().join('\n')).not.toContain('批准本次发布');
+    expect(client.sendMarkdownCardToChat).toHaveBeenCalledWith(
+      'oc_chat',
+      ['任务 #task_auto_publish 已完成合并与交付。', '', '报告已生成并发布。'].join('\n'),
+    );
+    expect(client.uploadFile).toHaveBeenCalledWith(deliveryArtifact);
+    expect(client.uploadFile).not.toHaveBeenCalledWith(intermediateArtifact);
+    expect(client.sendFileToChat).toHaveBeenCalledWith('oc_chat', 'file_key_report');
+    expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'permission',
+      requestId: firstRequest.permissionRequestId,
+      reason: 'repository_promotion_auto_approved',
+    }));
+  });
+
   it('resolves an explicit Feishu publication approval and delivers the continued task result', async () => {
     const deliveryRoot = mkdtempSync(resolve(tmpdir(), 'metaclaw-feishu-delivery-'));
     const deliveryArtifact = resolve(deliveryRoot, 'acceptance.txt');

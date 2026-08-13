@@ -12,6 +12,7 @@ export interface ResolvedFeishuGatewayConfig {
   eventPath: string;
   verificationToken?: string;
   encryptKeyEnv?: string;
+  publicationApproval: 'manual' | 'auto';
   source: 'gateway' | 'default';
 }
 
@@ -25,6 +26,10 @@ export function resolveFeishuGatewayConfig(
     ? envDomain
     : gatewayFeishu?.domain ?? 'feishu';
   const appId = env.FEISHU_APP_ID?.trim() || gatewayFeishu?.app_id;
+  const envPublicationApproval = env.METACLAW_FEISHU_PUBLICATION_APPROVAL?.trim();
+  const publicationApproval = envPublicationApproval === 'auto' || envPublicationApproval === 'manual'
+    ? envPublicationApproval
+    : gatewayFeishu?.delivery?.publication_approval ?? 'manual';
 
   return {
     enabled: gatewayFeishu?.enabled ?? false,
@@ -36,6 +41,7 @@ export function resolveFeishuGatewayConfig(
     eventPath: gatewayFeishu?.event_path ?? '/feishu/events',
     verificationToken: gatewayFeishu?.verification_token,
     encryptKeyEnv: gatewayFeishu?.encrypt_key_env,
+    publicationApproval,
     source: gatewayFeishu?.enabled ? 'gateway' : 'default',
   };
 }

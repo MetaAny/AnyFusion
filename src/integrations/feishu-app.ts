@@ -9,6 +9,7 @@ import type {
   PlannerTuiExecutorResult,
   PlannerTuiPermissionRequest,
   PlannerTuiPermissionResolutionResult,
+  PlannerTuiSnapshot,
   SessionSnapshot,
 } from '../session/metaclaw-session.js';
 import type { MetaclawSession } from '../session/metaclaw-session.js';
@@ -422,6 +423,7 @@ interface FeishuMessageSession {
   subscribe?: (listener: (snapshot: Pick<SessionSnapshot, 'output'>) => void) => () => void;
   submit(rawInput: string, options?: { awaitAsyncWork?: boolean }): Promise<{ exitRequested: boolean }>;
   appendSystemMessage(...lines: string[]): void;
+  getPlannerTuiSnapshot?: () => Pick<PlannerTuiSnapshot, 'taskPool'>;
   getPlannerTuiPermissionRequests?: () => PlannerTuiPermissionRequest[];
   getPlannerTuiExecutorResults?: () => PlannerTuiExecutorResult[];
   resolvePlannerTuiPermission?: (
@@ -453,6 +455,7 @@ interface FeishuMessageHandlerDeps {
   pendingResourcesByChatId?: Map<string, string[]>;
   uploadDir?: string;
   markdownPreview?: FeishuMarkdownPreviewOptions;
+  autoApproveRepositoryPromotion?: boolean;
 }
 
 type FeishuMessageDispatchDeps = Omit<FeishuMessageHandlerDeps, 'session'> & {
@@ -465,13 +468,13 @@ interface FeishuDeliveryAudit {
 }
 
 interface FeishuDeliveryAuditEvent {
-  kind: 'inbound' | 'policy' | 'session' | 'progress' | 'final' | 'artifact' | 'fallback';
+  kind: 'inbound' | 'policy' | 'session' | 'progress' | 'final' | 'artifact' | 'fallback' | 'permission';
   chatId: string;
   requestId?: string;
   reason?: string;
   chunkIndex?: number;
   chunkCount?: number;
-  method: 'card' | 'post' | 'file' | 'notice' | 'skipped';
+  method: 'card' | 'post' | 'file' | 'local' | 'notice' | 'skipped';
   ok: boolean;
   error?: string;
 }
@@ -599,6 +602,7 @@ export class FeishuEventBridge {
       transport: 'webhook',
       pendingResourcesByChatId: this.pendingResourcesByChatId,
       markdownPreview: this.deps.markdownPreview,
+      autoApproveRepositoryPromotion: this.deps.gatewayConfig?.autoApproveRepositoryPromotion,
     });
   }
 }
@@ -619,6 +623,7 @@ interface FeishuWebSocketBridgeDeps {
 interface ResolvedFeishuRuntimeBridgeConfig {
   accessPolicy: FeishuGatewayAccessPolicy;
   configPath: string;
+  autoApproveRepositoryPromotion: boolean;
 }
 
 export class FeishuWebSocketBridge implements FeishuBridge {
@@ -656,6 +661,7 @@ export class FeishuWebSocketBridge implements FeishuBridge {
       transport: 'websocket',
       pendingResourcesByChatId: this.pendingResourcesByChatId,
       markdownPreview: this.deps.markdownPreview,
+      autoApproveRepositoryPromotion: this.deps.gatewayConfig?.autoApproveRepositoryPromotion,
     }));
 
     let resolveReady: (() => void) | null = null;
@@ -793,6 +799,10 @@ export async function handleFeishuMessageEvent(
   }
   const pendingPromotions = messageType === 'text' ? pendingRepositoryPromotions(session) : [];
   if (pendingPromotions.length > 0) {
+    if (deps.autoApproveRepositoryPromotion) {
+      await completeFeishuTaskWithAutoApproval(chatId, pendingPromotions[0]!.taskId, scopedDeps);
+      return true;
+    }
     const olderCount = pendingPromotions.length - 1;
     await deps.client.sendMarkdownCardToChat(
       chatId,
@@ -918,6 +928,11 @@ export async function handleFeishuMessageEvent(
       unsubscribe?.();
     }
     const targetTaskId = extractFeishuReplyTargetTaskId(outputLines);
+    if (deps.autoApproveRepositoryPromotion && targetTaskId
+      && pendingRepositoryPromotions(session).some(request => request.taskId === targetTaskId)) {
+      await completeFeishuTaskWithAutoApproval(chatId, targetTaskId, scopedDeps);
+      return true;
+    }
     const replyOutputLines = targetTaskId
       ? filterFeishuOutputLinesForTask(outputLines, targetTaskId)
       : outputLines;
@@ -993,6 +1008,7 @@ export function createFeishuBridge(
   const gatewayConfig = {
     accessPolicy: buildFeishuGatewayAccessPolicy(config, options.botOpenId),
     configPath: resolve(resolveMetaclawDir(), 'config.yaml'),
+    autoApproveRepositoryPromotion: gatewayFeishu.publicationApproval === 'auto',
   };
 
   if (gatewayFeishu.connectionMode === 'webhook') {
@@ -1870,6 +1886,95 @@ function pendingRepositoryPromotions(session: FeishuMessageSession): PlannerTuiP
   return (session.getPlannerTuiPermissionRequests?.() ?? [])
     .filter(request => request.capability === 'repository_promotion')
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+}
+
+const feishuAutoApprovalTasks = new WeakMap<
+  FeishuMessageSession,
+  Map<string, Promise<void>>
+>();
+
+async function completeFeishuTaskWithAutoApproval(
+  chatId: string,
+  taskId: string,
+  deps: FeishuMessageHandlerDeps,
+): Promise<void> {
+  let tasks = feishuAutoApprovalTasks.get(deps.session);
+  if (!tasks) {
+    tasks = new Map<string, Promise<void>>();
+    feishuAutoApprovalTasks.set(deps.session, tasks);
+  }
+  const existing = tasks.get(taskId);
+  if (existing) {
+    return await existing;
+  }
+
+  const completion = (async () => {
+    try {
+      const delivery = await waitForFeishuAutoApprovedExecutorResult(deps.session, taskId, chatId, deps);
+      await deliverFeishuExecutorResult(chatId, delivery, deps);
+    } catch (error) {
+      const message = `飞书自动发布失败：${(error as Error).message}`;
+      deps.session.appendSystemMessage(`⚠️ ${message}`);
+      await deps.client.sendMarkdownCardToChat(chatId, `⚠️ ${message}`);
+    }
+  })().finally(() => {
+    if (tasks?.get(taskId) === completion) {
+      tasks.delete(taskId);
+    }
+  });
+  tasks.set(taskId, completion);
+  return await completion;
+}
+
+async function waitForFeishuAutoApprovedExecutorResult(
+  session: FeishuMessageSession,
+  taskId: string,
+  chatId: string,
+  deps: FeishuMessageHandlerDeps,
+  timeoutMs = FEISHU_REPLY_WAIT_TIMEOUT_MS,
+): Promise<PlannerTuiExecutorResult> {
+  if (!session.resolvePlannerTuiPermission
+    || !session.getPlannerTuiExecutorResults
+    || !session.getPlannerTuiSnapshot) {
+    throw new Error('当前 Gateway session 不支持自动发布');
+  }
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const request = pendingRepositoryPromotions(session)
+      .find(candidate => candidate.taskId === taskId);
+    if (request) {
+      const resolution = await session.resolvePlannerTuiPermission(request.permissionRequestId, 'approve');
+      const ok = resolution.status !== 'conflict';
+      recordFeishuAudit(deps, {
+        kind: 'permission',
+        chatId,
+        requestId: request.permissionRequestId,
+        method: 'local',
+        ok,
+        reason: ok ? 'repository_promotion_auto_approved' : resolution.message,
+      });
+      if (!ok && pendingRepositoryPromotions(session)
+        .some(candidate => candidate.permissionRequestId === request.permissionRequestId)) {
+        throw new Error(resolution.message);
+      }
+      await new Promise(resolveDelay => setTimeout(resolveDelay, 25));
+      continue;
+    }
+
+    const task = session.getPlannerTuiSnapshot().taskPool.find(candidate => candidate.id === taskId);
+    if (task?.status === 'done') {
+      const result = session.getPlannerTuiExecutorResults()
+        .filter(candidate => candidate.taskId === taskId)
+        .sort((left, right) => right.completedAt.localeCompare(left.completedAt))[0];
+      if (result) {
+        return result;
+      }
+    }
+    await new Promise(resolveDelay => setTimeout(resolveDelay, 250));
+  }
+
+  throw new Error(`任务 #${taskId} 在 ${timeoutMs}ms 内未完成自动发布`);
 }
 
 function formatFeishuPermissionPrompt(request: PlannerTuiPermissionRequest): string {

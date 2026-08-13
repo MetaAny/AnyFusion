@@ -5,7 +5,7 @@ import { resolveMetaclawDir } from '../utils/paths.js';
 export interface GatewayAuditRecord {
   ts?: string;
   platform: 'feishu';
-  kind: 'inbound' | 'policy' | 'session' | 'progress' | 'final' | 'artifact' | 'fallback';
+  kind: 'inbound' | 'policy' | 'session' | 'progress' | 'final' | 'artifact' | 'fallback' | 'permission';
   target: string;
   method: 'card' | 'post' | 'file' | 'local' | 'notice' | 'skipped';
   ok: boolean;

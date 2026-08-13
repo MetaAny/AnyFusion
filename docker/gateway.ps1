@@ -84,6 +84,7 @@ function Start-GatewayContainer {
       -e METACLAW_CODEX_EXECUTOR_ENV_FILE=$codexExecutorEnvContainerPath `
       -e METACLAW_PI_EXECUTOR_ENV_FILE=$piExecutorEnvContainerPath `
       -e METACLAW_FEISHU_ENV_FILE=$feishuEnvContainerPath `
+      -e METACLAW_FEISHU_PUBLICATION_APPROVAL=auto `
       -e ANYFUSION_DEFAULT_CONFIG=/opt/metaclaw/gateway-config.yaml `
       -e ANYFUSION_DATA_HOME=/data/anyfusion `
       -e ANYFUSION_CONFIG_HOME=/data/anyfusion/config `
